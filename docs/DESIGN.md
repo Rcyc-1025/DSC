@@ -167,6 +167,9 @@ Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
 
 1. 没有用真实 API Key 打 api.deepseek.com：传输、SSE 解析、错误分类、取消、余额解析都在本地以假传输与本地 HTTP 服务验证。
 2. Android 端做到可编译、可签名、产物可校验，未在真机/模拟器运行；Windows 端为离屏渲染 + 交互逻辑自动化。
+   因此 Android 侧的界面路径（三段式流式、选图、通知、更新安装器跳转）只有编译与结构校验，
+   C 侧协议另有主机复刻测试；Android 插件进程隔离不可用（state 报 pluginProcAvailable=0，界面提示"仅可管理清单"），
+   余额仍取本地账本口径，头像不读 EXIF 方向，系统对话框外观不随深色主题切换。
 3. Windows 产物未做代码签名（本机无 signtool/公开证书）；Android APK 用自签名 key。
 4. 32 位 Windows 未构建；ARM64 为交叉编译产物（便携 zip），未在 ARM64 硬件上运行。
 5. 插件扩展点中 prompt.fragment（提示词片段）与 ui.panel（面板 describe/invoke）已接通；message.transform 与

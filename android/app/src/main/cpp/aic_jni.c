@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <android/log.h>
 
 #include "aic_types.h"
@@ -31,6 +33,10 @@
 #include "store_setting.h"
 #include "store_usage.h"
 #include "store_guide.h"
+#include "zip.h"
+#include "update.h"
+#include "backup.h"
+#include "avatar.h"
 
 #define TAG "SaiCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -41,6 +47,853 @@ static aic_router *g_router;
 static char        g_dir[400];       /* 应用私有根目录 */
 static char        g_conv[40];       /* 当前查看的会话 id（问答线程或唯一聊天会话） */
 static char        g_err[512];
+
+/* ============================================================================
+ * 以下为 Android 端补齐部分（对应技术设计文档 FR-02/03/05/07/08/11/16/17 等）：
+ *   1) 真实网络：三段协议（C 侧组装请求 + 喂 SSE 解析器，Java 侧做 HTTP）
+ *   2) 停止生成、重新生成
+ *   3) 头像路径、跟随系统深色
+ *   4) 更新检测 / 校验 / 安装交接
+ *   5) 备份、导出、导入
+ *   6) 插件清单管理
+ * 全部仍然只通过 call(json) 一个入口暴露，界面层不直接碰核心数据结构。
+ * ========================================================================== */
+
+/* 后面定义的函数先声明（本文件实现顺序：工具 → 命令 → 分发）。 */
+static int ensure_env(void);
+static const char *current_conv(void);
+static void reply_ok(sb *out);
+static void reply_err(sb *out, const char *msg);
+
+/* 进程内的可变状态：全部只保存在内存里，不落盘。 */
+static char g_key[256];      /* API Key：不进日志、不进导出、不进备份包 */
+static int  g_system_night;  /* 系统是否深色（Java 侧读 uiMode 后传进来） */
+static int  g_backup_ok;     /* 本进程内是否成功备份过（更新安装的前置条件） */
+
+/* 最近一次解析成功的更新清单，下载校验与安装校验都要用它。 */
+static aic_update_manifest g_update;
+static int                 g_update_valid;
+
+/* ---------- 三段协议：一次生成的状态 ----------
+ * C 侧只负责「组装请求体」与「把 Java 收到的每一块字节喂给 SSE 解析器」，
+ * 真正的 HTTP 由 Java 的 HttpURLConnection 完成（Android 上没有 WinHTTP）。 */
+typedef struct aic_gen {
+    int      active;        /* 1 表示有进行中的生成 */
+    int      handle;        /* 本次生成句柄（Java 侧回传，用于防错配） */
+    int      regen;         /* 1 表示「重新生成」 */
+    char     conv_id[64];
+    char     model[64];
+    aic_sse_parser parser;
+    int      parser_inited;
+    sb       text;          /* 已收到的全部增量文本 */
+    sb       body;          /* 请求体（服务端不给 usage 时用它估算 prompt token） */
+    size_t   emitted;       /* 已经回给 Java 的字节数，只需回新增部分 */
+    long long pt, ct;       /* 用量 */
+    aic_llm_err err;        /* 解析过程中服务端返回的错误 */
+    char     err_msg[256];
+    int      cancel;        /* 用户点了停止 */
+} aic_gen;
+
+static aic_gen      g_gen;
+static int          g_gen_ready;  /* text/body 两个 sb 是否已初始化 */
+static int          g_gen_seq;    /* 句柄自增 */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void gen_lock(void)   { pthread_mutex_lock(&g_lock); }
+static void gen_unlock(void) { pthread_mutex_unlock(&g_lock); }
+
+/* 关闭整个环境（恢复备份前必须调用：恢复会替换数据库文件）。 */
+static void close_env(void)
+{
+    if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }
+    if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
+    if (g_db) { aic_db_close(g_db); g_db = NULL; }
+}
+
+/* 当前生效模型：与 aic_engine_build_request 的取值顺序一致（设置优先）。 */
+static const char *selected_model(void)
+{
+    if (aic_setting_get_int(g_db, AIC_SET_MODEL_DEFAULT, 0) == 1) return AIC_MODEL_PRO;
+    return AIC_MODEL_FLASH;
+}
+
+/* 服务端地址：设置里有就用设置的，否则用默认端点。 */
+static const char *cur_endpoint(void)
+{
+    static char ep[AIC_LLM_URL_MAX];
+    ep[0] = '\0';
+    aic_setting_get(g_db, AIC_SET_CRED_ENDPOINT, ep, sizeof(ep));
+    if (!ep[0]) aic_strlcpy_utf8(ep, sizeof(ep), AIC_LLM_MODEL_DEFAULT_URL);
+    return ep;
+}
+
+static void gen_reset(void)
+{
+    if (!g_gen_ready) {
+        sb_init(&g_gen.text);
+        sb_init(&g_gen.body);
+        g_gen_ready = 1;
+    }
+    if (g_gen.parser_inited) {
+        aic_sse_free(&g_gen.parser);
+        g_gen.parser_inited = 0;
+    }
+    memset(&g_gen.parser, 0, sizeof(g_gen.parser));
+    sb_reset(&g_gen.text);
+    sb_reset(&g_gen.body);
+    g_gen.active = 0;
+    g_gen.handle = 0;
+    g_gen.regen = 0;
+    g_gen.conv_id[0] = '\0';
+    g_gen.model[0] = '\0';
+    g_gen.emitted = 0;
+    g_gen.pt = g_gen.ct = 0;
+    g_gen.err = AIC_LLM_OK;
+    g_gen.err_msg[0] = '\0';
+    g_gen.cancel = 0;
+}
+
+/* SSE 事件回调：只累加文本与用量，不碰界面（界面靠 feed 返回的增量刷新）。 */
+static void gen_on_event(void *ud, const aic_llm_event *ev)
+{
+    aic_gen *g = (aic_gen *)ud;
+    if (!g || !ev) return;
+    if (ev->kind == AIC_LLM_EV_DELTA && ev->text) {
+        sb_append(&g->text, ev->text);
+    } else if (ev->kind == AIC_LLM_EV_USAGE) {
+        if (ev->prompt_tokens > 0) g->pt = ev->prompt_tokens;
+        if (ev->completion_tokens > 0) g->ct = ev->completion_tokens;
+    } else if (ev->kind == AIC_LLM_EV_ERROR) {
+        g->err = ev->err;
+        aic_strlcpy_utf8(g->err_msg, sizeof(g->err_msg), ev->message);
+    }
+}
+
+/* 粗略 token 估算：流式响应通常不返回 usage，只能按字符数估（中文按字节数补偿）。 */
+static long long est_tokens(const char *s)
+{
+    size_t i, n, wide = 0;
+    if (!s) return 0;
+    n = strlen(s);
+    for (i = 0; i < n; i++) {
+        if ((unsigned char)s[i] >= 0x80) wide++;
+    }
+    return (long long)(n / 4 + wide / 4 + 1);
+}
+
+static void reply_ok_note(sb *out, const char *note)
+{
+    jw w;
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "note", note ? note : "");
+    jw_obj_end(&w);
+}
+
+static void reply_err_code(sb *out, const char *msg, int code)
+{
+    jw w;
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 0);
+    jw_put_str(&w, "err", msg ? msg : "未知错误");
+    jw_put_int(&w, "errCode", (long long)code);
+    jw_obj_end(&w);
+}
+
+/* 递归删除目录（插件导入后的临时目录清理）。 */
+static void rm_tree(const char *dir)
+{
+    sb names;
+    int n;
+    sb_init(&names);
+    n = aic_dir_list(dir, &names, '\n');
+    if (n > 0) {
+        const char *p = sb_cstr(&names);
+        while (*p) {
+            char name[256];
+            char child[700];
+            size_t k = 0;
+            while (*p && *p != '\n' && k + 1 < sizeof(name)) name[k++] = *p++;
+            name[k] = '\0';
+            if (*p == '\n') p++;
+            if (!name[0]) continue;
+            aic_path_join(child, sizeof(child), dir, name);
+            if (aic_is_dir(child)) rm_tree(child);
+            else aic_file_remove(child);
+        }
+    }
+    sb_free(&names);
+    remove(dir);
+}
+
+/* ---------- 三段协议命令 ---------- */
+
+/* sendBegin：落用户消息 → 组装请求体 → 把 url/apiKey/body 交给 Java 去发。 */
+static void cmd_send_begin(const char *text, int regen, sb *out)
+{
+    char err[256] = { 0 };
+    const char *conv;
+    char conv_id[64];
+    aic_message m;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!g_key[0]) {
+        /* 没有 Key 就明确不联网：与离线演示传输保持同一套提示与错误码。 */
+        reply_err_code(out, "尚未配置 API Key，请先到设置里填写", (int)AIC_LLM_E_AUTH);
+        return;
+    }
+    conv = current_conv();
+    if (!conv[0]) { reply_err(out, "没有可用的会话"); return; }
+
+    gen_lock();
+    if (g_gen.active) {
+        gen_unlock();
+        reply_err(out, "上一次回复还没有结束，请先停止");
+        return;
+    }
+    gen_reset();
+    aic_strlcpy_utf8(conv_id, sizeof(conv_id), conv);
+    if (regen) {
+        memset(&m, 0, sizeof(m));
+        if (aic_msg_last_assistant(g_db, conv_id, &m) != AIC_OK) {
+            gen_unlock();
+            reply_err(out, "还没有可以重新生成的回复");
+            return;
+        }
+        aic_msg_supersede(g_db, m.id);   /* 旧回复标记为被替代，不删除 */
+        aic_msg_free(&m);
+    } else {
+        if (!text || !text[0]) { gen_unlock(); reply_err(out, "消息不能为空"); return; }
+        memset(&m, 0, sizeof(m));
+        rc = aic_msg_append(g_db, conv_id, AIC_ROLE_USER, text, selected_model(), &m);
+        if (rc != AIC_OK) { gen_unlock(); reply_err(out, "保存消息失败"); return; }
+        aic_msg_free(&m);
+    }
+    rc = aic_engine_build_request(g_eng, conv_id, &g_gen.body, err, sizeof(err));
+    if (rc != AIC_OK) {
+        gen_unlock();
+        reply_err(out, err[0] ? err : "组装请求失败");
+        return;
+    }
+    aic_sse_init(&g_gen.parser);
+    g_gen.parser_inited = 1;
+    g_gen.active = 1;
+    g_gen.handle = ++g_gen_seq;
+    g_gen.regen = regen ? 1 : 0;
+    aic_strlcpy_utf8(g_gen.conv_id, sizeof(g_gen.conv_id), conv_id);
+    aic_strlcpy_utf8(g_gen.model, sizeof(g_gen.model), selected_model());
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "handle", (long long)g_gen.handle);
+    jw_put_str(&w, "url", cur_endpoint());
+    jw_put_str(&w, "apiKey", g_key);
+    jw_put_str(&w, "body", sb_cstr(&g_gen.body));
+    jw_put_str(&w, "convId", conv_id);
+    jw_put_str(&w, "model", g_gen.model);
+    jw_obj_end(&w);
+    gen_unlock();
+}
+
+/* feed：Java 每读到一块字节就调一次，这里喂给 SSE 解析器并只回新增文本。 */
+static void gen_feed_data(const void *data, size_t len, sb *out)
+{
+    jw w;
+    sb delta;
+    const char *all;
+    size_t from, to;
+
+    gen_lock();
+    if (!g_gen.active) {
+        gen_unlock();
+        reply_err(out, "没有正在进行的回复");
+        return;
+    }
+    if (g_gen.cancel) {
+        sb_reset(out);
+        jw_init(&w, out, 0);
+        jw_obj_begin(&w, NULL);
+        jw_put_bool(&w, "ok", 0);
+        jw_put_str(&w, "err", "已停止生成");
+        jw_put_bool(&w, "cancelled", 1);
+        jw_obj_end(&w);
+        gen_unlock();
+        return;
+    }
+    if (len > 0) aic_sse_feed(&g_gen.parser, (const char *)data, len, gen_on_event, &g_gen);
+
+    all = sb_cstr(&g_gen.text);
+    to = g_gen.text.len;
+    from = g_gen.emitted;
+    if (from > to) from = to;
+    sb_init(&delta);
+    if (to > from) sb_appendn(&delta, all + from, to - from);
+    g_gen.emitted = to;
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "delta", sb_cstr(&delta));
+    jw_put_bool(&w, "done", g_gen.parser.finished);
+    jw_put_int(&w, "errCode", (long long)g_gen.err);
+    jw_put_str(&w, "errMsg", g_gen.err_msg);
+    jw_obj_end(&w);
+    sb_free(&delta);
+    gen_unlock();
+}
+
+/* sendEnd：收尾 → 成功则落助手消息并记账；用户停止则只保留用户消息。 */
+static void cmd_send_end(int handle, sb *out)
+{
+    aic_message amsg;
+    const aic_llm_model *mdl;
+    long long pt, ct, cost;
+    char cost_s[32] = { 0 };
+    jw w;
+
+    gen_lock();
+    if (!g_gen.active || (handle > 0 && handle != g_gen.handle)) {
+        gen_unlock();
+        reply_err(out, "没有匹配的回复任务");
+        return;
+    }
+    if (g_gen.cancel) {
+        sb_reset(out);
+        jw_init(&w, out, 0);
+        jw_obj_begin(&w, NULL);
+        jw_put_bool(&w, "ok", 0);
+        jw_put_str(&w, "err", "已停止生成");
+        jw_put_int(&w, "errCode", (long long)AIC_LLM_E_CANCEL);
+        jw_put_bool(&w, "cancelled", 1);
+        jw_put_str(&w, "text", sb_cstr(&g_gen.text));
+        jw_obj_end(&w);
+        gen_reset();
+        gen_unlock();
+        return;
+    }
+    if (g_gen.parser_inited) aic_sse_finish(&g_gen.parser, gen_on_event, &g_gen);
+    if (g_gen.err != AIC_LLM_OK) {
+        char msg[320];
+        snprintf(msg, sizeof(msg), "%s",
+                 g_gen.err_msg[0] ? g_gen.err_msg : aic_llm_err_text(g_gen.err));
+        reply_err_code(out, msg, (int)g_gen.err);
+        gen_reset();
+        gen_unlock();
+        return;
+    }
+    if (g_gen.text.len == 0) {
+        reply_err(out, "模型没有返回内容");
+        gen_reset();
+        gen_unlock();
+        return;
+    }
+    memset(&amsg, 0, sizeof(amsg));
+    if (aic_msg_append(g_db, g_gen.conv_id, AIC_ROLE_ASSISTANT, sb_cstr(&g_gen.text),
+                       g_gen.model, &amsg) != AIC_OK) {
+        reply_err(out, "保存回复失败");
+        gen_reset();
+        gen_unlock();
+        return;
+    }
+    pt = g_gen.pt;
+    ct = g_gen.ct;
+    if (pt <= 0) pt = est_tokens(sb_cstr(&g_gen.body));
+    if (ct <= 0) ct = est_tokens(sb_cstr(&g_gen.text));
+    mdl = aic_llm_model_or_default(g_gen.model);
+    cost = mdl ? aic_llm_cost_micros(mdl, pt, ct) : 0;
+    aic_usage_append(g_db, g_gen.conv_id, amsg.id, mdl ? mdl->id : g_gen.model, pt, ct, cost);
+    aic_llm_format_micros(cost, cost_s, sizeof(cost_s));
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "text", sb_cstr(&g_gen.text));
+    jw_put_str(&w, "assistantId", amsg.id);
+    jw_put_str(&w, "model", g_gen.model);
+    jw_put_int(&w, "promptTokens", pt);
+    jw_put_int(&w, "completionTokens", ct);
+    jw_put_int(&w, "costMicros", cost);
+    jw_put_str(&w, "cost", cost_s);
+    jw_put_bool(&w, "regenerated", g_gen.regen);
+    jw_obj_end(&w);
+    aic_msg_free(&amsg);
+    gen_reset();
+    gen_unlock();
+}
+
+/* sendFail：Java 侧 HTTP 失败（非 2xx / 连接异常）时交回 C 侧，
+ * 由核心按状态码分类成 AIC_LLM_E_*，界面据此提示可执行的下一步。 */
+static void cmd_send_fail(int handle, int http, const char *message, sb *out)
+{
+    aic_llm_err le;
+    char msg[420];
+
+    gen_lock();
+    if (!g_gen.active || (handle > 0 && handle != g_gen.handle)) {
+        gen_unlock();
+        reply_err(out, "没有匹配的回复任务");
+        return;
+    }
+    if (http > 0) {
+        le = aic_llm_classify_http(http);
+        if (le == AIC_LLM_OK) le = AIC_LLM_E_SERVER;
+    } else {
+        le = AIC_LLM_E_NETWORK;
+    }
+    /* 服务端返回的 JSON 原样给用户看不懂，改用分类文案；纯文本错误则优先用原文。 */
+    if (message && message[0] && message[0] != '{') snprintf(msg, sizeof(msg), "%s", message);
+    else snprintf(msg, sizeof(msg), "%s", aic_llm_err_text(le));
+    JLOG("生成失败：http=%d %s", http, msg);
+    reply_err_code(out, msg, (int)le);
+    gen_reset();
+    gen_unlock();
+}
+
+/* stop：置取消标志，Java 侧配合 disconnect 断开连接。 */
+static void cmd_stop(sb *out)
+{
+    gen_lock();
+    if (!g_gen.active) {
+        gen_unlock();
+        reply_err(out, "当前没有正在生成的回复");
+        return;
+    }
+    g_gen.cancel = 1;
+    if (g_eng) aic_engine_stop(g_eng);   /* 旧的同步 send 路径也看这个标志 */
+    gen_unlock();
+    reply_ok(out);
+}
+
+/* ---------- 头像 ---------- */
+static void cmd_set_avatar(const char *rel, sb *out)
+{
+    char err[256] = { 0 };
+    char full[700];
+    aic_profile p;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!aic_is_local_relative_path(rel)) {
+        reply_err(out, "头像路径必须是应用私有目录下的相对路径");
+        return;
+    }
+    aic_path_join(full, sizeof(full), g_dir, rel);
+    if (!aic_path_exists(full)) { reply_err(out, "头像文件不存在"); return; }
+    memset(&p, 0, sizeof(p));
+    aic_profile_get(g_db, &p);
+    aic_strlcpy_utf8(p.avatar_path, sizeof(p.avatar_path), rel);
+    rc = aic_profile_set(g_db, &p, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "保存头像路径失败"); return; }
+    reply_ok(out);
+}
+
+/* ---------- 更新 ---------- */
+static const char *update_status_name(aic_update_status s)
+{
+    switch (s) {
+    case AIC_UPD_UP_TO_DATE: return "up_to_date";
+    case AIC_UPD_AVAILABLE:  return "available";
+    case AIC_UPD_SKIPPED:    return "skipped";
+    case AIC_UPD_TOO_OLD:    return "too_old";
+    case AIC_UPD_INVALID:    return "invalid";
+    default:                 return "not_checked";
+    }
+}
+
+/* checkUpdate：清单 JSON 由 Java 用 HttpURLConnection 拉下来，判定逻辑仍在核心层。 */
+static void cmd_check_update(const char *json, const char *cur, const char *skip, sb *out)
+{
+    char err[256] = { 0 };
+    char now_s[32];
+    aic_update_plan plan;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!json || !json[0]) { reply_err(out, "更新清单为空"); return; }
+    memset(&g_update, 0, sizeof(g_update));
+    rc = aic_update_parse_manifest(json, strlen(json), &g_update, err, sizeof(err));
+    if (rc != AIC_OK) {
+        g_update_valid = 0;
+        reply_err(out, err[0] ? err : "更新清单格式不正确");
+        return;
+    }
+    g_update_valid = 1;
+    snprintf(now_s, sizeof(now_s), "%lld", (long long)aic_now_ms());
+    aic_setting_set(g_db, "update.last_check_ms", now_s);
+    memset(&plan, 0, sizeof(plan));
+    aic_update_make_plan(&g_update, (cur && cur[0]) ? cur : "1.0.0", skip ? skip : "", &plan);
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "status", update_status_name(plan.status));
+    jw_put_int(&w, "statusCode", (long long)plan.status);
+    jw_put_str(&w, "currentVersion", plan.current_version);
+    jw_put_str(&w, "targetVersion", plan.target_version);
+    jw_put_str(&w, "channel", g_update.channel);
+    jw_put_str(&w, "releasedAt", g_update.released_at);
+    jw_put_str(&w, "notes", g_update.notes);
+    jw_put_str(&w, "url", g_update.url);
+    jw_put_str(&w, "sha256", g_update.sha256);
+    jw_put_int(&w, "size", g_update.size);
+    jw_put_bool(&w, "mandatory", plan.mandatory);
+    jw_put_bool(&w, "needsFullPackage", plan.needs_full_package);
+    jw_obj_end(&w);
+}
+
+/* downloadUpdate：Java 下载完成后调用，这里做大小 + SHA-256 校验。 */
+static void cmd_download_update(const char *path, sb *out)
+{
+    char err[256] = { 0 };
+    int64_t size = 0;
+    jw w;
+    int rc;
+
+    if (!g_update_valid) { reply_err(out, "还没有可用的更新清单，请先检查更新"); return; }
+    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
+    rc = aic_update_verify_file(&g_update, path, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
+    aic_file_size(path, &size);
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "path", path);
+    jw_put_int(&w, "size", (long long)size);
+    jw_put_str(&w, "sha256", g_update.sha256);
+    jw_put_str(&w, "version", g_update.version);
+    jw_obj_end(&w);
+}
+
+/* installUpdate：核心只做「备份前置 + 校验」；真正拉起系统安装器是 Java 的事。 */
+static void cmd_install_update(const char *path, int backup_ok, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!g_update_valid) { reply_err(out, "还没有可用的更新清单，请先检查更新"); return; }
+    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
+    rc = aic_update_can_apply(backup_ok, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "需要先完成一次备份才能安装更新"); return; }
+    rc = aic_update_verify_file(&g_update, path, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
+    reply_ok_note(out, "已通过大小与 SHA-256 校验，安装动作交给系统安装器");
+}
+
+/* ---------- 备份 ---------- */
+static void cmd_backup_create(const char *ver, sb *out)
+{
+    char dir[512], dbpath[700], zip[700], name[128], err[256] = { 0 };
+    aic_backup_info info;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    aic_path_join(dir, sizeof(dir), g_dir, "backups");
+    aic_mkdir_p(dir);
+    aic_path_join(dbpath, sizeof(dbpath), g_dir, "db/aic.db");
+    snprintf(name, sizeof(name), "backup-%lld.zip", (long long)(aic_now_ms() / 1000));
+    aic_path_join(zip, sizeof(zip), dir, name);
+    memset(&info, 0, sizeof(info));
+    rc = aic_backup_create(g_dir, dbpath, (ver && ver[0]) ? ver : "1.0.0", zip, &info,
+                           err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "备份失败"); return; }
+    g_backup_ok = 1;
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "path", zip);
+    jw_put_str(&w, "name", name);
+    jw_put_str(&w, "createdAt", info.created_at);
+    jw_put_str(&w, "appVersion", info.app_version);
+    jw_put_int(&w, "fileCount", info.file_count);
+    jw_put_int(&w, "totalBytes", info.total_bytes);
+    jw_obj_end(&w);
+}
+
+static void cmd_backup_list(sb *out)
+{
+    char dir[512], child[700], err[128] = { 0 };
+    sb names;
+    jw w;
+    int n;
+    const char *p;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    aic_path_join(dir, sizeof(dir), g_dir, "backups");
+    sb_init(&names);
+    n = aic_dir_list(dir, &names, '\n');
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "dir", dir);
+    jw_arr_begin(&w, "items");
+    if (n > 0) {
+        p = sb_cstr(&names);
+        while (*p) {
+            char name[256];
+            size_t k = 0;
+            int64_t size = 0;
+            aic_backup_info info;
+            memset(&info, 0, sizeof(info));
+            while (*p && *p != '\n' && k + 1 < sizeof(name)) name[k++] = *p++;
+            name[k] = '\0';
+            if (*p == '\n') p++;
+            if (!name[0]) continue;
+            aic_path_join(child, sizeof(child), dir, name);
+            aic_file_size(child, &size);
+            /* 清单读不出来的包照样列出，但 createdAt 为空——界面据此提示可能残缺 */
+            aic_backup_inspect(child, &info, err, sizeof(err));
+            jw_obj_begin(&w, NULL);
+            jw_put_str(&w, "name", name);
+            jw_put_str(&w, "path", child);
+            jw_put_int(&w, "size", (long long)size);
+            jw_put_str(&w, "createdAt", info.created_at);
+            jw_put_str(&w, "appVersion", info.app_version);
+            jw_put_bool(&w, "readable", info.created_at[0] ? 1 : 0);
+            jw_obj_end(&w);
+        }
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+    sb_free(&names);
+}
+
+static void cmd_backup_restore(const char *zip, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (!g_dir[0]) { reply_err(out, "尚未调用 init"); return; }
+    if (!zip || !zip[0] || !aic_path_exists(zip)) { reply_err(out, "备份包不存在"); return; }
+    gen_lock();
+    if (g_gen.active) {
+        gen_unlock();
+        reply_err(out, "正在生成回复，请先停止再恢复备份");
+        return;
+    }
+    gen_reset();
+    gen_unlock();
+    close_env();   /* 恢复会替换数据库文件，必须先关库 */
+    rc = aic_backup_restore(zip, g_dir, err, sizeof(err));
+    if (ensure_env() != AIC_OK) { reply_err(out, "恢复后重新打开数据库失败"); return; }
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "恢复失败"); return; }
+    g_conv[0] = 0;
+    reply_ok(out);
+}
+
+static void cmd_backup_clean(int keep, sb *out)
+{
+    char dir[512], err[256] = { 0 };
+    int removed = 0;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    aic_path_join(dir, sizeof(dir), g_dir, "backups");
+    rc = aic_backup_clean(dir, keep < 1 ? 1 : keep, &removed, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "清理失败"); return; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "removed", removed);
+    jw_obj_end(&w);
+}
+
+/* ---------- 导出 / 导入（路径由 Java 选好，位于应用私有目录） ---------- */
+static void cmd_export_json(const char *path, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!path || !path[0]) { reply_err(out, "导出路径为空"); return; }
+    rc = aic_export_write_json(g_db, -1, path, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导出失败"); return; }
+    reply_ok_note(out, path);
+}
+
+static void cmd_import_json(const char *path, int policy, sb *out)
+{
+    char err[256] = { 0 };
+    aic_import_preview pv;
+    aic_import_result ir;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "导入文件不存在"); return; }
+    memset(&pv, 0, sizeof(pv));
+    rc = aic_transfer_preview(g_db, path, &pv, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入文件无法识别"); return; }
+    memset(&ir, 0, sizeof(ir));
+    rc = aic_transfer_import(g_db, path, (aic_conflict_policy)policy, &ir, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入失败"); return; }
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "convAdded", ir.conv_added);
+    jw_put_int(&w, "convRenamed", ir.conv_renamed);
+    jw_put_int(&w, "convSkipped", ir.conv_skipped);
+    jw_put_int(&w, "msgAdded", ir.msg_added);
+    jw_put_int(&w, "msgRenamed", ir.msg_renamed);
+    jw_put_int(&w, "msgSkipped", ir.msg_skipped);
+    jw_put_int(&w, "previewConversations", pv.conversations);
+    jw_put_int(&w, "previewMessages", pv.messages);
+    jw_obj_end(&w);
+}
+
+/* ---------- 插件 ---------- */
+static void cmd_plugin_list(sb *out)
+{
+    aic_plugin *arr = NULL;
+    size_t n = 0, i;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (aic_plugin_list(g_db, -1, &arr, &n) != AIC_OK) { arr = NULL; n = 0; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_bool(&w, "procAvailable", 0);   /* Android 上插件进程隔离不可用 */
+    jw_put_str(&w, "procNote", "Android 暂不支持插件运行，仅可管理清单");
+    jw_arr_begin(&w, "items");
+    for (i = 0; i < n; i++) {
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", arr[i].id);
+        jw_put_str(&w, "name", arr[i].name);
+        jw_put_str(&w, "version", arr[i].version);
+        jw_put_str(&w, "author", arr[i].author);
+        jw_put_str(&w, "extensionPoints", arr[i].extension_points);
+        jw_put_str(&w, "permissions", arr[i].permissions);
+        jw_put_bool(&w, "enabled", arr[i].enabled);
+        jw_put_str(&w, "installedAt", arr[i].installed_at);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+    if (arr) aic_plugin_free_array(arr, n);
+}
+
+/* pluginInstall：zip 先解到临时目录，找到 manifest.json 再交给核心安装。 */
+static void cmd_plugin_install(const char *zip, sb *out)
+{
+    char err[256] = { 0 };
+    char tmp[700], uuid[37], manifest[800], child[800], plugins[700];
+    aic_plugin pl;
+    jw w;
+    int rc, n;
+    sb names;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!zip || !zip[0] || !aic_path_exists(zip)) { reply_err(out, "插件包不存在"); return; }
+    aic_uuid4(uuid);
+    aic_path_join(tmp, sizeof(tmp), g_dir, "tmp");
+    aic_mkdir_p(tmp);
+    aic_path_join(child, sizeof(child), tmp, uuid);
+    aic_mkdir_p(child);
+    rc = aic_zip_extract(zip, child, err, sizeof(err));
+    if (rc != AIC_OK) {
+        rm_tree(child);
+        reply_err(out, err[0] ? err : "插件包解压失败");
+        return;
+    }
+    /* 清单可能在包根，也可能在唯一的一层子目录里。 */
+    aic_path_join(manifest, sizeof(manifest), child, "manifest.json");
+    if (!aic_path_exists(manifest)) {
+        sb_init(&names);
+        n = aic_dir_list(child, &names, '\n');
+        if (n > 0) {
+            const char *p = sb_cstr(&names);
+            char sub[256];
+            size_t k = 0;
+            while (*p && *p != '\n' && k + 1 < sizeof(sub)) sub[k++] = *p++;
+            sub[k] = '\0';
+            aic_path_join(child, sizeof(child), child, sub);
+            aic_path_join(manifest, sizeof(manifest), child, "manifest.json");
+        }
+        sb_free(&names);
+        if (!aic_path_exists(manifest)) {
+            rm_tree(child);
+            reply_err(out, "插件包缺少 manifest.json");
+            return;
+        }
+    }
+    aic_path_join(plugins, sizeof(plugins), g_dir, "plugins");
+    aic_mkdir_p(plugins);
+    memset(&pl, 0, sizeof(pl));
+    rc = aic_plugin_install(g_db, plugins, manifest, "zip", &pl, err, sizeof(err));
+    rm_tree(child);
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "插件安装失败"); return; }
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "id", pl.id);
+    jw_put_str(&w, "name", pl.name);
+    jw_put_str(&w, "version", pl.version);
+    jw_put_bool(&w, "enabled", pl.enabled);
+    jw_put_str(&w, "note", "Android 暂不支持插件运行，安装后仅登记清单（默认禁用）");
+    jw_obj_end(&w);
+    aic_plugin_free(&pl);
+}
+
+static void cmd_plugin_set_enabled(const char *id, int enabled, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = aic_plugin_set_enabled(g_db, id, enabled ? 1 : 0, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "更新插件状态失败"); return; }
+    reply_ok_note(out, "Android 端的启用状态只登记清单，不会真正加载插件代码");
+}
+
+static void cmd_plugin_uninstall(const char *id, int keep_data, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = aic_plugin_uninstall(g_db, id, keep_data ? 1 : 0, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "卸载插件失败"); return; }
+    reply_ok(out);
+}
+
 
 /* ---------- 离线演示传输 ----------
  * 与桌面端一致：不发真实 HTTP，只把固定回复按 SSE 分片喂给解析器，
@@ -60,16 +913,18 @@ static void demo_reply(const char *body, char out1[400], char out2[400], char ou
     }
 }
 
+/* 签名要与 aic_llm_transport.post_stream 完全一致（最后两个前多一个 cancel 指针）：
+ * 离线演示是瞬时完成的，用不到取消标志，但指针位必须对上。 */
 static aic_llm_err demo_post(void *ud, const char *url, const char *api_key, const char *body,
                              aic_sse_parser *parser, aic_llm_event_fn fn, void *cb_ud,
-                             char *err, size_t errlen)
+                             volatile int *cancel, char *err, size_t errlen)
 {
     char p1[400], p2[400], p3[400];
     char *parts[3];
     sb chunk;
     int i;
 
-    (void)ud; (void)url;
+    (void)ud; (void)url; (void)cancel;
     if (!api_key || !api_key[0]) {
         if (err && errlen) aic_strlcpy_utf8(err, errlen, "尚未配置 API Key，请先到设置里填写");
         return AIC_LLM_E_AUTH;
@@ -149,6 +1004,11 @@ static int ensure_env(void)
     aic_engine_set_transport(g_eng, demo_transport());
     aic_engine_set_context_messages(g_eng, aic_setting_get_int(g_db, AIC_SET_CONTEXT_N,
                                                               AIC_CONTEXT_MESSAGES_DEFAULT));
+    /* 恢复备份后会重新建引擎，内存里的 Key 要重新灌回去。 */
+    if (g_key[0]) aic_engine_set_api_key(g_eng, g_key);
+    /* 设置里选的模型交给引擎作为 override，否则请求里会一直用会话默认模型。 */
+    aic_engine_set_model_override(g_eng, selected_model());
+    aic_engine_set_endpoint(g_eng, cur_endpoint());
     aic_router_boot(g_router);
     aic_router_config_check(g_router);
     return AIC_OK;
@@ -187,7 +1047,8 @@ static const char *current_conv(void)
 static void put_theme(jw *w)
 {
     int pref = aic_setting_get_int(g_db, AIC_SET_THEME, 0);
-    const aic_theme *th = aic_theme_resolve(pref, 0);
+    /* 第二个参数是系统当前是否深色：pref=system 时靠它决定实际令牌（FR-17）。 */
+    const aic_theme *th = aic_theme_resolve(pref, g_system_night);
     int i;
 
     jw_obj_begin(w, "theme");
@@ -409,9 +1270,26 @@ static void build_state(sb *out)
     jw_put_bool(&w, "switching", aic_router_is_switching(g_router));
     jw_put_int(&w, "overlay", (long long)aic_router_top_overlay(g_router));
     jw_put_str(&w, "overlayName", aic_overlay_name(aic_router_top_overlay(g_router)));
-    jw_put_bool(&w, "hasKey", aic_engine_has_key(g_eng));
+    jw_put_bool(&w, "hasKey", (aic_engine_has_key(g_eng) || g_key[0]) ? 1 : 0);
     jw_put_str(&w, "model", aic_setting_get_int(g_db, AIC_SET_MODEL_DEFAULT, 0) == 1
                                    ? AIC_MODEL_PRO : AIC_MODEL_FLASH);
+    /* 界面要用的运行时事实：系统深色、是否正在生成、插件能否运行、更新与备份状态。 */
+    jw_put_bool(&w, "systemNight", g_system_night ? 1 : 0);
+    jw_put_bool(&w, "streaming", g_gen.active ? 1 : 0);
+    jw_put_bool(&w, "pluginProcAvailable", 0);
+    jw_put_str(&w, "pluginProcNote", "Android 暂不支持插件运行，仅可管理清单");
+    jw_put_bool(&w, "hasBackup", g_backup_ok ? 1 : 0);
+    jw_put_int(&w, "balanceAlertCents", aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
+    jw_put_int(&w, "updateAuto", aic_setting_get_int(g_db, AIC_SET_UPDATE_AUTO, 1));
+    jw_put_int(&w, "updateIntervalHours", aic_setting_get_int(g_db, AIC_SET_UPDATE_INTERVAL, 24));
+    {
+        char murl[512] = { 0 };
+        char lastc[32] = { 0 };
+        aic_setting_get(g_db, "update.manifest_url", murl, sizeof(murl));
+        aic_setting_get(g_db, "update.last_check_ms", lastc, sizeof(lastc));
+        jw_put_str(&w, "updateManifestUrl", murl);
+        jw_put_int(&w, "lastUpdateCheckMs", (long long)atoll(lastc));
+    }
     put_theme(&w);
     put_motion(&w);
     put_profile(&w);
@@ -671,6 +1549,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         /* Android 侧凭证保存需要系统安全存储（Keystore）；未接入前只在本次进程内使用。 */
         const char *key = jv_get_str(root, "key", "");
         aic_engine_set_api_key(g_eng, key);
+        aic_strlcpy_utf8(g_key, sizeof(g_key), key);   /* 三段协议要用它拼 Authorization */
         aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, (key && key[0]) ? "0" : "0");
         if (key && key[0]) reply_ok(out); else reply_err(out, "API Key 不能为空");
     } else if (strcmp(cmd, "probe") == 0) {
@@ -750,27 +1629,197 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         }
         jw_arr_end(&w);
         jw_obj_end(&w);
+    } else if (strcmp(cmd, "setSystemNight") == 0) {
+        /* Java 侧读 uiMode 后同步过来：ui.theme=system 时用它决定实际配色。 */
+        g_system_night = jv_get_bool(root, "night", 0) ? 1 : 0;
+        reply_ok(out);
+    } else if (strcmp(cmd, "sendBegin") == 0) {
+        cmd_send_begin(jv_get_str(root, "text", ""), jv_get_bool(root, "regen", 0), out);
+    } else if (strcmp(cmd, "regenerate") == 0) {
+        cmd_send_begin("", 1, out);
+    } else if (strcmp(cmd, "sendEnd") == 0) {
+        cmd_send_end((int)jv_get_int(root, "handle", 0), out);
+    } else if (strcmp(cmd, "sendFail") == 0) {
+        cmd_send_fail((int)jv_get_int(root, "handle", 0), (int)jv_get_int(root, "httpCode", 0),
+                      jv_get_str(root, "message", ""), out);
+    } else if (strcmp(cmd, "stop") == 0) {
+        cmd_stop(out);
+    } else if (strcmp(cmd, "setAvatarPath") == 0) {
+        cmd_set_avatar(jv_get_str(root, "path", ""), out);
+    } else if (strcmp(cmd, "checkUpdate") == 0) {
+        cmd_check_update(jv_get_str(root, "json", ""), jv_get_str(root, "currentVersion", "1.0.0"),
+                         jv_get_str(root, "skipVersion", ""), out);
+    } else if (strcmp(cmd, "downloadUpdate") == 0) {
+        cmd_download_update(jv_get_str(root, "path", ""), out);
+    } else if (strcmp(cmd, "installUpdate") == 0) {
+        cmd_install_update(jv_get_str(root, "path", ""), jv_get_bool(root, "backupOk", 0), out);
+    } else if (strcmp(cmd, "setUpdateManifestUrl") == 0) {
+        const char *url = jv_get_str(root, "url", "");
+        rc = aic_setting_set(g_db, "update.manifest_url", url);
+        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+    } else if (strcmp(cmd, "backupCreate") == 0) {
+        cmd_backup_create(jv_get_str(root, "version", "1.0.0"), out);
+    } else if (strcmp(cmd, "backupList") == 0) {
+        cmd_backup_list(out);
+    } else if (strcmp(cmd, "backupRestore") == 0) {
+        cmd_backup_restore(jv_get_str(root, "zip", ""), out);
+    } else if (strcmp(cmd, "backupClean") == 0) {
+        cmd_backup_clean((int)jv_get_int(root, "keep", 5), out);
+    } else if (strcmp(cmd, "exportJson") == 0) {
+        cmd_export_json(jv_get_str(root, "path", ""), out);
+    } else if (strcmp(cmd, "importJson") == 0) {
+        cmd_import_json(jv_get_str(root, "path", ""), (int)jv_get_int(root, "policy", 0), out);
+    } else if (strcmp(cmd, "pluginList") == 0) {
+        cmd_plugin_list(out);
+    } else if (strcmp(cmd, "pluginInstall") == 0) {
+        cmd_plugin_install(jv_get_str(root, "path", ""), out);
+    } else if (strcmp(cmd, "pluginSetEnabled") == 0) {
+        cmd_plugin_set_enabled(jv_get_str(root, "id", ""), jv_get_bool(root, "enabled", 0), out);
+    } else if (strcmp(cmd, "pluginUninstall") == 0) {
+        cmd_plugin_uninstall(jv_get_str(root, "id", ""), jv_get_bool(root, "keepData", 0), out);
     } else {
         reply_err(out, "未知命令");
     }
     jv_free(root);
 }
 
+/* ---------- JNI 字符串转换 ----------
+ * 不用 GetStringUTFChars / NewStringUTF：它们对 4 字节 UTF-8（emoji）不可靠。
+ * 这里统一走 UTF-16 中转，C 侧内部仍是 UTF-8。
+ * 补充：NewStringUTF 遇到 4 字节序列会被当非法修改字符，所以必须换掉。 */
+static char *jstr_to_utf8(JNIEnv *env, jstring js)
+{
+    const jchar *u;
+    jsize n, i;
+    size_t cap, k = 0;
+    char *out;
+
+    u = (*env)->GetStringChars(env, js, NULL);
+    if (!u) return NULL;
+    n = (*env)->GetStringLength(env, js);
+    cap = (size_t)n * 3 + 1;
+    out = (char *)malloc(cap);
+    if (!out) { (*env)->ReleaseStringChars(env, js, u); return NULL; }
+    for (i = 0; i < n; i++) {
+        unsigned int c = (unsigned int)u[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            unsigned int lo = (unsigned int)u[i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                c = 0x10000u + ((c - 0xD800u) << 10) + (lo - 0xDC00u);
+                i++;
+            }
+        }
+        if (c < 0x80u) {
+            out[k++] = (char)c;
+        } else if (c < 0x800u) {
+            out[k++] = (char)(0xC0u | (c >> 6));
+            out[k++] = (char)(0x80u | (c & 0x3Fu));
+        } else if (c < 0x10000u) {
+            out[k++] = (char)(0xE0u | (c >> 12));
+            out[k++] = (char)(0x80u | ((c >> 6) & 0x3Fu));
+            out[k++] = (char)(0x80u | (c & 0x3Fu));
+        } else {
+            out[k++] = (char)(0xF0u | (c >> 18));
+            out[k++] = (char)(0x80u | ((c >> 12) & 0x3Fu));
+            out[k++] = (char)(0x80u | ((c >> 6) & 0x3Fu));
+            out[k++] = (char)(0x80u | (c & 0x3Fu));
+        }
+    }
+    out[k] = '\0';
+    (*env)->ReleaseStringChars(env, js, u);
+    return out;
+}
+
+static jstring utf8_to_jstr(JNIEnv *env, const char *s)
+{
+    const unsigned char *p = (const unsigned char *)(s ? s : "");
+    size_t cap = strlen((const char *)p) + 1, n = 0;
+    jchar *buf;
+    jstring ret;
+
+    buf = (jchar *)malloc(cap * sizeof(jchar));
+    if (!buf) return NULL;
+    while (*p) {
+        unsigned int c;
+        if (*p < 0x80u) {
+            c = *p++;
+        } else if ((*p & 0xE0u) == 0xC0u) {
+            c = (unsigned int)(*p++ & 0x1Fu) << 6;
+            if (*p) c |= (unsigned int)(*p++ & 0x3Fu);
+        } else if ((*p & 0xF0u) == 0xE0u) {
+            c = (unsigned int)(*p++ & 0x0Fu) << 12;
+            if (*p) { c |= (unsigned int)(*p++ & 0x3Fu) << 6; if (*p) c |= (unsigned int)(*p++ & 0x3Fu); }
+        } else {
+            c = (unsigned int)(*p++ & 0x07u) << 18;
+            if (*p) {
+                c |= (unsigned int)(*p++ & 0x3Fu) << 12;
+                if (*p) { c |= (unsigned int)(*p++ & 0x3Fu) << 6; if (*p) c |= (unsigned int)(*p++ & 0x3Fu); }
+            }
+        }
+        if (c >= 0x10000u) {
+            if (n + 2 > cap) break;
+            c -= 0x10000u;
+            buf[n++] = (jchar)(0xD800u + (c >> 10));
+            buf[n++] = (jchar)(0xDC00u + (c & 0x3FFu));
+        } else {
+            if (n + 1 > cap) break;
+            buf[n++] = (jchar)c;
+        }
+    }
+    ret = (*env)->NewString(env, buf, (jsize)n);
+    free(buf);
+    return ret;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_sai_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
 {
-    const char *req;
+    char *req;
     sb out;
     jstring ret;
 
     (void)cls;
     if (!jreq) return NULL;
-    req = (*env)->GetStringUTFChars(env, jreq, NULL);
+    req = jstr_to_utf8(env, jreq);
     if (!req) return NULL;
     sb_init(&out);
     handle(req, strlen(req), &out);
-    (*env)->ReleaseStringUTFChars(env, jreq, req);
-    ret = (*env)->NewStringUTF(env, sb_cstr(&out));
+    free(req);
+    ret = utf8_to_jstr(env, sb_cstr(&out));
+    sb_free(&out);
+    return ret;
+}
+
+/* feed(handle, chunk)：流式读取的每一块都走这里。
+ * 用 byte[] 而不是 String，避免在网络分块处切断多字节字符。
+ * 句柄只用于日志与错配排查：C 侧同一时刻只允许一条活动流（sendBegin 会拒绝并发）。 */
+JNIEXPORT jstring JNICALL
+Java_com_sai_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray chunk)
+{
+    sb out;
+    jstring ret;
+    jsize n;
+    unsigned char stackbuf[4096];
+
+    (void)cls;
+    sb_init(&out);
+    n = chunk ? (*env)->GetArrayLength(env, chunk) : 0;
+    if (n <= 0) {
+        if (handle_no > 0 && handle_no != g_gen.handle) reply_err(&out, "回复句柄已失效");
+        else gen_feed_data("", 0, &out);
+    } else if ((size_t)n <= sizeof(stackbuf)) {
+        (*env)->GetByteArrayRegion(env, chunk, 0, n, (jbyte *)stackbuf);
+        gen_feed_data(stackbuf, (size_t)n, &out);
+    } else {
+        jbyte *bytes = (*env)->GetByteArrayElements(env, chunk, NULL);
+        if (!bytes) {
+            reply_err(&out, "读取网络数据失败");
+        } else {
+            gen_feed_data(bytes, (size_t)n, &out);
+            (*env)->ReleaseByteArrayElements(env, chunk, bytes, JNI_ABORT);
+        }
+    }
+    ret = utf8_to_jstr(env, sb_cstr(&out));
     sb_free(&out);
     return ret;
 }
@@ -779,7 +1828,17 @@ JNIEXPORT void JNICALL
 Java_com_sai_app_Native_shutdown(JNIEnv *env, jclass cls)
 {
     (void)env; (void)cls;
-    if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }
-    if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
-    if (g_db) { aic_db_close(g_db); g_db = NULL; }
+    gen_lock();
+    if (g_gen.active) {
+        g_gen.cancel = 1;
+        if (g_eng) aic_engine_stop(g_eng);
+    }
+    gen_reset();
+    gen_unlock();
+    close_env();
+    if (g_gen_ready) {
+        sb_free(&g_gen.text);
+        sb_free(&g_gen.body);
+        g_gen_ready = 0;
+    }
 }

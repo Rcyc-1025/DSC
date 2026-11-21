@@ -20,6 +20,13 @@ public final class Native {
     /** 执行一条命令；返回的 JSON 里 ok 表示是否成功，err 是中文错误文案。 */
     public static native String call(String requestJson);
 
+    /**
+     * 三段协议中的「喂数据」：网络每读到一块字节就调一次。
+     * 用 byte[] 而不是 String，避免在网络分块处切断多字节字符（中文/emoji）。
+     * 返回 {"ok":true,"delta":"新增文本",...} 或 {"ok":false,"cancelled":true}。
+     */
+    public static native String feed(int handle, byte[] chunk);
+
     public static native void shutdown();
 
     public static JSONObject req(String cmd) {

@@ -34,7 +34,7 @@
 
 3. **基准**：`aic.exe bench` 与 `aic.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入）。
-5. **打标签**：`git tag -a v1.0.0 -m "Sai 1.0.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应；标签一旦推送不再移动。
+5. **打标签**：`git tag -a v1.1.0 -m "Sai 1.1.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应；标签一旦推送不再移动。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
 
    ```powershell
@@ -46,7 +46,7 @@
 
 7. **签名**：Windows 走 `scripts\sign_release.ps1`（本机无 `signtool` 时脚本以退出码 2 明确告知"未签名"，不要把它当成失败跳过）；Android 用 `build_android\sai.keystore` 自签名（`apksigner` 产出 v2+v3 签名）。
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
-9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[1.0.0] - 2026-11-22` 并新建空的 `[未发布]` 段。
+9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[1.1.0] - 2026-11-22` 并新建空的 `[未发布]` 段。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表 + 未实测清单（`docs/PRE-RELEASE-EVIDENCE.md` 第 9 节）。
 
 ## 产物口径与命名
@@ -56,7 +56,7 @@
 | Windows 便携包 | `Sai-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `Sai-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\Sai` |
 | Windows ARM64 便携包 | `Sai-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `Sai.apk` | arm64-v8a | `minSdk 24`、`targetSdk 34`，v2/v3 自签名 |
+| Android 安装包 | `Sai-1.1.0-android-arm64.apk`（构建产物为 `build_android\Sai.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 1.1.0`，v2/v3 自签名 |
 
 **ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。本版用本机 LLVM 23 的 `clang` +
 `lld` 加 MSYS2 `clangarm64` 的 aarch64 mingw-w64 sysroot 交叉编译出 ARM64 的 `Sai.exe`、
@@ -71,4 +71,4 @@
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/aic.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-22（对应版本 v1.0.0，含 ARM64 交叉编译产物）。
+最后更新：2026-11-22（对应版本 v1.1.0，含 ARM64 交叉编译产物）。

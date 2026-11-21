@@ -51,7 +51,7 @@ def main():
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.sai.app'" in badging, '包名 com.sai.app')
-    check("versionName='1.0.0'" in badging, '版本名 1.0.0')
+    check("versionName='1.1.0'" in badging, '版本名 1.1.0')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.sai.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')

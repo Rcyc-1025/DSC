@@ -8,9 +8,15 @@ package com.sai.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.util.TypedValue;
@@ -20,6 +26,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -27,6 +34,11 @@ import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.util.UUID;
 
 /**
  * Android 界面层：底部三栏（我 / 设置 / 聊天）+ 问答模式（会话列表 / 对话页）。
@@ -64,6 +76,26 @@ public class MainActivity extends Activity {
     private EditText input;
     private String enteredText = "";
 
+    /* 选图 / 选文件 / 权限的请求码 */
+    private static final int REQ_PICK_AVATAR = 1001;
+    private static final int REQ_PICK_IMPORT = 1002;
+    private static final int REQ_PICK_PLUGIN = 1003;
+    private static final int REQ_NOTIFY = 1004;
+
+    /* 流式生成时的界面状态：正在输出的气泡、已收到的文本、停止按钮 */
+    private boolean streaming = false;
+    private TextView liveView;
+    private final StringBuilder streamText = new StringBuilder();
+    private Button stopBtn;
+    private ScrollView chatScroll;
+
+    /** 模式切换的忙标志：切换动画期间忽略重复点击（与 router 的 switching 语义对齐）。 */
+    private long lastSwitchMs;
+
+    /** 最近一次检查到的可用更新（含下载地址/版本），以及已下载并通过校验的安装包路径。 */
+    private JSONObject updatePlan;
+    private String updateApkPath;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -78,13 +110,49 @@ public class MainActivity extends Activity {
         if (!opt(r, "ok")) {
             toast(optStr(r, "err", "初始化失败"));
         }
+        /* 主题解析要用「系统当前是不是深色」，必须在第一次 refresh 之前同步进去。 */
+        syncSystemNight();
+        Notifier.ensureChannel(this);
+        requestNotifyPermission();
         refresh();
     }
 
     @Override
     protected void onDestroy() {
+        /* 退出前中断还没结束的流，避免工作线程继续往已销毁的界面回写。 */
+        if (streaming) Net.stop();
         Native.shutdown();
         super.onDestroy();
+    }
+
+    /** 系统深色变化（含「跟随系统」时切到夜间）要立刻重新解析主题。 */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        syncSystemNight();
+        refresh();
+    }
+
+    /** 读 uiMode 里的是否夜间，交给核心层决定实际令牌（FR-17）。 */
+    private void syncSystemNight() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        boolean night = mode == Configuration.UI_MODE_NIGHT_YES;
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("night", night);
+        } catch (Exception ignored) {
+        }
+        Native.req("setSystemNight", extra);
+    }
+
+    /** Android 13 起通知是运行时权限：没有就先申请一次，拒绝后只在界面里提示。 */
+    private void requestNotifyPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (Notifier.canPost(this)) return;
+        try {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIFY);
+        } catch (Throwable ignored) {
+        }
     }
 
     /* ---------- 骨架 ---------- */
@@ -353,7 +421,43 @@ public class MainActivity extends Activity {
                 if (m != null) list.addView(bubble(m));
             }
         }
+
+        /* 生成中：放一个占位气泡，增量文本直接追加到它上面，不重建整个列表（避免闪）。 */
+        liveView = null;
+        if (streaming) {
+            final TextView tv = new TextView(this);
+            tv.setText(streamText.length() == 0 ? "正在生成…" : streamText.toString());
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            tv.setTextColor(cText);
+            tv.setPadding(dp(12), dp(9), dp(12), dp(9));
+            GradientDrawable d = new GradientDrawable();
+            d.setColor(cCard);
+            d.setCornerRadius(dp(10));
+            d.setStroke(dp(1), cDivider);
+            tv.setBackground(d);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.START);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = dp(8);
+            lp.rightMargin = dp(40);
+            row.addView(tv);
+            row.setLayoutParams(lp);
+            list.addView(row);
+            liveView = tv;
+        }
+
+        chatScroll = scroll;
         col.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (streaming) {
+            scroll.post(new Runnable() {
+                @Override
+                public void run() {
+                    scroll.fullScroll(View.FOCUS_DOWN);
+                }
+            });
+        }
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -377,21 +481,33 @@ public class MainActivity extends Activity {
         input.setPadding(dp(12), dp(8), dp(12), dp(8));
         inputRow.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        /* 生成中把「发送」换成「停止」：停止是引擎能力，必须给界面入口（FR-01）。 */
         Button send = new Button(this);
-        send.setText("发送");
+        send.setText(streaming ? "停止" : "发送");
         send.setAllCaps(false);
         send.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        styleButton(send, cPrimary, Color.WHITE);
+        styleButton(send, streaming ? cAccent : cPrimary, Color.WHITE);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         sp.leftMargin = dp(8);
-        send.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                doSend();
-            }
-        });
+        if (streaming) {
+            send.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Net.stop();
+                    toast("正在停止…");
+                }
+            });
+        } else {
+            send.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    doSend();
+                }
+            });
+        }
         inputRow.addView(send, sp);
+        stopBtn = streaming ? send : null;
         col.addView(inputRow);
 
         TextView foot = new TextView(this);
@@ -444,18 +560,25 @@ public class MainActivity extends Activity {
     }
 
     private void messageMenu(final String id) {
-        final String[] items = new String[]{"复制", "撤回（2 分钟内）", "修改"};
+        /* 生成中先给「停止」：这是用户最想按的那个键。 */
+        final String[] items = streaming
+                ? new String[]{"停止生成", "复制"}
+                : new String[]{"复制", "撤回（2 分钟内）", "修改", "重新生成"};
         new AlertDialog.Builder(this)
                 .setTitle("消息操作")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
-                        if (which == 0) {
+                        String action = items[which];
+                        if ("停止生成".equals(action)) {
+                            Net.stop();
+                            toast("正在停止…");
+                        } else if ("复制".equals(action)) {
                             android.content.ClipboardManager cm =
                                     (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                             cm.setPrimaryClip(android.content.ClipData.newPlainText("Sai", findContent(id)));
                             toast("已复制");
-                        } else if (which == 1) {
+                        } else if ("撤回（2 分钟内）".equals(action)) {
                             JSONObject extra = new JSONObject();
                             try {
                                 extra.put("id", id);
@@ -464,13 +587,32 @@ public class MainActivity extends Activity {
                             JSONObject r = Native.req("recall", extra);
                             toast(opt(r, "ok") ? "已撤回" : optStr(r, "err", "撤回失败"));
                             refresh();
-                        } else {
+                        } else if ("修改".equals(action)) {
                             editMessage(id);
+                        } else {
+                            /* 重新生成只对助手的回复有意义：核心会先给旧回复打「被替代」标记再重发。 */
+                            if (!"assistant".equals(findRole(id))) {
+                                toast("只能对自己的回复重新生成");
+                                return;
+                            }
+                            regenerate();
                         }
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /** 从当前快照里查某条消息的角色（user / assistant）。 */
+    private String findRole(String id) {
+        JSONArray msgs = st.optJSONArray("msgs");
+        if (msgs != null) {
+            for (int i = 0; i < msgs.length(); i++) {
+                JSONObject m = msgs.optJSONObject(i);
+                if (m != null && id.equals(optStr(m, "id", ""))) return optStr(m, "role", "");
+            }
+        }
+        return "";
     }
 
     private String findContent(String id) {
@@ -510,31 +652,78 @@ public class MainActivity extends Activity {
 
     private void doSend() {
         if (input == null) return;
-        String text = input.getText().toString().trim();
-        if (text.isEmpty()) return;
-        JSONObject extra = new JSONObject();
-        try {
-            extra.put("text", text);
-        } catch (Exception ignored) {
-        }
-        JSONObject r = Native.req("send", extra);
-        if (!opt(r, "ok")) {
-            toast(optStr(r, "err", "发送失败"));
+        if (streaming) {
+            toast("上一次回复还没有结束，请先停止");
             return;
         }
+        String text = input.getText().toString().trim();
+        if (text.isEmpty()) return;
         input.setText("");
         enteredText = "";
-        refresh();
-        JSONObject g = st.optJSONObject("guide");
-        if (g != null) {
-            JSONObject mark = new JSONObject();
-            try {
-                mark.put("step", "first_chat");
-                mark.put("skip", false);
-            } catch (Exception ignored) {
-            }
-            Native.req("guideMark", mark);
+        sendWithNet(text, false);
+    }
+
+    /**
+     * 三段协议发送：C 侧组装请求 → Java 流式 HTTP（工作线程）→ 增量回写 → C 侧收尾落库。
+     * 回调都在主线程，所以这里可以放心直接改视图。
+     */
+    private void sendWithNet(final String text, final boolean regen) {
+        if (streaming) {
+            toast("上一次回复还没有结束，请先停止");
+            return;
         }
+        streaming = true;
+        streamText.setLength(0);
+        refresh();
+        Net.send(this, text, regen, new Net.Listener() {
+            @Override
+            public void onDelta(String delta) {
+                streamText.append(delta);
+                if (liveView != null) liveView.setText(streamText.toString());
+                if (chatScroll != null) {
+                    chatScroll.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            chatScroll.fullScroll(View.FOCUS_DOWN);
+                        }
+                    });
+                }
+            }
+
+            @Override
+            public void onDone(JSONObject result) {
+                streaming = false;
+                liveView = null;
+                refresh();
+                toast("已生成 · " + result.optString("cost", "¥0.0000"));
+                markGuide("first_chat");
+            }
+
+            @Override
+            public void onStopped(JSONObject result) {
+                streaming = false;
+                liveView = null;
+                refresh();
+                toast("已停止生成（已收到的部分不写入记录）");
+            }
+
+            @Override
+            public void onFailed(String message, int errCode) {
+                streaming = false;
+                liveView = null;
+                refresh();
+                toast(message);
+            }
+        });
+    }
+
+    /** 重新生成最后一条回复（不追加新的用户消息）。 */
+    private void regenerate() {
+        if (streaming) {
+            toast("上一次回复还没有结束，请先停止");
+            return;
+        }
+        sendWithNet("", true);
     }
 
     /* ---------- 我 ---------- */
@@ -552,16 +741,34 @@ public class MainActivity extends Activity {
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView avatar = new TextView(this);
-        avatar.setText(shown);
-        avatar.setGravity(Gravity.CENTER);
-        avatar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        avatar.setTextColor(Color.WHITE);
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.OVAL);
-        d.setColor(cPrimary);
-        avatar.setBackground(d);
-        top.addView(avatar, new LinearLayout.LayoutParams(dp(64), dp(64)));
+        /* 有头像就用圆形裁剪的图片（FR-16），没有才退回首字占位。 */
+        String avatarRel = p == null ? "" : optStr(p, "avatarPath", "");
+        File avatarFile = avatarRel.isEmpty() ? null : new File(getFilesDir(), avatarRel);
+        View avatarView;
+        if (avatarFile != null && avatarFile.isFile()) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(AvatarUtil.loadCircle(avatarFile, dp(64)));
+            iv.setContentDescription("用户头像");
+            avatarView = iv;
+        } else {
+            TextView avatar = new TextView(this);
+            avatar.setText(shown);
+            avatar.setGravity(Gravity.CENTER);
+            avatar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+            avatar.setTextColor(Color.WHITE);
+            GradientDrawable d = new GradientDrawable();
+            d.setShape(GradientDrawable.OVAL);
+            d.setColor(cPrimary);
+            avatar.setBackground(d);
+            avatarView = avatar;
+        }
+        avatarView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pickAvatar();
+            }
+        });
+        top.addView(avatarView, new LinearLayout.LayoutParams(dp(64), dp(64)));
 
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
@@ -627,6 +834,176 @@ public class MainActivity extends Activity {
         note.setPadding(dp(4), dp(16), dp(4), dp(4));
         col.addView(note);
         return col;
+    }
+
+    /** 选一张图当头像：系统文件选择器（不需要存储权限）。 */
+    private void pickAvatar() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("image/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(i, REQ_PICK_AVATAR);
+        } catch (Exception e) {
+            toast("没有可用的图片选择器：" + e.getMessage());
+        }
+    }
+
+    /** 选一个 JSON 记录文件导入。 */
+    private void pickImportFile() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("*/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(i, REQ_PICK_IMPORT);
+        } catch (Exception e) {
+            toast("没有可用的文件选择器：" + e.getMessage());
+        }
+    }
+
+    /** 选一个插件 zip 包。 */
+    private void pickPluginFile() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("*/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(i, REQ_PICK_PLUGIN);
+        } catch (Exception e) {
+            toast("没有可用的文件选择器：" + e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        final Uri uri = data.getData();
+        if (requestCode == REQ_PICK_AVATAR) {
+            /* 解码 + 缩放 + 落盘都在工作线程做，别卡主线程。 */
+            work(new Runnable() {
+                @Override
+                public void run() {
+                    Bitmap bmp = AvatarUtil.decodeScaled(getContentResolver(), uri, AvatarUtil.MAX_EDGE);
+                    if (bmp == null) {
+                        ui(new Runnable() {
+                            @Override
+                            public void run() {
+                                toast("这张图片读不出来，换一张试试");
+                            }
+                        });
+                        return;
+                    }
+                    File dir = new File(getFilesDir(), "avatars");
+                    String name = UUID.randomUUID().toString() + ".jpg";
+                    String abs = AvatarUtil.saveJpeg(bmp, dir, name, 88);
+                    if (abs == null) {
+                        ui(new Runnable() {
+                            @Override
+                            public void run() {
+                                toast("头像保存失败");
+                            }
+                        });
+                        return;
+                    }
+                    JSONObject extra = new JSONObject();
+                    try {
+                        extra.put("path", "avatars/" + name);
+                    } catch (Exception ignored) {
+                    }
+                    final JSONObject r = Native.req("setAvatarPath", extra);
+                    ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            toast(opt(r, "ok") ? "头像已更新" : optStr(r, "err", "头像保存失败"));
+                            refresh();
+                            markGuide("profile_fill");
+                        }
+                    });
+                }
+            });
+        } else if (requestCode == REQ_PICK_IMPORT) {
+            work(new Runnable() {
+                @Override
+                public void run() {
+                    final String path = copyUriToCache(uri, "import.json");
+                    ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (path == null) {
+                                toast("读取所选文件失败");
+                                return;
+                            }
+                            askImportPolicy(path);
+                        }
+                    });
+                }
+            });
+        } else if (requestCode == REQ_PICK_PLUGIN) {
+            work(new Runnable() {
+                @Override
+                public void run() {
+                    final String path = copyUriToCache(uri, "plugin.zip");
+                    if (path == null) {
+                        ui(new Runnable() {
+                            @Override
+                            public void run() {
+                                toast("读取所选文件失败");
+                            }
+                        });
+                        return;
+                    }
+                    final JSONObject extra = new JSONObject();
+                    try {
+                        extra.put("path", path);
+                    } catch (Exception ignored) {
+                    }
+                    final JSONObject r = Native.req("pluginInstall", extra);
+                    ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            toast(opt(r, "ok")
+                                    ? "已登记插件 " + optStr(r, "name", "") + "（Android 暂不支持运行）"
+                                    : optStr(r, "err", "插件安装失败"));
+                            showPlugins();
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    /** 内容 Uri 拷到应用缓存目录，得到一条真实路径交给核心层（核心只认路径）。 */
+    private String copyUriToCache(Uri uri, String name) {
+        InputStream in = null;
+        FileOutputStream out = null;
+        try {
+            File dst = new File(getCacheDir(), name);
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) return null;
+            out = new FileOutputStream(dst);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+            return dst.getAbsolutePath();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            try {
+                if (in != null) in.close();
+                if (out != null) out.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 起一个工作线程。 */
+    private void work(final Runnable r) {
+        new Thread(r, "sai-work").start();
+    }
+
+    /** 回主线程。 */
+    private void ui(final Runnable r) {
+        runOnUiThread(r);
     }
 
     private void editProfile() {
@@ -731,6 +1108,12 @@ public class MainActivity extends Activity {
                 editPersona();
             }
         }));
+        col.addView(kvRow("模式", qaMode() ? "问答模式 · 多会话" : "聊天模式 · 单会话", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                switchMode();
+            }
+        }));
         col.addView(kvRow("页面配色", optStr(st.optJSONObject("theme"), "pref", "day"), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -755,13 +1138,13 @@ public class MainActivity extends Activity {
                 showUsage();
             }
         }));
-        col.addView(kvRow("记录导出", "JSON / Markdown / 纯文本", new View.OnClickListener() {
+        col.addView(kvRow("记录导出", "JSON / Markdown / 纯文本 · 可分享", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 chooseExport();
             }
         }));
-        col.addView(kvRow("记录导入", "校验后按冲突策略写入", new View.OnClickListener() {
+        col.addView(kvRow("记录导入", "选文件 → 按冲突策略写入", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 doImport();
@@ -774,7 +1157,7 @@ public class MainActivity extends Activity {
                 showPlugins();
             }
         }));
-        col.addView(kvRow("更新设置", "检查 / 校验 / 备份前置", new View.OnClickListener() {
+        col.addView(kvRow("更新设置", "检查 / 下载 / 安装", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showUpdate();
@@ -787,7 +1170,7 @@ public class MainActivity extends Activity {
                 showGuide();
             }
         }));
-        col.addView(kvRow("数据管理", "数据库 / 备份 / 清理", new View.OnClickListener() {
+        col.addView(kvRow("数据管理", "备份 / 恢复 / 清理", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showData();
@@ -944,109 +1327,481 @@ public class MainActivity extends Activity {
                 + "\n累计花费：" + (usage == null ? "¥0.0000" : optStr(usage, "cost", "¥0.0000"))
                 + "\n\n账户余额：" + optStr(bal, "available", "未查询")
                 + "\n" + optStr(bal, "note", "");
+        /* 超过提醒阈值 → 发系统通知（没有通知权限时只留在界面上）。 */
+        int alertCents = st.optInt("balanceAlertCents", 0);
+        long costMicros = usage == null ? 0 : usage.optLong("costMicros", 0);
+        boolean pushed = false;
+        if (alertCents > 0 && costMicros >= alertCents * 10000L) {
+            pushed = Notifier.post(this, Notifier.ID_BALANCE, "用量提醒",
+                    "累计花费 " + (usage == null ? "¥0.0000" : optStr(usage, "cost", "¥0.0000"))
+                            + "，已超过提醒阈值 ¥" + String.format(java.util.Locale.CHINA, "%.2f", alertCents / 100.0));
+        }
         new AlertDialog.Builder(this)
                 .setTitle("余额与用量")
-                .setMessage(text)
+                .setMessage(text + (pushed ? "\n\n已发送系统通知。" : ""))
                 .setPositiveButton("好", null)
                 .show();
         markGuide("balance_query");
     }
 
+    /**
+     * 问答 / 聊天双模式切换。
+     * 切换有一小段动画与路由状态迁移，期间重复点击会撞上 router 的 switching 忙状态，
+     * 所以先在界面层拦一次（也避免把 AIC_E_BUSY 当错误弹给用户）。
+     */
+    private void switchMode() {
+        if (opt(st, "switching")) {
+            toast("正在切换中，请稍候");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastSwitchMs < 400) return;
+        lastSwitchMs = now;
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("mode", qaMode() ? "chat" : "qa");
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("switchMode", extra);
+        if (!opt(r, "ok")) {
+            toast(optStr(r, "err", "切换失败"));
+            return;
+        }
+        refresh();
+        toast(qaMode() ? "已切到问答模式" : "已切到聊天模式");
+    }
+
     private void chooseExport() {
-        final String[] items = new String[]{"JSON（可导入）", "Markdown（只读）", "纯文本（只读）"};
-        final String[] kinds = new String[]{"json", "md", "txt"};
+        final String[] items = new String[]{"JSON（可再导入）", "Markdown（只读）", "纯文本（只读）"};
         new AlertDialog.Builder(this)
                 .setTitle("记录导出")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
-                        JSONObject extra = new JSONObject();
-                        try {
-                            extra.put("kind", kinds[which]);
-                        } catch (Exception ignored) {
-                        }
-                        JSONObject r = Native.req("export", extra);
-                        if (opt(r, "ok")) {
-                            new AlertDialog.Builder(MainActivity.this)
-                                    .setTitle("导出完成")
-                                    .setMessage("文件已写入：\n" + optStr(r, "path", ""))
-                                    .setPositiveButton("好", null)
-                                    .show();
-                            markGuide("record_transfer");
+                        if (which == 0) {
+                            exportJson();
                         } else {
-                            toast(optStr(r, "err", "导出失败"));
+                            exportText(which == 1 ? "md" : "txt");
                         }
                     }
                 })
                 .show();
     }
 
-    private void doImport() {
-        final EditText path = new EditText(this);
-        path.setHint("/sdcard/Android/data/…/chat_record.json");
-        final String[] policies = new String[]{"按 id 去重", "覆盖同名", "保留双方"};
+    /** JSON 导出走 transfer.h（结构与导入端完全对称），落在 exports/，导完可分享出去。 */
+    private void exportJson() {
+        final File dir = new File(getFilesDir(), "exports");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            toast("导出目录创建失败");
+            return;
+        }
+        final File dst = new File(dir, "chat_record_" + (System.currentTimeMillis() / 1000) + ".json");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("path", dst.getAbsolutePath());
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("exportJson", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "导出失败"));
+                            return;
+                        }
+                        markGuide("record_transfer");
+                        askShare("导出完成", dst);
+                    }
+                });
+            }
+        });
+    }
+
+    /** Markdown / 纯文本导出（只读，走旧的 export 命令）。IO 也在工作线程。 */
+    private void exportText(final String kind) {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("kind", kind);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("export", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "导出失败"));
+                            return;
+                        }
+                        markGuide("record_transfer");
+                        String path = optStr(r, "path", "");
+                        askShare("导出完成", new File(path));
+                    }
+                });
+            }
+        });
+    }
+
+    /** 应用私有目录外部读不到，导完统一给一个「分享」出口（走 FileProvider）。 */
+    private void askShare(String title, final File file) {
         new AlertDialog.Builder(this)
-                .setTitle("记录导入")
-                .setMessage("先校验格式与校验和，再按冲突策略在一个事务里写入；失败整体回滚。")
-                .setView(path)
-                .setPositiveButton("下一步", new android.content.DialogInterface.OnClickListener() {
+                .setTitle(title)
+                .setMessage(file.getAbsolutePath())
+                .setPositiveButton("分享 / 发送", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
-                        final String p = path.getText().toString().trim();
-                        new AlertDialog.Builder(MainActivity.this)
-                                .setTitle("冲突策略")
-                                .setItems(policies, new android.content.DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(android.content.DialogInterface d2, int w2) {
-                                        JSONObject extra = new JSONObject();
-                                        try {
-                                            extra.put("path", p);
-                                            extra.put("policy", w2);
-                                        } catch (Exception ignored) {
-                                        }
-                                        JSONObject r = Native.req("import", extra);
-                                        if (opt(r, "ok")) {
-                                            toast("导入完成：会话 +" + r.optInt("convAdded", 0)
-                                                    + "，消息 +" + r.optInt("msgAdded", 0));
-                                            markGuide("record_transfer");
-                                        } else {
-                                            toast(optStr(r, "err", "导入失败"));
-                                        }
-                                        refresh();
-                                    }
-                                })
-                                .show();
+                        shareFile(file);
+                    }
+                })
+                .setNegativeButton("好", null)
+                .show();
+    }
+
+    private void shareFile(File file) {
+        if (file == null || !file.isFile()) {
+            toast("文件不存在：" + (file == null ? "" : file.getAbsolutePath()));
+            return;
+        }
+        try {
+            Uri uri = SaiFileProvider.uriFor(this, file);
+            String name = file.getName().toLowerCase();
+            String type = "application/octet-stream";
+            if (name.endsWith(".json")) type = "application/json";
+            else if (name.endsWith(".md")) type = "text/markdown";
+            else if (name.endsWith(".txt")) type = "text/plain";
+            else if (name.endsWith(".zip")) type = "application/zip";
+            else if (name.endsWith(".apk")) type = "application/vnd.android.package-archive";
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType(type);
+            i.putExtra(Intent.EXTRA_STREAM, uri);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i, "分享 " + file.getName()));
+        } catch (Exception e) {
+            toast("分享失败：" + e.getMessage());
+        }
+    }
+
+    private void doImport() {
+        new AlertDialog.Builder(this)
+                .setTitle("记录导入")
+                .setMessage("选一个 Sai 导出的 JSON 记录文件。先校验格式，再按冲突策略在一个事务里写入；失败整体回滚。")
+                .setPositiveButton("选文件", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        pickImportFile();
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    private void showPlugins() {
-        JSONArray arr = st.optJSONArray("threads");
-        JSONObject plugins = st.optJSONObject("plugins");
+    /** 选完文件后问冲突策略，再在工作线程里导入。 */
+    private void askImportPolicy(final String path) {
+        final String[] policies = new String[]{"按 id 去重", "覆盖同名", "保留双方"};
         new AlertDialog.Builder(this)
-                .setTitle("插件")
-                .setMessage("已安装 " + (plugins == null ? 0 : plugins.optInt("total", 0)) + " 个，启用 "
-                        + (plugins == null ? 0 : plugins.optInt("enabled", 0)) + " 个。\n\n"
-                        + "插件是原生动态库（.so），跑在独立进程里：崩溃或超时只终止插件进程并自动禁用，主程序继续。\n"
-                        + "Android 端的插件安装入口在后续版本开放，Windows 端已支持 zip 导入。")
-                .setPositiveButton("好", null)
+                .setTitle("冲突策略")
+                .setItems(policies, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        final int policy = which;
+                        work(new Runnable() {
+                            @Override
+                            public void run() {
+                                JSONObject extra = new JSONObject();
+                                try {
+                                    extra.put("path", path);
+                                    extra.put("policy", policy);
+                                } catch (Exception ignored) {
+                                }
+                                final JSONObject r = Native.req("importJson", extra);
+                                ui(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (!opt(r, "ok")) {
+                                            toast(optStr(r, "err", "导入失败"));
+                                            return;
+                                        }
+                                        toast("导入完成：会话 +" + r.optInt("convAdded", 0)
+                                                + "，消息 +" + r.optInt("msgAdded", 0));
+                                        markGuide("record_transfer");
+                                        refresh();
+                                    }
+                                });
+                            }
+                        });
+                    }
+                })
+                .setNegativeButton("取消", null)
                 .show();
     }
 
-    private void showUpdate() {
-        new AlertDialog.Builder(this)
-                .setTitle("更新设置")
-                .setMessage("流程：检查清单 → 校验版本 → 下载（断点续传）→ 校验签名与 SHA-256 → 备份前置 → 迁移。\n\n"
-                        + "本次发布只提供「检测 / 下载 / 校验」的测试路径，不执行真实安装；备份不成功会中止更新并保留用户数据。")
-                .setPositiveButton("好", new android.content.DialogInterface.OnClickListener() {
+    /** 插件清单管理。Android 没有可用的进程隔离环境，所以只能登记与开关，不能真的运行。 */
+    private void showPlugins() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("pluginList");
+                ui(new Runnable() {
                     @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        markGuide("update_guard");
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "读取插件清单失败"));
+                            return;
+                        }
+                        JSONArray items = r.optJSONArray("items");
+                        final java.util.List<String> labels = new java.util.ArrayList<String>();
+                        final java.util.List<String> ids = new java.util.ArrayList<String>();
+                        if (items != null) {
+                            for (int i = 0; i < items.length(); i++) {
+                                JSONObject p = items.optJSONObject(i);
+                                if (p == null) continue;
+                                ids.add(optStr(p, "id", ""));
+                                labels.add((p.optBoolean("enabled", false) ? "✓ " : "○ ")
+                                        + optStr(p, "name", optStr(p, "id", "未命名"))
+                                        + " v" + optStr(p, "version", ""));
+                            }
+                        }
+                        labels.add("＋ 安装插件（选 zip）");
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("插件")
+                                .setMessage(optStr(r, "procNote", "Android 暂不支持插件运行，仅可管理清单"))
+                                .setItems(labels.toArray(new String[labels.size()]),
+                                        new android.content.DialogInterface.OnClickListener() {
+                                            @Override
+                                            public void onClick(android.content.DialogInterface d, int which) {
+                                                if (which == ids.size()) {
+                                                    pickPluginFile();
+                                                } else {
+                                                    pluginActions(ids.get(which));
+                                                }
+                                            }
+                                        })
+                                .setNegativeButton("关闭", null)
+                                .show();
+                    }
+                });
+            }
+        });
+    }
+
+    /** 单个插件的启用 / 停用 / 卸载。 */
+    private void pluginActions(final String id) {
+        final String[] acts = new String[]{"启用（仅登记）", "停用", "卸载"};
+        new AlertDialog.Builder(this)
+                .setTitle(id)
+                .setItems(acts, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, final int which) {
+                        work(new Runnable() {
+                            @Override
+                            public void run() {
+                                JSONObject extra = new JSONObject();
+                                final JSONObject r;
+                                try {
+                                    extra.put("id", id);
+                                    if (which == 2) {
+                                        extra.put("keepData", false);
+                                        r = Native.req("pluginUninstall", extra);
+                                    } else {
+                                        extra.put("enabled", which == 0);
+                                        r = Native.req("pluginSetEnabled", extra);
+                                    }
+                                } catch (Exception e) {
+                                    ui(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            toast("操作失败：" + e.getMessage());
+                                        }
+                                    });
+                                    return;
+                                }
+                                ui(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        toast(opt(r, "ok") ? "已更新插件清单" : optStr(r, "err", "操作失败"));
+                                        showPlugins();
+                                    }
+                                });
+                            }
+                        });
                     }
                 })
+                .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /**
+     * 更新设置：清单地址可改，检查与下载走 Java 的 HttpURLConnection，
+     * 版本判定 / SHA-256 / 备份前置都由核心层负责，安装交给系统安装器。
+     */
+    private void showUpdate() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        TextView tip = new TextView(this);
+        tip.setText("流程：检查清单 → 校验版本 → 下载 → 校验 SHA-256 → 备份前置 → 交系统安装器。\n安装前需要先做一次备份（数据管理 → 立即备份）。");
+        tip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        tip.setTextColor(cSub);
+        box.addView(tip);
+
+        final EditText url = new EditText(this);
+        url.setHint("https://…/update.json");
+        url.setText(optStr(st, "updateManifestUrl", ""));
+        url.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        box.addView(url);
+
+        Button check = new Button(this);
+        check.setText("保存地址并检查更新");
+        check.setAllCaps(false);
+        styleButton(check, cPrimary, Color.WHITE);
+        box.addView(check);
+
+        Button dl = new Button(this);
+        dl.setText("下载已发现的更新");
+        dl.setAllCaps(false);
+        styleButton(dl, cCard, cText);
+        box.addView(dl);
+
+        Button ins = new Button(this);
+        ins.setText("安装已下载的包");
+        ins.setAllCaps(false);
+        styleButton(ins, cCard, cText);
+        box.addView(ins);
+
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("更新设置")
+                .setView(box)
+                .setNegativeButton("关闭", null)
+                .create();
+
+        check.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String u = url.getText().toString().trim();
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("url", u);
+                } catch (Exception ignored) {
+                }
+                Native.req("setUpdateManifestUrl", extra);
+                checkUpdate(u);
+                refresh();
+            }
+        });
+        dl.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (updatePlan == null) {
+                    toast("先检查更新，确认有可用版本");
+                    return;
+                }
+                downloadUpdate();
+            }
+        });
+        ins.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                installUpdate();
+            }
+        });
+        dlg.show();
+    }
+
+    private void checkUpdate(String url) {
+        toast("正在检查更新…");
+        Updater.check(this, url, "1.0.0", new Updater.Cb() {
+            @Override
+            public void onResult(JSONObject r) {
+                if (!opt(r, "ok")) {
+                    toast(optStr(r, "err", "检查失败"));
+                    return;
+                }
+                String status = optStr(r, "status", "");
+                String msg;
+                if ("available".equals(status)) {
+                    updatePlan = r;
+                    String ver = optStr(r, "targetVersion", "");
+                    msg = "发现新版本 " + ver + "（当前 " + optStr(r, "currentVersion", "1.0.0") + "）"
+                            + (r.optBoolean("mandatory", false) ? "\n强制更新" : "")
+                            + "\n\n" + optStr(r, "notes", "");
+                    /* 有可用更新 → 系统通知（没有通知权限时退回界面提示）。 */
+                    Notifier.post(MainActivity.this, Notifier.ID_UPDATE, "Sai 有新版本 " + ver, "点开查看更新说明");
+                } else if ("up_to_date".equals(status)) {
+                    updatePlan = null;
+                    msg = "已是最新版本（" + optStr(r, "currentVersion", "1.0.0") + "）";
+                } else if ("skipped".equals(status)) {
+                    msg = "该版本已被跳过";
+                } else if ("too_old".equals(status)) {
+                    msg = "清单要求的最低版本高于当前版本，请先升级到较新版本：" + optStr(r, "targetVersion", "");
+                } else {
+                    msg = "清单无效：" + optStr(r, "err", optStr(r, "status", "未知原因"));
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("检查结果")
+                        .setMessage(msg)
+                        .setPositiveButton("好", null)
+                        .show();
+                refresh();
+            }
+
+            @Override
+            public void onError(String message) {
+                toast(message);
+            }
+        });
+    }
+
+    private void downloadUpdate() {
+        toast("正在下载…");
+        Updater.download(this, updatePlan, new Updater.Cb() {
+            @Override
+            public void onResult(JSONObject r) {
+                if (!opt(r, "ok")) {
+                    updateApkPath = null;
+                    toast(optStr(r, "err", "下载或校验失败"));
+                    return;
+                }
+                updateApkPath = optStr(r, "path", "");
+                String sha = optStr(r, "sha256", "");
+                toast("下载完成，SHA-256 校验通过" + (sha.isEmpty() ? "" : "（" + sha.substring(0, Math.min(12, sha.length())) + "…）"));
+                refresh();
+            }
+
+            @Override
+            public void onError(String message) {
+                toast(message);
+            }
+        });
+    }
+
+    private void installUpdate() {
+        if (updateApkPath == null || updateApkPath.isEmpty()) {
+            toast("还没有下载好的安装包");
+            return;
+        }
+        if (!opt(st, "hasBackup")) {
+            new AlertDialog.Builder(this)
+                    .setTitle("需要先备份")
+                    .setMessage("核心层要求更新前有可用的备份。现在做一次备份？")
+                    .setPositiveButton("立即备份", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int which) {
+                            doBackup();
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+            return;
+        }
+        String err = Updater.install(this, updateApkPath, true);
+        if (err != null) toast(err);
+        else markGuide("update_guard");
     }
 
     private void showGuide() {
@@ -1078,19 +1833,162 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** 数据管理：备份 / 列表 / 恢复 / 清理。zip 打包解包是纯 C 实现，但仍放工作线程跑。 */
     private void showData() {
+        final String[] items = new String[]{"立即备份", "查看备份列表", "从备份恢复", "清理旧备份（保留 5 份）"};
         new AlertDialog.Builder(this)
                 .setTitle("数据管理")
-                .setMessage("数据库：app 私有目录 db/aic.db（写入走事务）\n备份：更新与迁移前自动写入 backups/。\n导出：exports/。\n"
-                        + "卸载时默认保留用户数据；清理功能在后续版本开放。")
-                .setPositiveButton("好", null)
+                .setMessage("数据库：db/aic.db\n备份目录：backups/\n导出目录：exports/\n\n备份包内含数据库、头像与插件清单，可整体恢复。")
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        if (which == 0) {
+                            doBackup();
+                        } else if (which == 1) {
+                            showBackupList();
+                        } else if (which == 2) {
+                            showBackupList();
+                        } else {
+                            cleanBackup();
+                        }
+                    }
+                })
+                .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    private void doBackup() {
+        toast("正在备份…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("version", "1.0.0");
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("backupCreate", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "备份失败"));
+                            return;
+                        }
+                        toast("已备份 " + optStr(r, "name", "") + "（" + r.optInt("fileCount", 0) + " 个文件）");
+                        refresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private void showBackupList() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("backupList");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "读取备份列表失败"));
+                            return;
+                        }
+                        JSONArray items = r.optJSONArray("items");
+                        if (items == null || items.length() == 0) {
+                            toast("还没有备份文件，先点「立即备份」");
+                            return;
+                        }
+                        final String[] labels = new String[items.length()];
+                        final String[] paths = new String[items.length()];
+                        for (int i = 0; i < items.length(); i++) {
+                            JSONObject it = items.optJSONObject(i);
+                            paths[i] = optStr(it, "path", "");
+                            labels[i] = optStr(it, "name", "备份")
+                                    + " · " + optStr(it, "createdAt", "").replace("T", " ").replace("Z", "")
+                                    + (it != null && it.optBoolean("readable", true) ? "" : "（无法读取）");
+                        }
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("备份列表（点一项可恢复）")
+                                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                                    @Override
+                                    public void onClick(android.content.DialogInterface d, int which) {
+                                        confirmRestore(paths[which]);
+                                    }
+                                })
+                                .setNegativeButton("关闭", null)
+                                .show();
+                    }
+                });
+            }
+        });
+    }
+
+    private void confirmRestore(final String zip) {
+        new AlertDialog.Builder(this)
+                .setTitle("从备份恢复")
+                .setMessage("恢复会关闭当前数据库连接、替换 db / avatars / plugins，然后重新初始化。\n当前未备份的改动会丢失，确定继续？")
+                .setPositiveButton("恢复", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        doRestore(zip);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doRestore(final String zip) {
+        toast("正在恢复…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("zip", zip);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("backupRestore", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast(opt(r, "ok") ? "已恢复备份" : optStr(r, "err", "恢复失败"));
+                        refresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private void cleanBackup() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("keep", 5);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("backupClean", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast(opt(r, "ok")
+                                ? "已清理 " + r.optInt("removed", 0) + " 个旧备份"
+                                : optStr(r, "err", "清理失败"));
+                        refresh();
+                    }
+                });
+            }
+        });
     }
 
     private void toggleMotion() {
         JSONObject extra = new JSONObject();
         try {
-            extra.put("on", motion("reduced") == 1);
+            /* on = 是否减少动效；原来是 reduced==1 传反了（点一次没变化）。 */
+            extra.put("on", motion("reduced") != 1);
         } catch (Exception ignored) {
         }
         JSONObject r = Native.req("setMotion", extra);

@@ -24,17 +24,17 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，1.1.0） | 1468849 | e9c971231613a7b8ae40141e2b5961e7f33251710a5b9e7ca2630b07398383ff |
+| build\Sai.exe（Windows 界面，1.1.0） | 1468849 | a6107db2efb3e7235843bbc7934774734e15928d08110955fe9f7354c233c680 |
 | build\aic.exe（验收/基准/采样/自检 CLI） | 1445485 | 270c33d1bcfc2177e0f4d5275182973497bb03d16e99c570d5c6d081f34e2d27 |
 | build\aic_plugin_host.exe（插件宿主） | 40036 | 994e264123d0c2ccdfac6afc998f4787f7789689eb871d1c19002f20c00a9513 |
 | build\test_core.exe（单元测试） | 1499486 | 76ffa742a5e4f93738ce6840513e2993f45ae821ceadc09c8b512dee41c51cbb |
-| build_android\Sai.apk | 待本轮 Android 构建后回填 | 待回填 |
-| dist\Sai-1.1.0-win-x64-portable.zip | 1477974 | 0e378ae2a55231923f3c29522bcb1b0fc7528ce43cdebc75fdd012c7d0589f72 |
-| dist\Sai-1.1.0-win-x64-setup.exe | 3628059 | de7191c83d82e9de3917cc275d3528e5b5d161c1b85763fb60bf69d2074be01c |
+| build_android\Sai.apk | 778702 | dbbc1bcf69b8364661f0a1b210f7fc3f1c937cb757943774467589f85c42c129 |
+| dist\Sai-1.1.0-win-x64-portable.zip | 1477967 | be18cc2b99ab0bcb3b97b2ceddc27deaee6c83931c120ab1b4acad29f40fa139 |
+| dist\Sai-1.1.0-win-x64-setup.exe | 3628039 | fc00d37719bd4e36d42e4e3de0ed6410f171c2ba6b5478319ee66a76c7597863 |
 | build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1413120 | 57547073fcbf010d9c8839adcfcd7eb3202b2b659956ab369e8bf74d750ba613 |
 | build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 398d264d3d459826ac30624535ed8f9878706406d1ab8701f9e107823b6f6151 |
 | build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 013b27abcfde399e955dff6c6c415e3c37ce9c8d19b1b12b98bc6da013bd49e0 |
-| dist\Sai-1.1.0-win-arm64-portable.zip | 830265 | d06b2eddb9b8987d9c8340f279920d9dc8f34ecf2f3c4ca5bd133b4a7d968a0c |
+| dist\Sai-1.1.0-win-arm64-portable.zip | 830259 | eac4d98f57fb1b463a1167694ff1cbb970f0d5c46afb65dace7b93d89a8e5cf9 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -117,12 +117,36 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 
 实测 18 项全部通过：
 
-- APK 0.7 MB（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so；
-- libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call，静态含 SQLite；
-- 清单：包名 com.sai.app、versionName 1.0.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
+- APK 778702 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so；
+- libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call 与
+  Java_com_sai_app_Native_feed（1.1.0 新增的三段协议喂数据入口），静态含 SQLite；
+- 清单：包名 com.sai.app、versionName 1.1.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
   native-code arm64-v8a、应用名「Sai」；
 - apksigner 校验通过（v2 + v3 方案），自签证书 CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN，
   证书 SHA-256 摘要 12a010a148db13c75484c5167fb3011fc735c594d4f6c19861d5b00289832897（证书 DN 已随改名变更为 CN=Sai, O=Sai）。
+
+### 7.1 Android 1.1.0 的功能补齐（实现位置，非实测）
+
+1.1.0 把桌面侧补齐的能力在 Android 上对齐了一遍，实现全在 `android/`（核心层零改动）：
+
+| 功能 | 桥命令（`android/app/src/main/cpp/aic_jni.c`） | Java 侧 |
+| --- | --- | --- |
+| 真实网络三段协议（流式） | `sendBegin` / `feed`（Native.feed）/ `sendEnd` / `sendFail` | `Net.java`（HttpURLConnection 流式读入 byte[] 喂 JNI） |
+| 停止生成 | `stop`（置取消位 + `aic_engine_stop`） | `Net.stop` 先停 C 侧再 `disconnect`，发送按钮变「停止」 |
+| 重新生成 | `regenerate`（`aic_msg_last_assistant` + `aic_msg_supersede`） | `MainActivity.regenerate`、消息长按菜单 |
+| 头像选择与圆形显示 | `setAvatarPath`（`aic_is_local_relative_path` + 存在性校验） | `AvatarUtil`：inSampleSize 预缩放 → 最长边 512 → JPEG 落盘 → BitmapShader 圆形 |
+| 跟随系统深色 | `setSystemNight`；`put_theme` 改为 `aic_theme_resolve(pref, g_system_night)` | `onConfigurationChanged` 读 `uiMode` |
+| 余额/更新系统通知 | 余额阈值由 state 的 `balanceAlertCents` 提供 | `Notifier.java`（渠道 `sai_reminder`，Android 13+ 先查权限） |
+| 更新检查 / 下载 / 安装 | `checkUpdate` / `downloadUpdate`（`aic_update_verify_file`）/ `installUpdate`（`aic_update_can_apply` + 二次校验） | `Updater.java`（FileProvider + 系统安装器） |
+| 备份 / 恢复 / 清理、导出 / 导入 | `backupCreate` / `backupList` / `backupRestore` / `backupClean`；`exportJson` / `importJson` | `MainActivity.showData` / `doBackup` / `doRestore` / `exportJson` / `doImport` |
+| 插件清单管理 | `pluginList` / `pluginInstall`（`aic_zip_extract` → `aic_plugin_install`）/ `pluginSetEnabled` / `pluginUninstall` | `showPlugins` / `pluginActions` |
+| 线程模型 | — | `work()` / `ui()` 两个辅助：网络在 `Net` 守护线程、导入导出/插件/备份/更新在工作线程，刷新一律回 UI |
+
+**Android 侧的诚实边界**（都写进了 `docs/DESIGN.md` 第 12 节）：
+- 没有真机/模拟器运行过，上述 Java 路径只做过编译与结构校验；C 侧三段协议另有主机侧复刻测试（22 条断言，
+  覆盖 1 字节分块切在中文中间、usage 解析、`supersede`、鉴权错误分类）。
+- 插件进程隔离在 Android 不可用（`pluginProcAvailable=0`），界面如实提示「仅可管理清单」。
+- 余额仍是本地账本口径；头像未读 EXIF 方向；系统对话框外观不随深色主题切换。
 
 ## 8. 便携包可独立运行
 
@@ -157,8 +181,8 @@ pe_imports 自检显示只导入系统 DLL）。实测：
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
 
-      Sai Setup 1.0.0
-      time=2026-11-22 00:54:54
+      Sai Setup 1.1.0
+      time=2026-11-22 04:41:06
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，4 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
