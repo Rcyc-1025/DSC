@@ -36,6 +36,7 @@
 | `Sai-1.1.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
 | `Sai-1.1.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
 | `Sai-1.1.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `Sai-1.1.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 | `Sai.apk` | Android arm64-v8a（minSdk 24） |
 
 每个包都附同名 `.sha256`。

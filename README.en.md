@@ -29,6 +29,17 @@ Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs
 | `tools` | Packaging and screenshot helper scripts |
 | `plugins` | Sample plugin |
 
+## Download
+
+Prebuilt packages are attached to [Releases](https://github.com/Rcyc-1025/Sai/releases/latest):
+
+| File | What it is |
+| --- | --- |
+| `Sai-1.1.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
+| `Sai-1.1.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `Sai-1.1.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `Sai-1.1.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+
 ## Build
 
 Requirements: Windows 10/11 x64 with a MinGW-w64 (MSYS2 ucrt64) toolchain. No MSVC, no CMake, and no interpreter runtime is needed by the shipped binaries.
