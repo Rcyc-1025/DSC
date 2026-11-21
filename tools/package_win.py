@@ -124,7 +124,7 @@ def main():
     if os.path.isfile(dll):
         copy(dll, 'plugins/sample_basic/sample_basic.dll')
 
-    for doc in ['README.md', 'ADVANCED.md', 'PLUGIN.md', 'FR-MATRIX.md']:
+    for doc in ['README.md', 'ADVANCED.md', 'PLUGIN.md', 'FR-MATRIX.md', 'DESIGN.md', 'PRE-RELEASE-EVIDENCE.md']:
         src = os.path.join(ROOT, 'docs', doc) if doc != 'README.md' else os.path.join(ROOT, 'README.md')
         if os.path.isfile(src):
             copy(src, 'docs/' + doc)

@@ -23,7 +23,7 @@
 | build\aic_plugin_host.exe（插件宿主） | 40036 | 8ae86300ae8f5b0b602b05b98dfde2d1ac4e86553d7092b1cda2c8e038b0c55a |
 | build\test_core.exe（单元测试） | 1432923 | b6a3d116f32a4047bdec3d5c03feeb41abfa67abea7b0f0e05cd1fa707c775eb |
 | build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
-| dist\AIChat-1.0.0-win-x64-portable.zip | 1396081 | 8a51cadded36a456fbd638ba231783b802c9e9fa995adcf147a1c1d587c47b33 |
+| dist \AIChat-1.0.0-win-x64-portable.zip | 见同名 .sha256 文件（zip 不能包含自己的哈希） |
 
 ## 3. 单元测试（核心层）
 
