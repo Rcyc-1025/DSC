@@ -6,14 +6,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 优先用本机固定位置的 MSYS2 ucrt64；找不到就退回 PATH 里的 gcc（CI 里由 setup-msys2 提供）。
 $Mingw = 'D:\Code\msys2ucrt\ucrt64\bin'
-$env:PATH = $Mingw + ';' + $env:PATH
+if (Test-Path $Mingw) { $env:PATH = $Mingw + ';' + $env:PATH }
 $env:TMP = Join-Path $Root 'build\tmp'
 $env:TEMP = $env:TMP
 New-Item -ItemType Directory -Force -Path $env:TMP | Out-Null
 $Obj = Join-Path $Root 'build\obj'
 New-Item -ItemType Directory -Force -Path $Obj | Out-Null
-$Gcc = Join-Path $Mingw 'gcc.exe'
+$Gcc = if (Test-Path (Join-Path $Mingw 'gcc.exe')) { Join-Path $Mingw 'gcc.exe' } else { 'gcc.exe' }
 
 $Inc = @('-I', (Join-Path $Root 'src\core'), '-I', (Join-Path $Root 'src\platform\win'), '-I', (Join-Path $Root 'third_party\sqlite'))
 $Cflags = @('-std=c11', '-O2', '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-missing-field-initializers')
