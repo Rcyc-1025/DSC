@@ -1,0 +1,139 @@
+/* theme.c —— 主题令牌与动效参数。 */
+#include "theme.h"
+
+#include <math.h>
+#include <string.h>
+
+static const aic_theme g_day = {
+    0, "day",
+    {
+        0xF5F6F8, /* PAGE_BG */
+        0xFFFFFF, /* CARD_BG */
+        0x1F2329, /* TEXT */
+        0x646A73, /* TEXT_SECONDARY */
+        0xE5E6EB, /* DIVIDER */
+        0x2F6BFF, /* PRIMARY */
+        0xFF8A00, /* ACCENT */
+        0x1F9D55, /* SUCCESS */
+        0xB26B00, /* WARNING */
+        0xD93025  /* DANGER */
+    }
+};
+
+static const aic_theme g_night = {
+    1, "night",
+    {
+        0x16181C, /* PAGE_BG */
+        0x202329, /* CARD_BG */
+        0xE8EAED, /* TEXT */
+        0x9AA0A6, /* TEXT_SECONDARY */
+        0x33373D, /* DIVIDER */
+        0x5B8CFF, /* PRIMARY */
+        0xFFA733, /* ACCENT */
+        0x4CC38A, /* SUCCESS */
+        0xE0A030, /* WARNING */
+        0xFF6B5F  /* DANGER */
+    }
+};
+
+const aic_theme *aic_theme_day(void) { return &g_day; }
+const aic_theme *aic_theme_night(void) { return &g_night; }
+
+const aic_theme *aic_theme_resolve(int pref, int system_night)
+{
+    if (pref == 0) return &g_day;
+    if (pref == 1) return &g_night;
+    return system_night ? &g_night : &g_day;
+}
+
+const char *aic_token_name(aic_token t)
+{
+    switch (t) {
+    case AIC_TOK_PAGE_BG:        return "page_bg";
+    case AIC_TOK_CARD_BG:        return "card_bg";
+    case AIC_TOK_TEXT:           return "text";
+    case AIC_TOK_TEXT_SECONDARY: return "text_secondary";
+    case AIC_TOK_DIVIDER:        return "divider";
+    case AIC_TOK_PRIMARY:        return "primary";
+    case AIC_TOK_ACCENT:         return "accent";
+    case AIC_TOK_SUCCESS:        return "success";
+    case AIC_TOK_WARNING:        return "warning";
+    case AIC_TOK_DANGER:         return "danger";
+    default:                     return "unknown";
+    }
+}
+
+unsigned int aic_theme_color(const aic_theme *th, aic_token t)
+{
+    if (!th || (int)t < 0 || (int)t >= AIC_TOK_COUNT) return 0;
+    return th->color[t];
+}
+
+/* WCAG 2.x 相对亮度：先做 sRGB 反伽马，再按 0.2126/0.7152/0.0722 加权。 */
+static double srgb_to_linear(double v)
+{
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+static double rel_lum(unsigned int rgb)
+{
+    double r = srgb_to_linear((double)((rgb >> 16) & 0xFF) / 255.0);
+    double g = srgb_to_linear((double)((rgb >> 8) & 0xFF) / 255.0);
+    double b = srgb_to_linear((double)(rgb & 0xFF) / 255.0);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+int aic_theme_contrast(unsigned int fg, unsigned int bg)
+{
+    double l1 = rel_lum(fg);
+    double l2 = rel_lum(bg);
+    if (l1 < l2) { double t = l1; l1 = l2; l2 = t; }
+    double ratio = (l1 + 0.05) / (l2 + 0.05);
+    return (int)(ratio * 100.0 + 0.5);
+}
+
+int aic_theme_contrast_ok(unsigned int fg, unsigned int bg, int min_x100)
+{
+    return aic_theme_contrast(fg, bg) >= min_x100 ? 1 : 0;
+}
+
+int aic_theme_audit(const aic_theme *th)
+{
+    if (!th) return 1;
+    int bad = 0;
+    /* 正文与次要文字要过 4.5:1（次要文字用在卡片上）。 */
+    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT], th->color[AIC_TOK_PAGE_BG], 450)) bad++;
+    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT], th->color[AIC_TOK_CARD_BG], 450)) bad++;
+    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT_SECONDARY], th->color[AIC_TOK_CARD_BG], 450)) bad++;
+    /* 关键按钮（主色底 + 白字）至少 3:1。 */
+    if (!aic_theme_contrast_ok(0xFFFFFF, th->color[AIC_TOK_PRIMARY], 300)) bad++;
+    return bad;
+}
+
+aic_motion aic_motion_default(void)
+{
+    aic_motion m;
+    m.mode_switch_ms = 220;
+    m.tab_switch_ms = 180;
+    m.subpage_ms = 200;
+    m.overlay_ms = 160;
+    m.message_ms = 140;
+    m.toast_ms = 120;
+    m.reduced = 0;
+    m.easing_enter = "ease-out";
+    m.easing_switch = "ease-in-out";
+    return m;
+}
+
+aic_motion aic_motion_reduced(void)
+{
+    aic_motion m = aic_motion_default();
+    m.mode_switch_ms = 0;
+    m.tab_switch_ms = 0;
+    m.subpage_ms = 0;
+    m.overlay_ms = 0;
+    m.message_ms = 0;
+    m.toast_ms = 0;
+    m.reduced = 1;
+    return m;
+}

@@ -1,0 +1,37 @@
+# 构建产物
+build/
+obj/
+*.o
+*.a
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# 运行期数据
+*.db
+*.db-wal
+*.db-shm
+shotsdata/
+verify/
+bench/
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
+
+# 证书与签名材料（本地生成，不入库）
+*.pfx
+*.cer
+*.keystore
+*.jks
+
+# 发布产物与本地打包目录
+dist/
+build_android/
+*.bmp

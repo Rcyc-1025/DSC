@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    name: Windows (MinGW-w64 ucrt64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 MSYS2 与 MinGW-w64 工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: 编译单元测试
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+          powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target test
+
+      - name: 运行单元测试
+        shell: pwsh
+        run: |
+          .\build\test_core.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 编译命令行验收器
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+          powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
+
+      - name: 逐条需求验收（FR-01 ~ FR-24）
+        shell: pwsh
+        run: |
+          .\build\aic.exe verify . build\verify
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 编译桌面客户端
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+          powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
+
+      - name: 归档产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: aichat-windows
+          path: |
+            build\AIChat.exe
+            build\aic.exe
+            docs\FR-MATRIX.md

@@ -1,0 +1,13 @@
+{
+  "id": "sample_basic",
+  "name": "示例插件：提示词片段",
+  "version": "1.0.0",
+  "author": "AIChat",
+  "entry": "sample_basic.dll",
+  "permissions": [
+    "prompt.fragment"
+  ],
+  "extension_points": [
+    "prompt.fragment"
+  ]
+}
