@@ -21,12 +21,16 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\AIChat.exe（Windows 界面） | 1411346 | 1b54e556ea2274460ef74f401806f4386f290adf12659f30621f3c5385905456 |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | 3d0b9f12a16755fe3210c49861fb3d6dd1e857f55d94c283859914bcb4b7fd5d |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | d340e2561f0ffc165140579e96b36e5c48ccf467d15e47e4bae89a4a38dd5069 |
-| build\test_core.exe（单元测试） | 1439754 | 5476228be54a99320fcac5ef34cb6dcdbdcbb282effd02a1e1127b38177adb45 |
+| build\AIChat.exe（Windows 界面） | 1411346 | 4a2b5c93cebbdda1d5a1524678f13808c4e49608c9d2e5e88c847f88cec548be |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | d53ff5f173132947ef9e947904b697f019e5788240414ed55d2c1c8ca5232c7d |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 703336c098dc1bc2c9d05b7890ef455203de5b96ff3f64ffc15095ae4f071d06 |
+| build\test_core.exe（单元测试） | 1441012 | 1bc6d6732ab48dc134adce7b9a6e35856099c4788e95bebf98f9e076788c480f |
 | build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
-| dist \AIChat-1.0.0-win-x64-portable.zip | 见同名 .sha256 文件（zip 不能包含自己的哈希） |
+| dist\AIChat-1.0.0-win-x64-portable.zip | 1426460 | 806ed1f156cfeee9d60ea04e7248a3ed2e252c4b00b9eb7bea20f5f22a8bf545 |
+| dist\AIChat-1.0.0-win-x64-setup.exe | 3508462 | 9e1864ef8da65260016a551a74053259c4fef5611fe16d0a08579eab6879b0f5 |
+
+（便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
+现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
 
 ## 3. 单元测试（核心层）
 
@@ -66,8 +70,8 @@ FR-22 九步指南可完成、可跳过、可重置。
 
     build\aic.exe perf
 
-本机实测输出（rss_ok=true）：rss_kb 6236（6.09 MB）、frame_budget_ms 16.7、db_bytes 4096、
-wal_bytes 139920、storage_kb 140、rss_ring_kb[6236]，峰值/均值均可从环形缓冲取出。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（rss_ok=true）：rss_kb 5960（5.82 MB）、frame_budget_ms 16.7、db_bytes 106496、
+wal_bytes 32768、storage_kb 136、rss_ring_kb[5960]，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
@@ -114,17 +118,57 @@ pe_imports 自检显示只导入系统 DLL）。实测：
     [diag] paint 1098x704
     [diag] shot rc=0
 
-## 9. 未实测 / 明确不做（避免把"没跑过"说成"已验证"）
+## 9. Windows 安装包与卸载（自解压式，纯 C）
+
+    python tools\make_installer.py
+    dist\AIChat-1.0.0-win-x64-setup.exe /S /D=D:\...\test_install
+    D:\...\test_install\uninstall.exe /S
+
+实测（静默安装到 `build\installer\test_install`）：
+
+- setup 退出码 0，落地 **21 个文件**（AIChat.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
+  CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
+- 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
+
+      AIChat Setup 1.0.0
+      time=2026-11-22 00:54:54
+      files=21 shortcut=failed registry=failed
+
+- 静默卸载退出码 0，4 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
+- `uninstall.exe /K` 只清卸载登记、不删目录，便于保留数据后手工处理。
+
+**为什么 shortcut / registry 是 failed（环境边界，不是代码缺陷）**：本会话的 DSH 沙箱不允许**子进程**写注册表与开始菜单。
+用最小 C 探针单独验证：`RegCreateKeyExW(HKCU,...,KEY_WRITE)` 返回 `rv=5`（ERROR_ACCESS_DENIED），
+而同机的编辑器进程里写同一键成功。安装程序调用的是标准 API（`IShellLinkW` + `IPersistFile` 建快捷方式，
+`RegCreateKeyExW` 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\AIChat`），代码路径与回执逻辑都已被执行到，
+只是写入被系统拒绝，程序据此降级为"不创建快捷方式、不登记卸载"，并在完成对话框里给出可手工执行的替代步骤。
+该项在普通用户桌面环境下的结果需要在真机上复测，本文按"未验证"记账。
+
+## 10. 提交前扫描（敏感字符串 / 许可证 / 源码头）
+
+    python tools\precommit_scan.py
+
+实测退出码 0（问题数 0），扫描 177 个文件：
+
+- 敏感字符串 0：Key 形态（`sk-` / `ghp_` / `AKIA`）、私钥块、硬编码口令全部未命中；
+  说明性文件（`src/core/util.c` 的模式表、`src/cli/aic_verify.c` 与 `tests/unit/test_core.c` 的假夹具、扫描器自身）
+  在脚本 `EXEMPT` 里逐条登记原因，不做整目录豁免。
+- 许可证：LICENSE 为 MIT 文本；`third_party/sqlite/README.md` 声明 Public Domain；源码中无 GPL/AGPL 声明（本文件与扫描器自身除外）。
+- 源码头：每个 `.c/.h/.java` 头注释前 5 行都写明自身文件名（本轮补了 `MainActivity.java`、`Native.java`、`aic_cli.c`）。
+- 大文件与二进制混入：third_party 之外无 >1 MB 文本文件；源码无 NUL 字节。
+
+## 11. 未实测 / 明确不做（避免把"没跑过"说成"已验证"）
 
 1. **Android 真机运行**：本机无模拟器镜像也无设备，只做到"能编译、能签名、能校验产物"，界面交互与 JNI 调用未在设备上跑过。
 2. **真实网络请求**：按用户裁决只做"请求组装 + SSE 解析 + 错误分类 + 余额解析"，transport 默认实现明确返回"未配置传输通道"，
    demo 回复由本地假传输生成，未用真实 Key 打 api.deepseek.com。
-3. **Windows 安装包**：本机无 signtool / NSIS，只产出便携 zip + install.ps1（创建开始菜单快捷方式），EXE 未签名。
-4. **ARM64 / 32 位 Windows**：只构建 x64。
+3. **安装包的两步系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
+   安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 §9），需在普通桌面环境复测。
+4. **ARM64 / 32 位 Windows**：只构建 x64；ARM64 需要另装 clangarm64 sysroot 才能交叉编译，本版未产出。
 5. **长时间人工回归**：界面验证为离屏渲染 + 逻辑自动化（router/动画参数/主题对比度断言），未做数小时点击回归。
 6. **更新安装与余额的真实下发**：更新只到"下载 + 校验 + 备份门"，安装动作留给平台层；余额只到解析与本地账本并列展示。
 
-## 10. 复核命令速查
+## 12. 复核命令速查
 
     build.ps1 -Target test  && build\test_core.exe
     build.ps1 -Target cli   && build\aic.exe verify . build\verify
@@ -133,3 +177,5 @@ pe_imports 自检显示只导入系统 DLL）。实测：
     build.ps1 -Target gui   && python tools\shots.py
     python tools\build_android.py && python tools\verify_android.py
     python tools\package_win.py
+    python tools\make_installer.py
+    python tools\precommit_scan.py

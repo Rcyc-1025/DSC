@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "aic_types.h"
 #include "db.h"
 #include "credential.h"
@@ -28,6 +32,35 @@
 
 static int g_pass = 0;
 static int g_fail = 0;
+
+/* 可执行文件所在目录（带结尾斜杠）。插件子进程测试用它拼宿主与插件路径，
+ * 这样「从仓库根目录跑 build\test_core.exe」与「在 build 目录里跑」都能找到产物。 */
+static char g_bin_dir[512];
+
+static void init_bin_dir(void)
+{
+#ifdef _WIN32
+    WCHAR wbuf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, wbuf, MAX_PATH);
+    DWORD i;
+    char u8[MAX_PATH * 4];
+    if (n == 0 || n >= MAX_PATH) {
+        aic_strlcpy_utf8(g_bin_dir, sizeof(g_bin_dir), ".\\");
+        return;
+    }
+    for (i = n; i > 0; i--) {
+        if (wbuf[i - 1] == L'\\') break;
+    }
+    u8[0] = '\0';
+    WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)i, u8, (int)sizeof(u8) - 1, NULL, NULL);
+    /* 显式给出 cchWideChar 时 API 不保证补 NUL，必须自己补。 */
+    if (i >= sizeof(u8)) i = (DWORD)sizeof(u8) - 1;
+    u8[i] = '\0';
+    aic_strlcpy_utf8(g_bin_dir, sizeof(g_bin_dir), u8);
+#else
+    aic_strlcpy_utf8(g_bin_dir, sizeof(g_bin_dir), "./");
+#endif
+}
 
 #define CHECK(cond, what) do { \
     if (cond) { g_pass++; printf("PASS %s\n", what); } \
@@ -1580,10 +1613,12 @@ static void test_plugin_proc(aic_db *db)
 {
     CHECK_EQ_INT(aic_plugin_proc_available(), 1, "当前平台支持插件子进程隔离");
 
-    const char *host = "aic_plugin_host.exe";
-    const char *ok_dll = "plugins\\ok_plugin.dll";
-    const char *crash_dll = "plugins\\crash_plugin.dll";
-    const char *slow_dll = "plugins\\slow_plugin.dll";
+    char host[640], ok_dll[640], crash_dll[640], slow_dll[640], missing[640];
+    aic_path_join(host, sizeof(host), g_bin_dir, "aic_plugin_host.exe");
+    aic_path_join(ok_dll, sizeof(ok_dll), g_bin_dir, "plugins\\ok_plugin.dll");
+    aic_path_join(crash_dll, sizeof(crash_dll), g_bin_dir, "plugins\\crash_plugin.dll");
+    aic_path_join(slow_dll, sizeof(slow_dll), g_bin_dir, "plugins\\slow_plugin.dll");
+    aic_path_join(missing, sizeof(missing), g_bin_dir, "plugins\\no_such.dll");
 
     aic_plugin_proc_result res;
     char err[512];
@@ -1620,7 +1655,7 @@ static void test_plugin_proc(aic_db *db)
     aic_plugin_proc_free(&res);
 
     /* 缺文件：明确返回未找到，不启动进程。 */
-    CHECK_EQ_INT(aic_plugin_proc_call(host, "plugins\\no_such.dll", req, strlen(req), 1000, ".", &res, err, sizeof(err)),
+    CHECK_EQ_INT(aic_plugin_proc_call(host, missing, req, strlen(req), 1000, ".", &res, err, sizeof(err)),
                  AIC_E_NOTFOUND, "插件文件缺失返回未找到");
     CHECK_EQ_INT(aic_plugin_proc_call("no_such_host.exe", ok_dll, req, strlen(req), 1000, ".", &res, err, sizeof(err)),
                  AIC_E_NOTFOUND, "宿主程序缺失返回未找到");
@@ -1664,6 +1699,7 @@ static void test_plugin_proc(aic_db *db)
 
 int main(void)
 {
+    init_bin_dir();
     printf("=== AIChat 核心层自测 ===\n");
     test_util();
     test_json();

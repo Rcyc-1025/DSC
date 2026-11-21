@@ -1,5 +1,4 @@
-/*
- * AIChat 命令行验收器 / 诊断入口。
+/* aic_cli.c —— AIChat 命令行验收器 / 诊断入口。
  *
  * 用法：
  *   aic.exe verify [仓库根目录] [工作目录]   逐条核对 FR-01 ~ FR-24，写 docs\FR-MATRIX.md

@@ -35,3 +35,6 @@ desktop.ini
 dist/
 build_android/
 *.bmp
+
+# 单元测试运行时在 cwd 下建的临时目录
+aic_test_*/

@@ -20,6 +20,12 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gcc
 
+      - name: 提交前扫描（敏感字符串 / 许可证 / 源码头 / 大文件）
+        shell: pwsh
+        run: |
+          python tools\precommit_scan.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: 编译单元测试
         shell: pwsh
         run: |
@@ -58,3 +64,5 @@ jobs:
             build\AIChat.exe
             build\aic.exe
             docs\FR-MATRIX.md
+            CHANGELOG.md
+            DEPENDENCIES.md

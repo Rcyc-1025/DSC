@@ -124,12 +124,17 @@ def main():
     if os.path.isfile(dll):
         copy(dll, 'plugins/sample_basic/sample_basic.dll')
 
-    for doc in ['README.md', 'ADVANCED.md', 'PLUGIN.md', 'FR-MATRIX.md', 'DESIGN.md', 'PRE-RELEASE-EVIDENCE.md']:
+    for doc in ['README.md', 'ADVANCED.md', 'PLUGIN.md', 'FR-MATRIX.md', 'DESIGN.md', 'PRE-RELEASE-EVIDENCE.md',
+                'RELEASE.md']:
         src = os.path.join(ROOT, 'docs', doc) if doc != 'README.md' else os.path.join(ROOT, 'README.md')
         if os.path.isfile(src):
             copy(src, 'docs/' + doc)
 
     copy(os.path.join(ROOT, 'LICENSE'), 'LICENSE')
+    for extra in ['CHANGELOG.md', 'DEPENDENCIES.md', 'README.en.md', 'CONTRIBUTING.md']:
+        src = os.path.join(ROOT, extra)
+        if os.path.isfile(src):
+            copy(src, extra)
     copy(os.path.join(ROOT, 'scripts', 'install.ps1'), 'install.ps1')
 
     notes = (

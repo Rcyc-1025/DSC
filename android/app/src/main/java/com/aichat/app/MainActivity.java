@@ -1,3 +1,8 @@
+/* MainActivity.java —— Android 端界面层（原生 View，纯代码构建布局）
+ *
+ * 界面层只通过 Native.call(json) 与核心层交换数据，不直接持有任何 C 指针，
+ * 因此核心层崩溃不会把 Java 侧的视图状态带坏。
+ */
 package com.aichat.app;
 
 import android.app.Activity;

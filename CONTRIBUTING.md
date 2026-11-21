@@ -33,7 +33,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
 - 缓冲区一律显式传容量（`cap`），字符串用 `aic_strlcpy_utf8` 截断，禁止 `strcpy` / `sprintf`。
 - 新增 `.c` 文件放在 `src/core` 即可被 `build.ps1` 自动编译；新增平台代码放 `src/platform/<平台>`。
 - 数据库结构变更必须新增一条 `schema.c` 里的迁移（不允许改已有版本），并在迁移前备份。
-- 不允许在仓库中出现真实 API Key；提交前用 `git grep -nE "sk-[A-Za-z0-9]{16,}"` 自查。
+- 不允许在仓库中出现真实 API Key；提交前必须跑一次扫描（CI 也会跑，见 `tools/precommit_scan.py`）：
+
+  ~~~powershell
+  python tools\precommit_scan.py     # 退出码 = 问题数，0 才能提交
+  ~~~
+
+  扫描内容：Key 形态与私钥块、LICENSE 必须是 MIT 且源码不得出现 GPL/AGPL 声明、每个 `.c/.h/.java` 头注释必须写明文件名、third_party 之外不得有 >1 MB 文本文件、源码不得混入 NUL 字节。
+  确属说明性内容的文件（扫描器自身、含假夹具的测试与验收器）在脚本顶部的 `EXEMPT` 里逐条登记原因，不允许整目录豁免。
+- 每个源文件第一行写 `/* 文件名 —— 一句话职责 */`，方便 grep 与提交前检查。
+- 新增用户可感知的功能时同步更新：`CHANGELOG.md`（[未发布] 段）、`docs/ADVANCED.md` 或 `docs/PLUGIN.md`、必要时 `DEPENDENCIES.md`。
 
 ## 提交
 
@@ -44,4 +53,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
 新增：插件崩溃后自动禁用并写 crash 记录
 ~~~
 
-PR 请说明：改了哪一层、如何验证（贴 `test_core` 与 `aic.exe verify` 结果）、是否影响性能预算（见 `src/core/perf.h`）。
+PR 请说明：改了哪一层、如何验证（贴 `test_core`、`aic.exe verify`、`precommit_scan` 的结果）、是否影响性能预算（见 `src/core/perf.h`，基准口径见 `docs/RELEASE.md`）。
+发布新版本按 `docs/RELEASE.md` 的十步走，版本号规则与产物命名也在那里面。
