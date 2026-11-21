@@ -1,5 +1,7 @@
 /* engine.c —— 对话引擎实现。 */
 #include "engine.h"
+
+#include "diaglog.h"
 #include "prompt.h"
 #include "store_conversation.h"
 #include "store_message.h"
@@ -28,6 +30,9 @@ struct aic_engine {
     aic_llm_err stream_err;
     char stream_err_msg[256];
     int  stream_events;
+    /* 流式增量回调：界面在工作线程里收到增量后 PostMessage 回界面线程渲染。 */
+    void (*stream_cb)(void *ud, const char *delta);
+    void *stream_cb_ud;
 };
 
 int aic_engine_create(aic_db *db, aic_engine **out)
@@ -90,6 +95,13 @@ void aic_engine_set_model_override(aic_engine *e, const char *model_id)
 {
     if (!e) return;
     aic_strlcpy_utf8(e->model_override, sizeof(e->model_override), model_id ? model_id : "");
+}
+
+void aic_engine_set_stream_cb(aic_engine *e, void (*fn)(void *ud, const char *delta), void *ud)
+{
+    if (!e) return;
+    e->stream_cb = fn;
+    e->stream_cb_ud = ud;
 }
 
 void aic_engine_stop(aic_engine *e)
@@ -167,7 +179,10 @@ static void engine_on_event(void *ud, const aic_llm_event *ev)
     e->stream_events++;
     switch (ev->kind) {
     case AIC_LLM_EV_DELTA:
-        if (ev->text) sb_append(&e->stream_text, ev->text);
+        if (ev->text) {
+            sb_append(&e->stream_text, ev->text);
+            if (e->stream_cb) e->stream_cb(e->stream_cb_ud, ev->text);
+        }
         break;
     case AIC_LLM_EV_USAGE:
         if (ev->prompt_tokens) e->stream_pt = ev->prompt_tokens;
@@ -190,6 +205,80 @@ static long long estimate_tokens(const char *s)
     size_t chars = aic_utf8_length(s);
     long long est = (long long)chars + (long long)(bytes > chars ? (bytes - chars) / 4 : 0);
     return est;
+}
+
+/* 组装请求 → 流式收集 → 落助手消息 → 用量入账。
+ * send 与 regenerate 共用这一段（区别只在于是否先追加用户消息）。 */
+static int run_stream(aic_engine *e, const char *conv_id, const aic_conversation *conv,
+                      aic_engine_result *local, char *err, size_t errlen)
+{
+    sb body;
+    sb_init(&body);
+    int rc = aic_engine_build_request(e, conv_id, &body, err, errlen);
+    if (rc != AIC_OK) { sb_free(&body); return rc; }
+
+    e->stop_requested = 0;
+    e->stream_err = AIC_LLM_OK;
+    e->stream_err_msg[0] = '\0';
+    e->stream_pt = 0;
+    e->stream_ct = 0;
+    e->stream_events = 0;
+    sb_reset(&e->stream_text);
+
+    aic_sse_parser parser;
+    aic_sse_init(&parser);
+    aic_llm_err lerr = e->tr.post_stream(e->tr.ud, e->endpoint, e->api_key, sb_cstr(&body),
+                                        &parser, engine_on_event, e, &e->stop_requested,
+                                        err, errlen);
+    if (lerr == AIC_LLM_OK) {
+        aic_sse_finish(&parser, engine_on_event, e);
+    }
+    if (e->stream_err != AIC_LLM_OK && lerr == AIC_LLM_OK) lerr = e->stream_err;
+
+    if (lerr != AIC_LLM_OK) {
+        /* 传输失败：保留用户消息（草稿不丢），不写空的助手消息；解析失败把原始响应留进诊断日志。 */
+        local->llm_err = lerr;
+        if (lerr == AIC_LLM_E_PARSE && parser.raw.data && parser.raw.len) {
+            aic_log_blob("模型流式响应（解析失败）", parser.raw.data, parser.raw.len);
+        }
+        aic_log_write("WARN", "模型请求失败：%s（%d）", aic_llm_err_text(lerr), (int)lerr);
+        if (err && errlen && !err[0]) aic_strlcpy_utf8(err, errlen, aic_llm_err_text(lerr));
+        sb_free(&body);
+        aic_sse_free(&parser);
+        return lerr == AIC_LLM_E_AUTH ? AIC_E_AUTH
+             : (lerr == AIC_LLM_E_CANCEL ? AIC_E_STATE : AIC_E_TIMEOUT);
+    }
+
+    /* 落助手消息。 */
+    aic_message amsg;
+    memset(&amsg, 0, sizeof(amsg));
+    rc = aic_msg_append(e->db, conv_id, AIC_ROLE_ASSISTANT, sb_cstr(&e->stream_text),
+                        effective_model(e, (aic_conversation *)conv), &amsg);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "保存回复失败：%s", aic_strerror(rc));
+        sb_free(&body);
+        aic_sse_free(&parser);
+        return rc;
+    }
+    aic_strlcpy_utf8(local->assistant_msg_id, sizeof(local->assistant_msg_id), amsg.id);
+    aic_msg_free(&amsg);
+
+    /* 用量与费用入账（余额并列展示的数据来源之一）。 */
+    long long pt = e->stream_pt, ct = e->stream_ct;
+    if (pt <= 0) pt = estimate_tokens(sb_cstr(&body));
+    if (ct <= 0) ct = estimate_tokens(sb_cstr(&e->stream_text));
+    const aic_llm_model *model = aic_llm_model_or_default(effective_model(e, (aic_conversation *)conv));
+    long long cost = aic_llm_cost_micros(model, pt, ct);
+    aic_usage_append(e->db, conv_id, local->assistant_msg_id, model->id, pt, ct, cost);
+
+    local->text = aic_strdup(sb_cstr(&e->stream_text));
+    local->prompt_tokens = pt;
+    local->completion_tokens = ct;
+    local->cost_micros = cost;
+    local->llm_err = AIC_LLM_OK;
+    sb_free(&body);
+    aic_sse_free(&parser);
+    return AIC_OK;
 }
 
 int aic_engine_send(aic_engine *e, const char *conv_id, const char *user_text,
@@ -220,72 +309,46 @@ int aic_engine_send(aic_engine *e, const char *conv_id, const char *user_text,
     aic_strlcpy_utf8(local.user_msg_id, sizeof(local.user_msg_id), umsg.id);
     aic_msg_free(&umsg);
 
-    /* 2) 组装请求。 */
-    sb body;
-    sb_init(&body);
-    rc = aic_engine_build_request(e, conv_id, &body, err, errlen);
-    if (rc != AIC_OK) { sb_free(&body); return rc; }
+    /* 2) 组装请求并走传输层，最后落库与记账。 */
+    int rc2 = run_stream(e, conv_id, &conv, &local, err, errlen);
+    if (res) *res = local;
+    return rc2;
+}
 
-    /* 3) 走传输层，流式收集。 */
-    e->stop_requested = 0;
-    e->stream_err = AIC_LLM_OK;
-    e->stream_err_msg[0] = '\0';
-    e->stream_pt = 0;
-    e->stream_ct = 0;
-    e->stream_events = 0;
-    sb_reset(&e->stream_text);
+int aic_engine_regenerate(aic_engine *e, const char *conv_id, char *out_old_id, size_t old_cap,
+                          aic_engine_result *res, char *err, size_t errlen)
+{
+    if (!e || !conv_id) return AIC_E_INVAL;
+    if (out_old_id && old_cap) out_old_id[0] = '\0';
+    if (err && errlen) err[0] = '\0';
 
-    aic_sse_parser parser;
-    aic_sse_init(&parser);
-    aic_llm_err lerr = e->tr.post_stream(e->tr.ud, e->endpoint, e->api_key, sb_cstr(&body),
-                                        &parser, engine_on_event, e, err, errlen);
-    if (lerr == AIC_LLM_OK) {
-        aic_sse_finish(&parser, engine_on_event, e);
-    }
-    if (e->stream_err != AIC_LLM_OK && lerr == AIC_LLM_OK) lerr = e->stream_err;
-    sb_free(&body);
-
-    if (lerr != AIC_LLM_OK) {
-        /* 传输失败：保留用户消息（草稿不丢），不写空的助手消息。 */
-        local.llm_err = lerr;
-        if (err && errlen && !err[0]) {
-            aic_strlcpy_utf8(err, errlen, aic_llm_err_text(lerr));
-        }
-        aic_sse_free(&parser);
-        if (res) *res = local;
-        return lerr == AIC_LLM_E_AUTH ? AIC_E_AUTH
-             : (lerr == AIC_LLM_E_CANCEL ? AIC_E_STATE : AIC_E_TIMEOUT);
-    }
-
-    /* 4) 落助手消息。 */
-    aic_message amsg;
-    memset(&amsg, 0, sizeof(amsg));
-    rc = aic_msg_append(e->db, conv_id, AIC_ROLE_ASSISTANT, sb_cstr(&e->stream_text),
-                        effective_model(e, &conv), &amsg);
+    aic_conversation conv;
+    int rc = aic_conv_get(e->db, conv_id, &conv);
     if (rc != AIC_OK) {
-        aic_sse_free(&parser);
-        if (err && errlen) snprintf(err, errlen, "保存回复失败：%s", aic_strerror(rc));
+        if (err && errlen) snprintf(err, errlen, "会话不存在：%s", aic_strerror(rc));
         return rc;
     }
-    aic_strlcpy_utf8(local.assistant_msg_id, sizeof(local.assistant_msg_id), amsg.id);
-    aic_msg_free(&amsg);
+    /* 把上一条回复标记为「已被替换」：数据保留可回看，上下文与列表不再使用它。 */
+    aic_message old;
+    memset(&old, 0, sizeof(old));
+    if (aic_msg_last_assistant(e->db, conv_id, &old) != AIC_OK) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "没有可重新生成的回复");
+        return AIC_E_STATE;
+    }
+    if (out_old_id && old_cap) aic_strlcpy_utf8(out_old_id, old_cap, old.id);
+    rc = aic_msg_supersede(e->db, old.id);
+    aic_msg_free(&old);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "标记旧回复失败：%s", aic_strerror(rc));
+        return rc;
+    }
 
-    /* 5) 用量与费用入账（余额并列展示的数据来源之一）。 */
-    long long pt = e->stream_pt, ct = e->stream_ct;
-    if (pt <= 0) pt = estimate_tokens(sb_cstr(&body));
-    if (ct <= 0) ct = estimate_tokens(sb_cstr(&e->stream_text));
-    const aic_llm_model *model = aic_llm_model_or_default(effective_model(e, &conv));
-    long long cost = aic_llm_cost_micros(model, pt, ct);
-    aic_usage_append(e->db, conv_id, local.assistant_msg_id, model->id, pt, ct, cost);
-
-    local.text = aic_strdup(sb_cstr(&e->stream_text));
-    local.prompt_tokens = pt;
-    local.completion_tokens = ct;
-    local.cost_micros = cost;
+    aic_engine_result local;
+    memset(&local, 0, sizeof(local));
     local.llm_err = AIC_LLM_OK;
-    aic_sse_free(&parser);
+    rc = run_stream(e, conv_id, &conv, &local, err, errlen);
     if (res) *res = local;
-    return AIC_OK;
+    return rc;
 }
 
 int aic_engine_can_recall(aic_engine *e, const char *msg_id, int window_seconds)

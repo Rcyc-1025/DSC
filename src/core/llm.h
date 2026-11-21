@@ -129,11 +129,12 @@ int aic_sse_finish(aic_sse_parser *p, aic_llm_event_fn fn, void *ud);
 /* ---------- 传输层注入（默认不可用） ---------- */
 typedef struct aic_llm_transport {
     void *ud;
-    /* 发起流式请求；返回 AIC_LLM_OK 表示流已正常走完。 */
+    /* 发起流式请求；返回 AIC_LLM_OK 表示流已正常走完。
+     * cancel 指向引擎的停止标志：传输实现应周期性检查，置 1 时中止并返回 AIC_LLM_E_CANCEL。 */
     aic_llm_err (*post_stream)(void *ud, const char *url, const char *api_key,
                                const char *body, aic_sse_parser *parser,
                                aic_llm_event_fn fn, void *cb_ud,
-                               char *err, size_t errlen);
+                               volatile int *cancel, char *err, size_t errlen);
     /* 连通性校验（新手指南第 2 步用它）。 */
     aic_llm_err (*probe)(void *ud, const char *url, const char *api_key,
                          char *err, size_t errlen);
@@ -143,10 +144,16 @@ typedef struct aic_llm_transport {
 aic_llm_err aic_llm_transport_unavailable_post(void *ud, const char *url, const char *api_key,
                                                const char *body, aic_sse_parser *parser,
                                                aic_llm_event_fn fn, void *cb_ud,
-                                               char *err, size_t errlen);
+                                               volatile int *cancel, char *err, size_t errlen);
 aic_llm_err aic_llm_transport_unavailable_probe(void *ud, const char *url, const char *api_key,
                                                 char *err, size_t errlen);
 aic_llm_transport aic_llm_transport_default(void);
+
+#ifdef _WIN32
+/* Windows 侧的真实传输（WinHTTP 流式，见 src/platform/win/http_win.c）。
+ * 与 aic_llm_transport_default 不同：它真的会发请求，需要网络与有效 Key。 */
+aic_llm_transport aic_win_http_transport(void);
+#endif
 
 /* ---------- 余额（FR-11） ---------- */
 typedef struct aic_llm_balance {

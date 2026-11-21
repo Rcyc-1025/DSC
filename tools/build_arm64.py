@@ -52,7 +52,8 @@ BASE = [
     "-I" + os.path.join(ROOT, "third_party", "sqlite"),
 ]
 LIBS = ["-lkernel32", "-luser32", "-lgdi32", "-ladvapi32", "-lshell32", "-lcomctl32",
-        "-lcomdlg32", "-lole32", "-luuid", "-lshlwapi", "-lws2_32", "-lpsapi"]
+        "-lcomdlg32", "-lole32", "-luuid", "-lshlwapi", "-lws2_32", "-lpsapi",
+        "-lwinhttp", "-lgdiplus"]
 
 
 def die(msg):

@@ -1,6 +1,6 @@
 # Sai 技术设计（实现说明）
 
-> 本文件说明 "Sai" 1.0.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "Sai" 1.1.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)。
 
 ## 1. 目标与边界
@@ -11,7 +11,7 @@
 | 平台 | Windows 10/11 x64（Win32 + GDI）；Android 7.0+ arm64-v8a（JNI + 系统控件） |
 | 语言 | 核心逻辑全部 C11；Python 只用于构建、打包与离线校验脚本；界面层用平台原生能力，不引入脚本解释器 |
 | 模型 | 内置两个模型标识 deepseekv4.1flash / deepseekv4pro，按会话保存，可配置文件追加 |
-| 本轮范围 | 全量 24 条 FR；网络层只到"请求组装 + SSE 解析 + 错误分类"，**不发真实 HTTP**（用户裁决），演示回复由本地假传输生成 |
+| 本轮范围 | 全量 24 条 FR；对话、余额、更新包下载走真实网络（Windows WinHTTP / Android HttpURLConnection），流式逐段渲染 |
 
 ## 2. 分层与目录
 
@@ -83,7 +83,12 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 6. 失败分类：网络/服务端可退避重试（500ms 起指数增长，上限 8 秒，最多 3 次），凭证失效跳 Key 设置且不清会话，
    限流只提示不自动高频重试，解析失败保留原始响应到诊断日志。
 
-演示态（无 Key 或未配置传输）刻意返回 AIC_LLM_E_AUTH「尚未配置 API Key」，不伪造成功——界面用本地假传输演示对话，网络能力留给配置真实端点的人。
+传输层：Windows 用 WinHTTP（winhttp.dll，自动代理、15/15/60/120 秒超时、逐块 WinHttpReadData 直接喂 SSE 解析器，
+可随时取消）；Android 由 Java 侧 HttpURLConnection 读流后把行喂给 C 侧的同一个解析器。没有 Key 时 engine 直接返回
+AIC_LLM_E_AUTH「尚未配置 API Key」，不伪造成功；只有显式 `--demo`（或 `SAI_DEMO=1`）才启用本地假传输做界面演示。
+
+生成中可停止（stop 置标志 → 传输层返回取消 → 已落库的用户消息保留），可重新生成（取最后一条助手消息置
+superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上下文）。
 
 ## 6. 主题与动效（FR-17 / FR-21）
 
@@ -109,7 +114,27 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 清单字段：channel / version / min_app_version / released_at / notes / url / sha256 / size / mandatory。
 比对规则：不高于当前版本 → 已最新；用户跳过且非强制 → 跳过；低于 min_app_version → 需要完整包。
 应用前双重门：数据备份成功是写入前置条件（备份失败直接中止，用户数据不变）；落地文件必须同时满足大小与 SHA-256。
-迁移前再备份一次，迁移失败自动回退旧库。安装动作交给平台层，本轮只到"下载 + 校验"（测试模式）。
+迁移前再备份一次，迁移失败自动回退旧库。安装动作见 §8.1。
+
+### 8.1 替换安装与回滚
+
+1. `aic_update_run_install` 校验备份门 → `aic_http_download`（Range 断点续传，写 `.part`）→ 大小与 SHA-256 双校验，
+   失败删除半包；2. 把当前安装目录整树复制到 `backups/app-<时间戳>` 作为回滚点；
+3. `CreateProcessW("<包> /S /D=<安装目录>")`，等待最多 180 秒；4. 退出码非 0 → 整树回滚并提示「已回滚到更新前的版本」。
+
+### 8.2 数据管理（备份 / 恢复 / 清理）
+
+备份包是标准 ZIP（`aic_zip`，store 方式、UTF-8 名称、CRC 校验）：`db/sai.db` + `avatars/` + `plugins/` +
+`manifest.json`（format、schema_version、created_at、db_schema、文件清单与逐个 SHA-256）。创建前先
+`PRAGMA wal_checkpoint(TRUNCATE)` 并跑 `PRAGMA quick_check`，不通过则拒绝备份。恢复先整包校验再解压到
+`backups/restore-<时间戳>`，覆盖数据库与头像/插件目录；清理默认保留最近 3 个。
+
+## 8.3 线程模型（§4.2）
+
+界面线程只做绘制与输入；网络发送、流式解析、导出、导入、更新下载、余额查询、备份都在工作线程执行，
+结果通过 `PostMessage`（`WM_APP_DELTA` / `WM_APP_DONE` / `WM_APP_IO` / `WM_APP_UPD` / `WM_APP_BAL`）回到界面线程。
+界面线程不直接操作数据库句柄做批量读写，SQLite 以 serialized 模式编译（`SQLITE_THREADSAFE=1`），
+写操作统一走事务，跨线程写入由连接自身的互斥保护。
 
 ## 9. 性能预算与基准（FR-24）
 
@@ -140,8 +165,9 @@ Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
 
 ## 12. 已知限制
 
-1. 网络层按用户裁决未接真实 HTTP：真实 Key 下发送会返回"未配置传输通道"，演示回复由本地假传输生成。
-2. Android 端只做了编译级与产物级校验，未在真机/模拟器运行；Windows 端为离屏渲染 + 交互逻辑自动化，未做人工长时间点击回归。
-3. 未产出 Windows 安装包可执行文件（本机无 signtool / NSIS），提供便携 zip 与 install.ps1；EXE 未做代码签名。
-4. 32 位与 ARM64 Windows 未构建（当前只出 x64）。
-5. 余额查询、更新下载同样停在"解析与校验"，不发真实请求。
+1. 没有用真实 API Key 打 api.deepseek.com：传输、SSE 解析、错误分类、取消、余额解析都在本地以假传输与本地 HTTP 服务验证。
+2. Android 端做到可编译、可签名、产物可校验，未在真机/模拟器运行；Windows 端为离屏渲染 + 交互逻辑自动化。
+3. Windows 产物未做代码签名（本机无 signtool/公开证书）；Android APK 用自签名 key。
+4. 32 位 Windows 未构建；ARM64 为交叉编译产物（便携 zip），未在 ARM64 硬件上运行。
+5. 插件扩展点中 prompt.fragment（提示词片段）与 ui.panel（面板 describe/invoke）已接通；message.transform 与
+tool.provider 只有协议与登记，界面尚未消费。

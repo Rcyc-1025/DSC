@@ -76,6 +76,19 @@ int aic_update_run(const aic_update_manifest *m, const char *dst_path,
 /* 周期检查：距离上次检查是否已到间隔（cron 由界面层驱动）。 */
 int aic_update_should_check(int64_t last_check_ms, int interval_hours, int64_t now_ms);
 
+/* 完整流程：下载 → 校验 → 平台替换安装（Windows 替换安装 / Android 系统安装器）。
+ * app_dir 为当前程序目录，backup_dir 放回滚点。 */
+int aic_update_run_install(const aic_update_manifest *m, const char *dst_path,
+                           aic_update_download_fn dl, void *ud, int backup_ok,
+                           const char *app_dir, const char *backup_dir, volatile int *cancel,
+                           char *err, size_t errlen);
+
+#ifdef _WIN32
+/* Windows 替换安装：回滚点 → 静默安装 → 失败还原。 */
+int aic_update_apply_package(const char *pkg, const char *app_dir, const char *backup_dir,
+                             volatile int *cancel, char *err, size_t errlen);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

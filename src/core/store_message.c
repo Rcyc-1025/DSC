@@ -6,7 +6,7 @@
 #include <string.h>
 
 #define MSG_COLS "id, conversation_id, seq, role, content, recalled, IFNULL(edited_at,''), " \
-                 "original_content, IFNULL(model_id,''), created_at"
+                 "original_content, IFNULL(model_id,''), created_at, superseded"
 
 static void read_row(aic_stmt *st, aic_message *m)
 {
@@ -22,6 +22,7 @@ static void read_row(aic_stmt *st, aic_message *m)
     if (!aic_stmt_is_null(st, 7) && (v = aic_stmt_text(st, 7))) m->original_content = aic_strdup(v);
     if ((v = aic_stmt_text(st, 8))) aic_strlcpy_utf8(m->model_id, sizeof(m->model_id), v);
     if ((v = aic_stmt_text(st, 9))) aic_strlcpy_utf8(m->created_at, sizeof(m->created_at), v);
+    m->superseded = aic_stmt_int(st, 10);
 }
 
 void aic_msg_free(aic_message *m)
@@ -160,14 +161,14 @@ int aic_msg_page(aic_db *db, const char *conv_id, long long before_seq, int limi
     if (before_seq > 0) {
         st = aic_db_prepare(db,
             "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND seq < ?2 "
-            "ORDER BY seq DESC LIMIT ?3;");
+            "AND superseded = 0 ORDER BY seq DESC LIMIT ?3;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, conv_id);
         aic_stmt_bind_ll(st, 2, before_seq);
         aic_stmt_bind_ll(st, 3, limit);
     } else {
         st = aic_db_prepare(db,
-            "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 "
+            "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND superseded = 0 "
             "ORDER BY seq DESC LIMIT ?2;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, conv_id);
@@ -186,7 +187,7 @@ int aic_msg_context(aic_db *db, const char *conv_id, int limit,
     if (limit <= 0) limit = AIC_CONTEXT_MESSAGES_DEFAULT;
     aic_stmt *st = aic_db_prepare(db,
         "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND recalled = 0 "
-        "ORDER BY seq DESC LIMIT ?2;");
+        "AND superseded = 0 ORDER BY seq DESC LIMIT ?2;");
     if (!st) return AIC_E_DB;
     aic_stmt_bind_text(st, 1, conv_id);
     aic_stmt_bind_ll(st, 2, limit);
@@ -270,6 +271,31 @@ int aic_msg_delete(aic_db *db, const char *id)
     int rc = aic_stmt_step(st);
     aic_stmt_finalize(st);
     return rc == AIC_DONE ? AIC_OK : rc;
+}
+
+int aic_msg_supersede(aic_db *db, const char *id)
+{
+    if (!db || !id) return AIC_E_INVAL;
+    aic_stmt *st = aic_db_prepare(db, "UPDATE message SET superseded = 1 WHERE id = ?1;");
+    if (!st) return AIC_E_DB;
+    aic_stmt_bind_text(st, 1, id);
+    int rc = aic_stmt_step(st);
+    aic_stmt_finalize(st);
+    return rc == AIC_DONE ? AIC_OK : rc;
+}
+
+int aic_msg_last_assistant(aic_db *db, const char *conv_id, aic_message *out)
+{
+    if (!db || !conv_id || !out) return AIC_E_INVAL;
+    aic_stmt *st = aic_db_prepare(db,
+        "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND role = 'assistant' "
+        "AND recalled = 0 AND superseded = 0 ORDER BY seq DESC LIMIT 1;");
+    if (!st) return AIC_E_DB;
+    aic_stmt_bind_text(st, 1, conv_id);
+    int rc = aic_stmt_step(st);
+    if (rc == AIC_ROW) read_row(st, out);
+    aic_stmt_finalize(st);
+    return rc == AIC_ROW ? AIC_OK : (rc == AIC_DONE ? AIC_E_NOTFOUND : rc);
 }
 
 int aic_msg_count(aic_db *db, const char *conv_id, long long *out_count)

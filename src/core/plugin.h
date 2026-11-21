@@ -69,6 +69,16 @@ int aic_plugin_set_enabled(aic_db *db, const char *id, int enabled, char *err, s
 int aic_plugin_disable_after_crash(aic_db *db, const char *id, const char *reason,
                                    char *err, size_t errlen);
 /* keep_data=1 只删程序文件，保留插件数据目录。 */
+/* 更新已安装插件（覆盖文件并更新版本，保留启用状态与插件数据）。 */
+int aic_plugin_update(aic_db *db, const char *plugins_root, const char *manifest_path,
+                      aic_plugin *out, char *err, size_t errlen);
+
+/* 调用某个扩展点：对每个声明了该扩展点的已启用插件各调一次，结果汇总成 JSON：
+ * {"point":"ui.panel","count":1,"results":[{"plugin":"x","ok":true,"result":{...}}]} */
+int aic_plugin_call_point(aic_db *db, const char *host_exe, const char *point, const char *op,
+                          const char *request_json, char *out, size_t out_cap,
+                          char *err, size_t errlen);
+
 int aic_plugin_uninstall(aic_db *db, const char *id, int keep_data, char *err, size_t errlen);
 /* 拼好的扩展点片段（按 order 升序），用于提示词组装；没有启用插件时返回空串。 */
 int aic_plugin_build_fragment(aic_db *db, sb *out, char *err, size_t errlen);

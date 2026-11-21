@@ -634,7 +634,7 @@ static void fr10(V *v, const char *wd)
     memset(&got, 0, sizeof(got));
     aic_msg_get(db, m.id, &got);
     check(v, strcmp(got.content, "改过的内容") == 0, "修改后正文更新");
-    check(v, got.edited_at[0] != 0, "修改写入 edited_at");
+    check(v, got.edited_at[0] != 0, "修改写入 edited_at（实际=\"%s\"）", got.edited_at);
     check(v, got.original_content != NULL && strcmp(got.original_content, "原始内容") == 0,
           "修改保留首次原文");
     aic_msg_free(&got);

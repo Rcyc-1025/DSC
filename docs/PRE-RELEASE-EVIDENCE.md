@@ -1,13 +1,13 @@
-# 发布前证据（Sai 1.0.0）
+# 发布前证据（Sai 1.1.0）
 
-> 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §8。
+> 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 `8。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24）。
 > 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
 > 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
-> 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
+> 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 `13.4 已改为 `13.2）。
 > **产品名**：2026-11-22 的存档版本把产品名从「DeepSeek 陪伴对话软件」改为 **Sai**（正文仅 3 处 + 标题，功能参数与 FR 条目未变）；
 > 本次已按该版把可执行文件名、安装包/便携包名、Android 包名与应用名、文档与仓库名统一为 Sai，核心模块前缀 `aic_` 保持不动。
-> §2 的哈希是改名重建后的实测值，本文件 §3 起的数字（578 / 254 / 24 条 FR）也是改名后重新跑出来的。
+> `2 的哈希是改名重建后的实测值，本文件 `3 起的数字（626 / 254 / 24 条 FR）也是改名后重新跑出来的。
 
 ## 1. 构建环境（本机实测）
 
@@ -24,25 +24,25 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面） | 1411346 | 3d80b64b283a428e138a070948e206c121ac29a66396d4d3da34832e064b28f7 |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | f05a1e95994677f8e22b60b77adf498a1fc621676a95ad3e2b31d3245497628d |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 0fed26428a01f68a19a7e268be101ce6dfc1d33ecf14a0d6e319228b5a0445fd |
-| build\test_core.exe（单元测试） | 1441012 | be158cc887d10e38c592e1f04ba643afd4a26016224c5580ba1302208c296f33 |
-| build_android\Sai.apk | 737742 | 6f41ad74ed4005c4296f57fab3154ff461e44c7f0392300e332590f057f8fe55 |
-| dist\Sai-1.0.0-win-x64-portable.zip | 1430021 | 576584e7e27f6c781c32c90b243d499a92ae219228c850dcd2c580e54715295e |
-| dist\Sai-1.0.0-win-x64-setup.exe | 3516024 | cf1d301a192fad37c4e63f6c1868b1fb37becf5a1e143436254048b0b8bc40cd |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1368064 | e08bed2517c2722ed2d2e0a3fde29ba783348add38f860685b092c36db10067a |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 9c879002158e061099a75021c1d600b12168a0587c14c1a6eb3a583c8a089304 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | dfba6b4183a2799e45c8ff24d2c3c3930b28ec892953923008c31c604328a3f2 |
-| dist\Sai-1.0.0-win-arm64-portable.zip | 803744 | 2cbcc872967f679e9b5f86f5f33da69b25c3393133909df94444814de9bcdcce |
+| build\Sai.exe（Windows 界面，1.1.0） | 1468849 | e9c971231613a7b8ae40141e2b5961e7f33251710a5b9e7ca2630b07398383ff |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1445485 | 270c33d1bcfc2177e0f4d5275182973497bb03d16e99c570d5c6d081f34e2d27 |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 994e264123d0c2ccdfac6afc998f4787f7789689eb871d1c19002f20c00a9513 |
+| build\test_core.exe（单元测试） | 1499486 | 76ffa742a5e4f93738ce6840513e2993f45ae821ceadc09c8b512dee41c51cbb |
+| build_android\Sai.apk | 待本轮 Android 构建后回填 | 待回填 |
+| dist\Sai-1.1.0-win-x64-portable.zip | 1477974 | 0e378ae2a55231923f3c29522bcb1b0fc7528ce43cdebc75fdd012c7d0589f72 |
+| dist\Sai-1.1.0-win-x64-setup.exe | 3628059 | de7191c83d82e9de3917cc275d3528e5b5d161c1b85763fb60bf69d2074be01c |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1413120 | 57547073fcbf010d9c8839adcfcd7eb3202b2b659956ab369e8bf74d750ba613 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 398d264d3d459826ac30624535ed8f9878706406d1ab8701f9e107823b6f6151 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 013b27abcfde399e955dff6c6c415e3c37ce9c8d19b1b12b98bc6da013bd49e0 |
+| dist\Sai-1.1.0-win-arm64-portable.zip | 830265 | d06b2eddb9b8987d9c8340f279920d9dc8f34ecf2f3c4ca5bd133b4a7d968a0c |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
 
-### 2.1 Windows ARM64 交叉编译（修订版 §16.1 的双架构要求）
+### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 12.3s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\Sai-1.0.0-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\Sai-1.1.0-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -56,7 +56,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
 2. **PE 架构核验**：产物头里的 machine 字段实测为 `0xAA64`（ARM64），不是 x64 的 `0x8664`。
 
 **这一版 ARM64 的诚实边界**：构建机是 x64，Windows 无法在本机执行 ARM64 二进制，所以只做到
-"编译链接成功 + 架构字段核验 + 导入库由链接器解析通过"，**没有在 ARM64 真机上启动过**（§11 第 4 条）。
+"编译链接成功 + 架构字段核验 + 导入库由链接器解析通过"，**没有在 ARM64 真机上启动过**（`11 第 4 条）。
 不产出 ARM64 安装包：自解压安装程序本身是 x64，在 ARM64 Windows 上要靠系统仿真运行。
 
 ## 3. 单元测试（核心层）
@@ -64,7 +64,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**578 通过，0 失败**（1.0s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+实测：**626 通过，0 失败**（1.1s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），含事务回滚、嵌套 SAVEPOINT、
 迁移幂等、导出校验和被篡改、导入冲突三策略、插件崩溃与超时终止（400ms 超时下进程被 TerminateProcess）。
 
@@ -126,7 +126,7 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 
 ## 8. 便携包可独立运行
 
-把 dist\Sai-1.0.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
+把 dist\Sai-1.1.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
 pe_imports 自检显示只导入系统 DLL）。实测：
 
     tools\aic.exe doctor
@@ -148,7 +148,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\Sai-1.0.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\Sai-1.1.0-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
 实测（静默安装到 `build\installer\test_install`）：
@@ -187,15 +187,33 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 11. 未实测 / 明确不做（避免把"没跑过"说成"已验证"）
 
 1. **Android 真机运行**：本机无模拟器镜像也无设备，只做到"能编译、能签名、能校验产物"，界面交互与 JNI 调用未在设备上跑过。
-2. **真实网络请求**：按用户裁决只做"请求组装 + SSE 解析 + 错误分类 + 余额解析"，transport 默认实现明确返回"未配置传输通道"，
-   demo 回复由本地假传输生成，未用真实 Key 打 api.deepseek.com。
+2. **真实网络请求**：WinHTTP 传输（Windows）与 HttpURLConnection（Android）都已实现并接入引擎，流式增量、取消、
+   余额查询、更新包 Range 续传下载都有代码路径；但**没有用真实 Key 打过 api.deepseek.com**，本地验证用假传输与本地
+   HTTP 服务完成。首次真实对话仍需用户自备 Key 自行确认。
 3. **安装包的两步系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
-   安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 §9），需在普通桌面环境复测。
-4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `Sai.exe` / 插件宿主 / 示例插件（§2.1），
+   安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 `9），需在普通桌面环境复测。
+4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `Sai.exe` / 插件宿主 / 示例插件（`2.1），
    但本机是 x64、无法执行 ARM64 二进制，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包）。
    32 位 Windows 与 x86 架构不构建、不承诺。
 5. **长时间人工回归**：界面验证为离屏渲染 + 逻辑自动化（router/动画参数/主题对比度断言），未做数小时点击回归。
-6. **更新安装与余额的真实下发**：更新只到"下载 + 校验 + 备份门"，安装动作留给平台层；余额只到解析与本地账本并列展示。
+6. **更新安装的真实下发**：已实现"备份门 → 断点续传下载 → 哈希/大小校验 → 复制回滚点 → 调用安装包 /S → 失败整树回滚"，
+   但没有真实可用的更新包可供下发，只在本地构造的包上验证了拒绝路径（大小/哈希不符、安装程序失败回滚）。
+   余额为解析 + 本地账本并列展示，接口失败时显示上次结果并标注过期时间。
+
+## 11.1 本轮补齐的能力与证据
+
+| 能力 | 实现位置 | 证据 |
+| --- | --- | --- |
+| 真实传输（WinHTTP，流式 + 取消） | `src/platform/win/http_win.c`、`src/core/http.h` | 引擎测试用假传输覆盖事件流；传输层本身用本地 HTTP 服务验证 |
+| 停止生成 / 重新生成 | `src/core/engine.c`（stop_requested / aic_engine_regenerate + superseded 列） | 单测 `test_regenerate`：旧回复置 superseded、分页只剩新回复、导出仍含历史 |
+| Markdown 渲染、代码块、上下文用量、字数 | `src/ui/win/aic_app.c`（md_strip / 生成中气泡 / 底部 "已输入 N 字 · 上下文 M 条"） | 8 张离屏截图 |
+| 导入导出搬工作线程 | `src/ui/win/aic_app.c`（WM_APP_IO + io_worker） | 单测覆盖 transfer 本身；界面线程不再同步做批量 IO |
+| 整包备份 / 恢复 / 清理 | `src/core/backup.c`、`src/core/zip.c` | 单测 `test_zip_backup`（创建 / 校验 / 清理 / 取最新 / 恢复） |
+| 头像导入（GDI+，最长边 512，圆形绘制） | `src/platform/win/avatar_win.c` | 单测 `test_avatar`（8×8 BMP → avatars/xxx.jpg → 绘制成功） |
+| 跟随系统深浅色 | `read_system_night`（HKCU Themes\Personalize，WM_SETTINGCHANGE 重读） | 主题对比度断言 + 截图 |
+| 余额阈值通知 | `src/platform/win/notify_win.c` + `app_on_bal` | 单测覆盖余额解析与阈值判断 |
+| 插件更新 / 扩展点调用 | `src/core/plugin.c`（aic_plugin_update / aic_plugin_call_point） | 单测 `test_plugin_extra`（清单 v1→v2、扩展点 describe 返回 count=0） |
+| 启动与周期更新检查、替换安装与回滚 | `app_check_update`、`src/platform/win/update_apply_win.c` | 单测 `test_update` + 本节第 6 条口径 |
 
 ## 12. 复核命令速查
 

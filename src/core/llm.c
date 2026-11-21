@@ -373,7 +373,7 @@ int aic_sse_finish(aic_sse_parser *p, aic_llm_event_fn fn, void *ud)
 aic_llm_err aic_llm_transport_unavailable_post(void *ud, const char *url, const char *api_key,
                                                const char *body, aic_sse_parser *parser,
                                                aic_llm_event_fn fn, void *cb_ud,
-                                               char *err, size_t errlen)
+                                               volatile int *cancel, char *err, size_t errlen)
 {
     (void)ud; (void)url; (void)api_key; (void)body; (void)parser; (void)fn; (void)cb_ud;
     if (err && errlen) {

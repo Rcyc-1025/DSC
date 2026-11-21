@@ -109,6 +109,11 @@ static const migration g_migrations[] = {
       "  v TEXT NOT NULL"
       ");"
     },
+    /* v2：重新生成时把被替换的回复标记为 superseded（不删除，便于回看）。
+     * 上下文与消息列表只取 superseded = 0 的记录，导出仍包含全部历史。 */
+    { 2,
+      "ALTER TABLE message ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;"
+    },
 };
 
 static const int g_migration_count = (int)(sizeof(g_migrations) / sizeof(g_migrations[0]));

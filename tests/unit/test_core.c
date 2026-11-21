@@ -27,7 +27,10 @@
 #include "router.h"
 #include "theme.h"
 #include "transfer.h"
+#include "avatar.h"
+#include "backup.h"
 #include "update.h"
+#include "zip.h"
 #include "util.h"
 
 static int g_pass = 0;
@@ -861,7 +864,7 @@ static void test_llm(aic_db *db)
     aic_sse_init(&p2);
     err[0] = '\0';
     aic_llm_err trc = tr.post_stream(tr.ud, "https://example.invalid/x", "k", "{}", &p2,
-                                     NULL, NULL, err, sizeof(err));
+                                     NULL, NULL, NULL, err, sizeof(err));
     CHECK_EQ_INT(trc, AIC_LLM_E_NETWORK, "默认传输层返回网络不可用");
     CHECK(err[0] != '\0', "默认传输层给出中文说明");
     CHECK_EQ_INT(tr.probe(tr.ud, "https://example.invalid/x", "k", err, sizeof(err)),
@@ -1069,9 +1072,10 @@ typedef struct fake_transport {
 
 static aic_llm_err fake_post(void *ud, const char *url, const char *api_key, const char *body,
                              aic_sse_parser *parser, aic_llm_event_fn fn, void *cb_ud,
-                             char *err, size_t errlen)
+                             volatile int *cancel, char *err, size_t errlen)
 {
     fake_transport *f = (fake_transport *)ud;
+    (void)cancel;
     f->post_calls++;
     aic_strlcpy_utf8(f->last_url, sizeof(f->last_url), url ? url : "");
     aic_strlcpy_utf8(f->last_body, sizeof(f->last_body), body ? body : "");
@@ -1697,6 +1701,272 @@ static void test_plugin_proc(aic_db *db)
     CHECK_EQ_INT(aic_plugin_uninstall(db, "crash_case", 0, err, sizeof(err)), AIC_OK, "清理崩溃插件");
 }
 
+/* ---------- 重新生成与替换标记 ---------- */
+static void test_regenerate(aic_db *db)
+{
+    aic_conversation conv;
+    memset(&conv, 0, sizeof(conv));
+    CHECK_EQ_INT(aic_conv_create(db, AIC_MODE_QA, "重新生成测试", NULL, AIC_MODEL_FLASH, &conv), AIC_OK,
+                 "创建重新生成测试会话");
+
+    fake_transport fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.chunks[0] = "data: {\"choices\":[{\"delta\":{\"content\":\"第一版回复\"}}]}\n\ndata: [DONE]\n\n";
+    fake.chunks[1] = "data: {\"choices\":[{\"delta\":{\"content\":\"第二版回复\"}}]}\n\ndata: [DONE]\n\n";
+    fake.chunk_n = 2;
+
+    aic_llm_transport tr;
+    memset(&tr, 0, sizeof(tr));
+    tr.ud = &fake;
+    tr.post_stream = fake_post;
+    tr.probe = fake_probe;
+
+    aic_engine *eng = NULL;
+    CHECK_EQ_INT(aic_engine_create(db, &eng), AIC_OK, "创建重新生成用引擎");
+    aic_engine_set_transport(eng, tr);
+    aic_engine_set_api_key(eng, "sk-test-not-a-real-key");
+
+    aic_engine_result res;
+    char err[512];
+    memset(&res, 0, sizeof(res));
+    err[0] = '\0';
+    CHECK_EQ_INT(aic_engine_send(eng, conv.id, "讲个故事", &res, err, sizeof(err)), AIC_OK,
+                 "首轮发送成功");
+    CHECK_EQ_STR(res.text ? res.text : "", "第一版回复", "首轮助手文本");
+    char first_id[40];
+    aic_strlcpy_utf8(first_id, sizeof(first_id), res.assistant_msg_id);
+    aic_engine_result_free(&res);
+
+    /* 第二次请求换成另一段响应，验证重新生成确实取到新文本。 */
+    fake.chunks[0] = "data: {\"choices\":[{\"delta\":{\"content\":\"第二版回复\"}}]}\n\ndata: [DONE]\n\n";
+    fake.chunk_n = 1;
+
+    memset(&res, 0, sizeof(res));
+    char old_id[40];
+    CHECK_EQ_INT(aic_engine_regenerate(eng, conv.id, old_id, sizeof(old_id), &res, err, sizeof(err)),
+                 AIC_OK, "重新生成成功");
+    CHECK_EQ_STR(old_id, first_id, "被替换的是上一条助手消息");
+    CHECK_EQ_STR(res.text ? res.text : "", "第二版回复", "新文本来自第二片响应");
+    CHECK(strcmp(res.assistant_msg_id, first_id) != 0, "新助手消息是新 id");
+    aic_engine_result_free(&res);
+
+    aic_message *all = NULL;
+    size_t all_n = 0;
+    CHECK_EQ_INT(aic_msg_export_all(db, conv.id, &all, &all_n), AIC_OK, "导出全部消息（含被替换）");
+    CHECK_EQ_INT(all_n, 3, "共 3 条：用户 + 两版助手（旧版标记为已替换）");
+    aic_msg_free_array(all, all_n);
+
+    aic_message *page = NULL;
+    size_t pn = 0;
+    CHECK_EQ_INT(aic_msg_page(db, conv.id, -1, 16, &page, &pn), AIC_OK, "分页读取");
+    {
+        int assistants = 0;
+        for (size_t i = 0; i < pn; i++)
+            if (strcmp(page[i].role, "assistant") == 0) assistants++;
+        CHECK_EQ_INT(assistants, 1, "被替换的助手消息不出现在列表里");
+    }
+    if (page) aic_msg_free_array(page, pn);
+    aic_engine_destroy(eng);
+}
+
+/* ---------- ZIP 与备份包 ---------- */
+static void test_zip_backup(void)
+{
+    char dir[512];
+    snprintf(dir, sizeof(dir), "aic_test_zip_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(dir);
+
+    char a[600], b[600];
+    aic_path_join(a, sizeof(a), dir, "a.txt");
+    aic_path_join(b, sizeof(b), dir, "b.txt");
+    aic_file_write_all(a, "alpha", 5);
+    aic_file_write_all(b, "beta", 4);
+
+    char zp[600];
+    aic_path_join(zp, sizeof(zp), dir, "t.zip");
+    aic_zip_src items[2];
+    memset(items, 0, sizeof(items));
+    items[0].name = "dir/a.txt";
+    items[0].path = a;
+    items[1].name = "b.txt";
+    items[1].path = b;
+    char err[512] = {0};
+    CHECK_EQ_INT(aic_zip_create(items, 2, zp, err, sizeof(err)), AIC_OK, "创建 ZIP");
+
+    char *data = NULL;
+    size_t len = 0;
+    CHECK_EQ_INT(aic_zip_read_entry(zp, "dir/a.txt", &data, &len, err, sizeof(err)), AIC_OK,
+                 "读取 ZIP 内条目");
+    CHECK_EQ_INT((int)len, 5, "条目长度");
+    if (data) { CHECK_EQ_STR(data, "alpha", "条目内容"); aic_xfree(data); }
+
+    char out[600];
+    aic_path_join(out, sizeof(out), dir, "x");
+    CHECK_EQ_INT(aic_zip_extract(zp, out, err, sizeof(err)), AIC_OK, "解压 ZIP");
+    char ex[700];
+    aic_path_join(ex, sizeof(ex), out, "dir\\a.txt");
+    CHECK(aic_path_exists(ex), "解压后的文件存在");
+
+    /* 备份：建库 → 备份 → 校验 → 清理 */
+    char root[600], dbp[700], bdir[700], zip[800];
+    aic_path_join(root, sizeof(root), dir, "root");
+    aic_mkdir_p(root);
+    aic_path_join(dbp, sizeof(dbp), root, "db");
+    aic_mkdir_p(dbp);
+    aic_path_join(dbp, sizeof(dbp), dbp, "sai.db");
+    aic_db *bdb = NULL;
+    CHECK_EQ_INT(aic_db_open(dbp, &bdb), AIC_OK, "打开备份用数据库");
+    if (bdb) {
+        CHECK_EQ_INT(aic_db_migrate(bdb, dbp, NULL, NULL, NULL), AIC_OK, "备份库迁移");
+        aic_setting_set(bdb, "probe", "1");
+        aic_db_close(bdb);
+    }
+    aic_path_join(bdir, sizeof(bdir), root, "backups");
+    aic_mkdir_p(bdir);
+    aic_path_join(zip, sizeof(zip), bdir, "sai-backup-test.zip");
+
+    aic_backup_info info;
+    memset(&info, 0, sizeof(info));
+    CHECK_EQ_INT(aic_backup_create(root, dbp, "1.0.0", zip, &info, err, sizeof(err)), AIC_OK,
+                 "创建备份包");
+    CHECK_EQ_INT(info.schema_version, AIC_BACKUP_SCHEMA_VER, "备份包 schema 版本");
+    CHECK(info.file_count >= 1, "备份包含数据库文件");
+    memset(&info, 0, sizeof(info));
+    CHECK_EQ_INT(aic_backup_verify(zip, &info, err, sizeof(err)), AIC_OK, "校验备份包");
+    int removed = -1;
+    CHECK_EQ_INT(aic_backup_clean(bdir, 1, &removed, err, sizeof(err)), AIC_OK, "清理旧备份");
+    CHECK_EQ_INT(removed, 0, "只有一个备份时无需清理");
+
+    char latest[900];
+    latest[0] = '\0';
+    memset(&info, 0, sizeof(info));
+    CHECK_EQ_INT(aic_backup_latest(bdir, latest, sizeof(latest), &info, err, sizeof(err)), AIC_OK,
+                 "取最近备份");
+    CHECK(strstr(latest, "sai-backup-test.zip") != NULL, "最近备份指向刚创建的文件");
+
+    /* 恢复：解回同一 root，数据库文件应存在 */
+    CHECK_EQ_INT(aic_backup_restore(zip, root, err, sizeof(err)), AIC_OK, "从备份恢复");
+    CHECK(aic_path_exists(dbp), "恢复后数据库文件存在");
+}
+
+/* ---------- 头像导入 ---------- */
+static void test_avatar(void)
+{
+    char dir[512];
+    snprintf(dir, sizeof(dir), "aic_test_avatar_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(dir);
+
+    /* 手写 8x8 24bpp BMP */
+    unsigned char bmp[54 + 8 * 24];
+    memset(bmp, 0, sizeof(bmp));
+    bmp[0] = 'B'; bmp[1] = 'M';
+    int size = (int)sizeof(bmp);
+    memcpy(bmp + 2, &size, 4);
+    int off = 54;
+    memcpy(bmp + 10, &off, 4);
+    int hdr = 40;
+    memcpy(bmp + 14, &hdr, 4);
+    int w = 8, h = 8;
+    memcpy(bmp + 18, &w, 4);
+    memcpy(bmp + 22, &h, 4);
+    short planes = 1, bpp = 24;
+    memcpy(bmp + 26, &planes, 2);
+    memcpy(bmp + 28, &bpp, 2);
+    for (int i = 54; i < size; i++) bmp[i] = (unsigned char)(i * 7);
+
+    char src[700];
+    aic_path_join(src, sizeof(src), dir, "in.bmp");
+    CHECK_EQ_INT(aic_file_write_all(src, (const char *)bmp, sizeof(bmp)), AIC_OK, "写出测试图片");
+
+    char root[600];
+    aic_path_join(root, sizeof(root), dir, "root");
+    aic_mkdir_p(root);
+
+    char rel[512] = {0};
+    char err[512] = {0};
+    int rc = aic_avatar_import(src, root, rel, sizeof(rel), err, sizeof(err));
+    CHECK_EQ_INT(rc, AIC_OK, "导入头像");
+    if (rc == AIC_OK) {
+        CHECK(strncmp(rel, "avatars/", 8) == 0, "头像存到相对路径 avatars/ 下");
+        char full[900];
+        aic_path_join(full, sizeof(full), root, rel);
+        CHECK(aic_path_exists(full), "头像文件已落盘");
+        int64_t sz = 0;
+        CHECK_EQ_INT(aic_file_size(full, &sz), AIC_OK, "读取头像大小");
+        CHECK(sz > 0, "头像文件非空");
+
+        HDC mdc = CreateCompatibleDC(NULL);
+        HBITMAP bm = CreateCompatibleBitmap(mdc, 72, 72);
+        HGDIOBJ ob = SelectObject(mdc, bm);
+        CHECK_EQ_INT(aic_avatar_draw(mdc, root, rel, 0, 0, 72), 1, "头像可绘制（返回 1 表示成功）");
+        SelectObject(mdc, ob);
+        DeleteObject(bm);
+        DeleteDC(mdc);
+    }
+}
+
+/* ---------- 插件更新与扩展点调用 ---------- */
+static void test_plugin_extra(aic_db *db)
+{
+    char dir[512];
+    snprintf(dir, sizeof(dir), "aic_test_plgx_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(dir);
+    char src[700], root[700];
+    aic_path_join(src, sizeof(src), dir, "src");
+    aic_mkdir_p(src);
+    aic_path_join(root, sizeof(root), dir, "plugins");
+    aic_mkdir_p(root);
+
+    char dll[800];
+    aic_path_join(dll, sizeof(dll), src, "sample_basic.dll");
+    CHECK_EQ_INT(aic_file_write_all(dll, "MZ", 2), AIC_OK, "写出占位插件模块");
+
+    char mf[800];
+    aic_path_join(mf, sizeof(mf), src, "plugin.json");
+    const char *json1 =
+        "{\"id\":\"upd_demo\",\"name\":\"更新演示\",\"version\":\"1.0.0\",\"author\":\"tests\","
+        "\"entry\":\"sample_basic.dll\",\"permissions\":[\"prompt.fragment\"],"
+        "\"extension_points\":[\"prompt.fragment\"]}";
+    CHECK_EQ_INT(aic_file_write_all(mf, json1, strlen(json1)), AIC_OK, "写出插件清单 v1");
+
+    aic_plugin plg;
+    char err[512] = {0};
+    memset(&plg, 0, sizeof(plg));
+    CHECK_EQ_INT(aic_plugin_install(db, root, mf, "file", &plg, err, sizeof(err)), AIC_OK,
+                 "安装插件 v1");
+    CHECK_EQ_STR(plg.version, "1.0.0", "安装版本 1.0.0");
+    aic_plugin_free(&plg);
+
+    const char *json2 =
+        "{\"id\":\"upd_demo\",\"name\":\"更新演示\",\"version\":\"1.0.1\",\"author\":\"tests\","
+        "\"entry\":\"sample_basic.dll\",\"permissions\":[\"prompt.fragment\"],"
+        "\"extension_points\":[\"prompt.fragment\"]}";
+    CHECK_EQ_INT(aic_file_write_all(mf, json2, strlen(json2)), AIC_OK, "写出插件清单 v2");
+    memset(&plg, 0, sizeof(plg));
+    CHECK_EQ_INT(aic_plugin_update(db, root, mf, &plg, err, sizeof(err)), AIC_OK, "插件更新成功");
+    CHECK_EQ_STR(plg.version, "1.0.1", "更新后版本 1.0.1");
+    aic_plugin_free(&plg);
+
+    /* 未安装的插件不能更新 */
+    const char *json3 =
+        "{\"id\":\"not_installed\",\"name\":\"x\",\"version\":\"1.0.0\",\"author\":\"t\","
+        "\"entry\":\"sample_basic.dll\",\"permissions\":[],\"extension_points\":[]}";
+    CHECK_EQ_INT(aic_file_write_all(mf, json3, strlen(json3)), AIC_OK, "写出未安装插件清单");
+    memset(&plg, 0, sizeof(plg));
+    CHECK_EQ_INT(aic_plugin_update(db, root, mf, &plg, err, sizeof(err)), AIC_E_NOTFOUND,
+                 "未安装的插件更新返回 NOTFOUND");
+
+    /* 扩展点调用：扩展点不匹配的插件不会被调用 */
+    char host[600];
+    aic_path_join(host, sizeof(host), g_bin_dir, "aic_plugin_host.exe");
+    char resp[4096];
+    memset(resp, 0, sizeof(resp));
+    CHECK_EQ_INT(aic_plugin_call_point(db, host, "ui.panel", "describe", "{}", resp, sizeof(resp),
+                                       err, sizeof(err)), AIC_OK,
+                 "调用 ui.panel 扩展点（无插件声明时为空结果）");
+    CHECK(strstr(resp, "\"count\":0") != NULL, "没有声明该扩展点的插件");
+}
+
 int main(void)
 {
     init_bin_dir();
@@ -1707,6 +1977,7 @@ int main(void)
     test_theme();
     test_credential();
     test_update();
+    test_zip_backup();
 
     char dir[512];
     snprintf(dir, sizeof(dir), "aic_test_db_%lld", (long long)aic_now_ms());
@@ -1740,6 +2011,9 @@ int main(void)
         test_engine(db);
         test_plugin(db);
         test_plugin_proc(db);
+        test_regenerate(db);
+        test_plugin_extra(db);
+        test_avatar();
         test_perf(db);
 
         /* 事务回滚验证。 */

@@ -18,6 +18,7 @@ typedef struct aic_message {
     char      role[16];
     char     *content;            /* 堆分配，用 aic_msg_free 释放 */
     int       recalled;
+    int       superseded;         /* 1 表示被「重新生成」替换，界面与上下文不再使用 */
     char      edited_at[32];
     char     *original_content;   /* 撤回/首次修改前的原文，可为 NULL */
     char      model_id[64];
@@ -41,6 +42,10 @@ int aic_msg_unrecall(aic_db *db, const char *id);
 /* 修改：写 content + edited_at，首次修改保存原文。 */
 int aic_msg_edit(aic_db *db, const char *id, const char *new_content, char *err, size_t errlen);
 int aic_msg_delete(aic_db *db, const char *id);
+/* 重新生成：把旧回复标记为被替换（保留数据，不删除）。 */
+int aic_msg_supersede(aic_db *db, const char *id);
+/* 会话内最后一条未被替换、未撤回的助手消息；没有返回 AIC_E_NOTFOUND。 */
+int aic_msg_last_assistant(aic_db *db, const char *conv_id, aic_message *out);
 int aic_msg_count(aic_db *db, const char *conv_id, long long *out_count);
 /* 会话内消息的创建时间（用于撤回时间窗判断）。 */
 int64_t aic_msg_created_ms(aic_db *db, const char *id);

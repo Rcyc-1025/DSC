@@ -194,9 +194,40 @@ int aic_update_run(const aic_update_manifest *m, const char *dst_path,
     }
     if (test_mode) return AIC_OK;   /* 自动验收：只到校验通过为止 */
 
-    /* 真实安装由平台层完成（Windows 替换安装 / Android 系统更新），本层不实现。 */
+    /* 真实安装由平台层完成（Windows 替换安装 / Android 系统更新），见 aic_update_run_install。 */
     if (err && errlen) aic_strlcpy_utf8(err, errlen, "安装动作由平台层执行");
     return AIC_E_UNSUPPORTED;
+}
+
+int aic_update_run_install(const aic_update_manifest *m, const char *dst_path,
+                           aic_update_download_fn dl, void *ud, int backup_ok,
+                           const char *app_dir, const char *backup_dir, volatile int *cancel,
+                           char *err, size_t errlen)
+{
+    if (!m || !dst_path) return AIC_E_INVAL;
+    if (err && errlen) err[0] = '\0';
+    int rc = aic_update_can_apply(backup_ok, err, errlen);
+    if (rc != AIC_OK) return rc;
+    if (cancel && *cancel) return AIC_E_TIMEOUT;
+    if (!dl) dl = aic_update_download_unavailable;
+    rc = dl(ud, m->url, dst_path, m->size, err, errlen);
+    if (rc != AIC_OK) return rc;
+    rc = aic_update_verify_file(m, dst_path, err, errlen);
+    if (rc != AIC_OK) {
+        aic_file_remove(dst_path);
+        return rc;
+    }
+#ifdef _WIN32
+    if (!app_dir || !backup_dir) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "缺少程序目录或回滚点目录");
+        return AIC_E_INVAL;
+    }
+    return aic_update_apply_package(dst_path, app_dir, backup_dir, cancel, err, errlen);
+#else
+    (void)app_dir; (void)backup_dir; (void)cancel;
+    if (err && errlen) aic_strlcpy_utf8(err, errlen, "当前平台由系统安装器完成更新，请在外部执行安装包");
+    return AIC_E_UNSUPPORTED;
+#endif
 }
 
 int aic_update_should_check(int64_t last_check_ms, int interval_hours, int64_t now_ms)

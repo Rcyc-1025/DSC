@@ -38,8 +38,8 @@
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
 
    ```powershell
-   python tools\package_win.py        # dist\Sai-1.0.0-win-x64-portable.zip + .sha256
-   python tools\make_installer.py     # dist\Sai-1.0.0-win-x64-setup.exe + .sha256
+   python tools\package_win.py        # dist\Sai-1.1.0-win-x64-portable.zip + .sha256
+   python tools\make_installer.py     # dist\Sai-1.1.0-win-x64-setup.exe + .sha256
    python tools\build_android.py      # build_android\Sai.apk
    python tools\verify_android.py     # APK 结构 / ABI / 清单 / 签名校验
    ```

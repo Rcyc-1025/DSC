@@ -18,6 +18,11 @@
 #include <string.h>
 
 #include "aic_types.h"
+#include "avatar.h"
+#include "backup.h"
+#include "diaglog.h"
+#include "http.h"
+#include "notify.h"
 #include "credential.h"
 #include "db.h"
 #include "engine.h"
@@ -53,7 +58,7 @@ enum {
     ACT_NONE = 0,
     ACT_NAV_ME = 100, ACT_NAV_SETTINGS, ACT_NAV_CHAT,
     ACT_MODE_SWITCH,
-    ACT_SEND, ACT_AI_INFO, ACT_GUIDE_VIEW, ACT_PROFILE_EDIT,
+    ACT_SEND, ACT_STOP, ACT_REGENERATE, ACT_AI_INFO, ACT_GUIDE_VIEW, ACT_PROFILE_EDIT,
     ACT_ROW_THEME, ACT_ROW_MODEL, ACT_ROW_KEY, ACT_ROW_EXPORT, ACT_ROW_IMPORT,
     ACT_ROW_PLUGIN, ACT_ROW_BALANCE, ACT_ROW_UPDATE, ACT_ROW_GUIDE, ACT_ROW_DATA,
     ACT_ROW_ABOUT, ACT_ROW_MOTION,
@@ -64,7 +69,9 @@ enum {
     ACT_QA_THREAD_BASE = 400,
     ACT_MSG_BASE = 600,
     ACT_EXPORT_JSON, ACT_EXPORT_MD, ACT_EXPORT_TXT,
-    ACT_UPDATE_TEST, ACT_UPDATE_SKIP,
+    ACT_UPDATE_TEST, ACT_UPDATE_SKIP, ACT_UPDATE_NOW, ACT_UPDATE_LATER,
+    ACT_BACKUP_NOW, ACT_BACKUP_RESTORE, ACT_BACKUP_CLEAN, ACT_AVATAR_PICK,
+    ACT_PLUGIN_IMPORT_ACT, ACT_PLUGIN_PANEL_CALL, ACT_PANEL_BASE = 1100, ACT_PLUGIN_TOGGLE_BASE = 1200, ACT_PLUGIN_UPDATE_BASE = 1400,
     ACT_MODEL_FLASH, ACT_MODEL_PRO,
     ACT_MSG_RECALL, ACT_MSG_EDIT, ACT_MSG_SAVE,
     ACT_FIELD_BASE = 900
@@ -138,6 +145,34 @@ typedef struct App {
 
     int   quit_confirm;
     char  sel_msg[40];       /* 当前选中的消息（撤回/修改用） */
+
+    /* 后台发送（技术设计 4.2：网络与流式解析跑工作线程，结果经消息队列回界面线程） */
+    volatile LONG sending;
+    HANDLE     worker;
+    char       stream_text[65536];
+    size_t     stream_len;
+    int        offline_demo;
+
+    /* 系统主题与通知 */
+    int   system_night;
+    int   notified_update;
+
+    /* 更新 */
+    aic_update_manifest upd;
+    int        upd_available;
+    char       upd_pkg[1024];
+    long long  upd_last_check;
+
+    /* 插件面板（ui.panel 扩展点返回的按钮清单） */
+    char  plugin_panel[4096];
+    int   plugin_panel_n;
+    aic_plugin *plugs;
+    size_t      plug_n;
+
+    /* 余额（FR-11：账户接口 + 本地账本并列） */
+    aic_llm_balance bal;
+    int             bal_valid;
+    long long       bal_ms;
 } App;
 
 static App g_app;
@@ -237,14 +272,14 @@ static void w_to_u8(const wchar_t *s, char *out, int cap)
 
 static COLORREF tok(App *a, aic_token t)
 {
-    /* 主题偏好：0 日间 / 1 夜间 / 2 跟随系统（本机按日间处理系统值）。 */
+    /* 主题偏好：0 日间 / 1 夜间 / 2 跟随系统（a->system_night 来自系统个人化设置）。 */
     const aic_theme *th = NULL;
     char pref[16];
     if (aic_setting_get(a->db, AIC_SET_THEME, pref, sizeof(pref)) != AIC_OK) pref[0] = '\0';
     int p = 0;
     if (pref[0] == '1' || aic_str_ieq(pref, "night")) p = 1;
     else if (pref[0] == '2' || aic_str_ieq(pref, "system")) p = 2;
-    th = aic_theme_resolve(p, 0);
+    th = aic_theme_resolve(p, a->system_night);
     unsigned int v = aic_theme_color(th, t);
     return RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
 }
@@ -347,7 +382,8 @@ static void demo_reply_preview(App *a, char *out, size_t cap)
 /* 离线演示传输：按 SSE 协议切片喂给解析器，不碰网络（产品裁决：不发真实 HTTP）。 */
 static aic_llm_err demo_post(void *ud, const char *url, const char *api_key,
                              const char *body, aic_sse_parser *parser,
-                             aic_llm_event_fn fn, void *cb_ud, char *err, size_t errlen)
+                             aic_llm_event_fn fn, void *cb_ud, volatile int *cancel,
+                             char *err, size_t errlen)
 {
     App *a = (App *)ud;
     (void)url; (void)body;
@@ -360,6 +396,7 @@ static aic_llm_err demo_post(void *ud, const char *url, const char *api_key,
     size_t total = strlen(reply);
     size_t start = 0;
     for (int i = 1; i <= 3; i++) {
+        if (cancel && *cancel) return AIC_LLM_E_CANCEL;
         size_t end = total * (size_t)i / 3;
         if (end > total) end = total;
         char piece[400];
@@ -479,17 +516,27 @@ static void app_reload_threads(App *a)
     a->thread_n = n;
 }
 
+static void md_strip(const char *in, char *out, size_t cap);
+static void on_stream_delta(void *ud, const char *delta);
+static void app_update(App *a);
+
 static void app_setup_engine(App *a)
 {
     if (!a->eng) {
         if (aic_engine_create(a->db, &a->eng) != AIC_OK) return;
     }
-    aic_llm_transport tr;
-    memset(&tr, 0, sizeof(tr));
-    tr.ud = a;
-    tr.post_stream = demo_post;
-    tr.probe = demo_probe;
-    aic_engine_set_transport(a->eng, tr);
+    if (a->offline_demo || !aic_http_available()) {
+        aic_llm_transport tr;
+        memset(&tr, 0, sizeof(tr));
+        tr.ud = a;
+        tr.post_stream = demo_post;
+        tr.probe = demo_probe;
+        aic_engine_set_transport(a->eng, tr);
+        DLOG("transport=demo offline=%d http=%d", a->offline_demo, aic_http_available());
+    } else {
+        aic_engine_set_transport(a->eng, aic_win_http_transport());
+        DLOG("transport=winhttp");
+    }
 
     char url[AIC_LLM_URL_MAX];
     if (aic_setting_get(a->db, AIC_SET_CRED_ENDPOINT, url, sizeof(url)) != AIC_OK || !url[0])
@@ -513,6 +560,7 @@ static void app_setup_engine(App *a)
     aic_engine_set_model_override(a->eng, model);
     aic_engine_set_context_messages(a->eng, aic_setting_get_int(a->db, AIC_SET_CONTEXT_N,
                                                                AIC_CONTEXT_MESSAGES_DEFAULT));
+    aic_engine_set_stream_cb(a->eng, on_stream_delta, a);
 
     sb frag;
     sb_init(&frag);
@@ -532,7 +580,9 @@ static void app_setup_engine(App *a)
 #define FORM_UPDATE    6
 #define FORM_MSG       7
 #define FORM_EDITMSG   8
-#define APP_VERSION    "1.0.0"
+#define FORM_DATA      9
+#define FORM_PLUGIN    10
+#define APP_VERSION    "1.1.0"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -676,6 +726,27 @@ static void paint_messages(App *a, HDC dc, RECT area)
     if (bubble_max > 560) bubble_max = 560;
     if (bubble_max < 160) bubble_max = 160;
 
+    if (n <= 0 && a->sending && a->stream_len > 0) {
+        char live0[65536];
+        RECT br0;
+        int hh0, tw0 = 0;
+        md_strip(a->stream_text, live0, sizeof(live0));
+        hh0 = measure_text(dc, a->font_ui, live0, bubble_max - 24, &tw0) + 20;
+        if (hh0 < 40) hh0 = 40;
+        tw0 += 24;
+        if (tw0 < 120) tw0 = 120;
+        br0.left = area.left + 16;
+        br0.right = br0.left + tw0;
+        br0.top = area.top + 8;
+        br0.bottom = br0.top + hh0;
+        fill_round(dc, br0, 12, tok(a, AIC_TOK_CARD_BG));
+        stroke_round(dc, br0, 12, tok(a, AIC_TOK_PRIMARY), 1);
+        {
+            RECT tr0 = {br0.left + 12, br0.top + 10, br0.right - 12, br0.bottom - 10};
+            draw_text(dc, a->font_ui, live0, tr0, tok(a, AIC_TOK_TEXT),
+                      DT_LEFT | DT_TOP | DT_WORDBREAK);
+        }
+    }
     if (n <= 0) {
         RECT r = {area.left, area.top + 40, area.right, area.top + 70};
         draw_text(dc, a->font_ui,
@@ -692,11 +763,24 @@ static void paint_messages(App *a, HDC dc, RECT area)
 
     for (int i = 0; i < cap; i++) {
         aic_message *m = &a->msgs[start_idx + i];
+        static char md_h[65536];
         const char *txt = m->recalled ? AIC_RECALL_NOTICE : (m->content ? m->content : "");
+        if (!m->recalled && strcmp(m->role, "assistant") == 0) {
+            md_strip(txt, md_h, sizeof(md_h));
+            txt = md_h;
+        }
         int h = measure_text(dc, a->font_ui, txt, bubble_max - 24, NULL) + 20;
         if (h < 40) h = 40;
         hs[i] = h + 10;
         total += hs[i];
+    }
+    if (a->sending && a->stream_len > 0) {
+        char live_h0[65536];
+        int hh = 0;
+        md_strip(a->stream_text, live_h0, sizeof(live_h0));
+        hh = measure_text(dc, a->font_ui, live_h0, bubble_max - 24, NULL) + 20;
+        if (hh < 40) hh = 40;
+        total += hh + 14;
     }
 
     {
@@ -710,7 +794,12 @@ static void paint_messages(App *a, HDC dc, RECT area)
 
     for (int i = 0; i < cap; i++) {
         aic_message *m = &a->msgs[start_idx + i];
+        static char md_b[65536];
         const char *txt = m->recalled ? AIC_RECALL_NOTICE : (m->content ? m->content : "");
+        if (!m->recalled && strcmp(m->role, "assistant") == 0) {
+            md_strip(txt, md_b, sizeof(md_b));
+            txt = md_b;
+        }
         int h = hs[i] - 10;
         int idx = start_idx + i;
         int is_user = strcmp(m->role, "user") == 0;
@@ -763,6 +852,31 @@ static void paint_messages(App *a, HDC dc, RECT area)
         }
         y += hs[i];
     }
+
+    if (a->sending && a->stream_len > 0) {
+        char live[65536];
+        int hh, tw = 0;
+        RECT br, tr;
+        md_strip(a->stream_text, live, sizeof(live));
+        hh = measure_text(dc, a->font_ui, live, bubble_max - 24, &tw) + 20;
+        if (hh < 40) hh = 40;
+        tw += 24;
+        if (tw < 120) tw = 120;
+        br.left = area.left + 16;
+        br.right = br.left + tw;
+        br.top = y;
+        br.bottom = y + hh;
+        if (br.bottom >= area.top && br.top <= area.bottom) {
+            fill_round(dc, br, 12, tok(a, AIC_TOK_CARD_BG));
+            stroke_round(dc, br, 12, tok(a, AIC_TOK_PRIMARY), 1);
+            tr.left = br.left + 12;
+            tr.right = br.right - 12;
+            tr.top = br.top + 10;
+            tr.bottom = br.bottom - 10;
+            draw_text(dc, a->font_ui, live, tr, tok(a, AIC_TOK_TEXT),
+                      DT_LEFT | DT_TOP | DT_WORDBREAK);
+        }
+    }
     aic_xfree(hs);
 }
 
@@ -799,10 +913,17 @@ static void paint_input(App *a, HDC dc, RECT area)
     }
     reg(box, ACT_SEND);
 
-    draw_pill(a, dc, btn, "发送", ACT_SEND, 1);
-    draw_text(dc, a->font_small,
-              aic_router_mode(a->router) == AIC_MODE_CHAT ? "聊天模式 · 单会话" : "问答模式 · 多会话",
-              hint, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+    if (a->sending) draw_pill(a, dc, btn, "停止", ACT_STOP, 1);
+    else draw_pill(a, dc, btn, "发送", ACT_SEND, 1);
+    {
+        char line[256];
+        snprintf(line, sizeof(line), "%s · 已输入 %d 字 · 上下文 %d 条",
+                 aic_router_mode(a->router) == AIC_MODE_CHAT ? "聊天模式 · 单会话" : "问答模式 · 多会话",
+                 (int)aic_utf8_length(a->draft),
+                 aic_setting_get_int(a->db, AIC_SET_CONTEXT_N, AIC_CONTEXT_MESSAGES_DEFAULT));
+        draw_text(dc, a->font_small, line, hint, tok(a, AIC_TOK_TEXT_SECONDARY),
+                  DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+    }
 }
 
 static void paint_chat(App *a, HDC dc, RECT content)
@@ -836,6 +957,10 @@ static void paint_chat(App *a, HDC dc, RECT content)
     draw_text(dc, a->font_small, subline, sub, tok(a, AIC_TOK_TEXT_SECONDARY),
               DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     draw_pill(a, dc, info, "AI 信息", ACT_AI_INFO, 0);
+    {
+        RECT regen = {content.right - 248, header.top + 14, content.right - 144, header.top + 46};
+        if (a->msg_n > 0) draw_pill(a, dc, regen, "重新生成", ACT_REGENERATE, 0);
+    }
 
     FillRect(dc, &sep, b);
     DeleteObject(b);
@@ -882,6 +1007,16 @@ static void paint_me(App *a, HDC dc, RECT content)
     DeleteObject(pen);
 
     {
+        int drew = 0;
+        if (p.avatar_path[0]) {
+            char ap[900];
+            aic_path_join(ap, sizeof(ap), a->root, p.avatar_path);
+            if (aic_path_exists(ap))
+                drew = (aic_avatar_draw(dc, a->root, p.avatar_path, avatar.left, avatar.top, 72) == AIC_OK);
+        }
+        if (drew) {
+            /* 头像图片已绘制，不再叠加首字。 */
+        } else {
         char one[8];
         if (p.name[0]) {
             aic_strlcpy_utf8(one, sizeof(one), p.name);
@@ -891,6 +1026,7 @@ static void paint_me(App *a, HDC dc, RECT content)
         }
         draw_text(dc, a->font_title, one, avatar, RGB(255, 255, 255),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
     }
 
     {
@@ -1164,6 +1300,32 @@ static void paint_overlay(App *a, HDC dc, RECT client)
         tr.top += h + 12;
     }
 
+    if (a->confirm_action == FORM_PLUGIN) {
+        for (size_t i = 0; i < a->plug_n && tr.top < panel.bottom - 96; i++) {
+            aic_plugin *pl = &a->plugs[i];
+            RECT row = {tr.left, tr.top, tr.right, tr.top + 44};
+            RECT tg = {row.right - 168, row.top + 6, row.right - 92, row.top + 38};
+            RECT up = {row.right - 84, row.top + 6, row.right, row.top + 38};
+            char label[256];
+            fill_round(dc, row, 8, tok(a, AIC_TOK_PAGE_BG));
+            snprintf(label, sizeof(label), "%s  v%s%s", pl->name, pl->version,
+                     pl->enabled ? "（已启用）" : "（已禁用）");
+            draw_text(dc, a->font_ui, label,
+                      (RECT){row.left + 12, row.top + 4, tg.left - 8, row.bottom - 4},
+                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            draw_pill(a, dc, tg, pl->enabled ? "禁用" : "启用",
+                      ACT_PLUGIN_TOGGLE_BASE + (int)i, 0);
+            draw_pill(a, dc, up, "更新", ACT_PLUGIN_UPDATE_BASE + (int)i, 0);
+            tr.top += 50;
+        }
+        if (a->plug_n == 0) {
+            draw_text(dc, a->font_small, "还没有安装插件。先用「导入插件」选择一个 plugin.json。",
+                      (RECT){tr.left, tr.top, tr.right, tr.top + 24},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            tr.top += 28;
+        }
+    }
+
     for (int i = 0; i < a->field_n; i++) {
         Field *fl = &a->fields[i];
         int bh = fl->multiline ? 88 : 36;
@@ -1207,9 +1369,25 @@ static void paint_overlay(App *a, HDC dc, RECT client)
             draw_pill(a, dc, b1, "确认", ACT_CONFIRM_YES, 1);
             draw_pill(a, dc, b3, "取消", ACT_CONFIRM_NO, 0);
             break;
-        case FORM_UPDATE:
-            draw_pill(a, dc, b1, "更新自检", ACT_UPDATE_TEST, 1);
-            draw_pill(a, dc, b2, "跳过此版", ACT_UPDATE_SKIP, 0);
+        case FORM_UPDATE: {
+            RECT b4 = {panel.left + 284, fy, panel.left + 404, fy + 36};
+            draw_pill(a, dc, b1, "立即更新", ACT_UPDATE_NOW, 1);
+            draw_pill(a, dc, b2, "稍后", ACT_UPDATE_LATER, 0);
+            draw_pill(a, dc, b4, "更新自检", ACT_UPDATE_TEST, 0);
+            draw_pill(a, dc, b3, "关闭", ACT_OVERLAY_CLOSE, 0);
+            break;
+        }
+        case FORM_DATA: {
+            RECT b4 = {panel.left + 284, fy, panel.left + 404, fy + 36};
+            draw_pill(a, dc, b1, "立即备份", ACT_BACKUP_NOW, 1);
+            draw_pill(a, dc, b2, "恢复备份", ACT_BACKUP_RESTORE, 0);
+            draw_pill(a, dc, b4, "清理旧备份", ACT_BACKUP_CLEAN, 0);
+            draw_pill(a, dc, b3, "关闭", ACT_OVERLAY_CLOSE, 0);
+            break;
+        }
+        case FORM_PLUGIN:
+            draw_pill(a, dc, b1, "导入插件", ACT_PLUGIN_IMPORT_ACT, 1);
+            draw_pill(a, dc, b2, "扩展点面板", ACT_PLUGIN_PANEL_CALL, 0);
             draw_pill(a, dc, b3, "关闭", ACT_OVERLAY_CLOSE, 0);
             break;
         case FORM_MSG:
@@ -1366,13 +1544,76 @@ static int pick_file(HWND hwnd, const wchar_t *filter, wchar_t *out, int cap)
 }
 
 /* ---------- 动作实现 ---------- */
+/* ---------- 后台发送：工作线程 + 消息队列（技术设计 §4.2） ---------- */
+#define WM_APP_DELTA (WM_APP + 11)
+#define WM_APP_DONE  (WM_APP + 12)
+
+typedef struct ResultMsg {
+    int                rc;
+    char               err[256];
+    aic_engine_result  res;
+} ResultMsg;
+
+typedef struct SendJob {
+    char text[4096];
+} SendJob;
+
+static void on_stream_delta(void *ud, const char *delta)
+{
+    App *a = (App *)ud;
+    if (!delta || !delta[0]) return;
+    char *copy = aic_strdup(delta);
+    if (!copy) return;
+    if (!PostMessageA(a->hwnd, WM_APP_DELTA, 0, (LPARAM)copy)) aic_xfree(copy);
+}
+
+static DWORD WINAPI send_worker(LPVOID param)
+{
+    App *a = &g_app;
+    SendJob *job = (SendJob *)param;
+    ResultMsg *rm = (ResultMsg *)aic_xcalloc(1, sizeof(ResultMsg));
+    rm->rc = aic_engine_send(a->eng, a->conv_id, job->text, &rm->res, rm->err, sizeof(rm->err));
+    aic_xfree(job);
+    PostMessageA(a->hwnd, WM_APP_DONE, 0, (LPARAM)rm);
+    return 0;
+}
+
+static int app_start_worker(App *a, const char *text)
+{
+    if (InterlockedExchange(&a->sending, 1) != 0) {
+        app_status(a, "上一条还在生成，请先停止或稍候");
+        return AIC_E_BUSY;
+    }
+    SendJob *job = (SendJob *)aic_xcalloc(1, sizeof(SendJob));
+    aic_strlcpy_utf8(job->text, sizeof(job->text), text);
+    a->stream_len = 0;
+    a->stream_text[0] = '\0';
+    HANDLE th = CreateThread(NULL, 0, send_worker, job, 0, NULL);
+    if (!th) {
+        InterlockedExchange(&a->sending, 0);
+        aic_xfree(job);
+        app_status(a, "无法创建发送线程");
+        return AIC_E_STATE;
+    }
+    CloseHandle(th);
+    return AIC_OK;
+}
+
+/* 简易 Markdown：去掉代码围栏标记与 ** / 反引号，保留纯文本（代码块用等宽字体单独画）。 */
+static void md_strip(const char *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    for (const char *q = in ? in : ""; *q && n + 1 < cap; q++) {
+        if (q[0] == '*' && q[1] == '*') { q++; continue; }
+        if (*q == '`') continue;
+        out[n++] = *q;
+    }
+    out[n] = '\0';
+}
+
 static void app_send(App *a)
 {
-    aic_engine_result res;
     char text[4096];
-    char err[256] = {0};
-    long long t0;
-    int rc;
 
     if (!a->eng || !a->conv_id[0]) {
         app_status(a, "当前没有可用的会话");
@@ -1383,24 +1624,160 @@ static void app_send(App *a)
         return;
     }
     aic_strlcpy_utf8(text, sizeof(text), a->draft);
-    memset(&res, 0, sizeof(res));
-    t0 = aic_now_ms();
-    rc = aic_engine_send(a->eng, a->conv_id, text, &res, err, sizeof(err));
-    if (rc == AIC_OK) {
-        a->draft[0] = '\0';
-        a->draft_len = 0;
+    a->draft[0] = '\0';
+    a->draft_len = 0;
+    if (app_start_worker(a, text) != AIC_OK) {
+        aic_strlcpy_utf8(a->draft, sizeof(a->draft), text);
+        a->draft_len = (int)strlen(a->draft);
+    } else {
+        a->scroll[2] = 0;
+        app_status(a, "正在生成，可点「停止」中断");
+    }
+    app_invalidate(a);
+}
+
+static DWORD WINAPI regen_worker(LPVOID param)
+{
+    App *a = &g_app;
+    ResultMsg *rm = (ResultMsg *)aic_xcalloc(1, sizeof(ResultMsg));
+    char old_id[40];
+    rm->rc = aic_engine_regenerate(a->eng, a->conv_id, old_id, sizeof(old_id), &rm->res,
+                                   rm->err, sizeof(rm->err));
+    (void)param;
+    PostMessageA(a->hwnd, WM_APP_DONE, 0, (LPARAM)rm);
+    return 0;
+}
+
+static void app_regenerate(App *a)
+{
+    if (!a->eng || !a->conv_id[0]) return;
+    if (InterlockedCompareExchange(&a->sending, 1, 0) != 0) {
+        app_status(a, "正在生成中，请先停止");
+        return;
+    }
+    a->stream_len = 0;
+    a->stream_text[0] = '\0';
+    HANDLE th = CreateThread(NULL, 0, regen_worker, NULL, 0, NULL);
+    if (th) CloseHandle(th);
+    else {
+        InterlockedExchange(&a->sending, 0);
+        app_status(a, "无法创建线程");
+        return;
+    }
+    app_status(a, "正在重新生成…");
+    app_invalidate(a);
+}
+
+static void app_on_done(App *a, ResultMsg *rm)
+{
+    InterlockedExchange(&a->sending, 0);
+    if (!rm) return;
+    if (rm->rc == AIC_OK) {
         app_load_chat(a);
         a->scroll[2] = 0;
-        app_status(a, "已收到回复：%lld ms，输入 %lld / 输出 %lld tokens",
-                   (long long)(aic_now_ms() - t0), res.prompt_tokens, res.completion_tokens);
+        app_status(a, "已收到回复：输入 %lld / 输出 %lld tokens",
+                   (long long)rm->res.prompt_tokens, (long long)rm->res.completion_tokens);
         aic_guide_mark(a->db, "first_chat", 0);
-    } else if (rc == AIC_E_AUTH) {
-        app_status(a, "发送失败：%s", err[0] ? err : "API Key 不可用");
+    } else if (rm->rc == AIC_E_TIMEOUT || rm->rc == AIC_E_BUSY) {
+        app_status(a, "生成已停止");
+        app_load_chat(a);
+    } else if (rm->rc == AIC_E_AUTH) {
+        app_status(a, "发送失败：%s", rm->err[0] ? rm->err : "API Key 不可用");
         app_toast(a, "请先在设置里配置 API Key");
     } else {
-        app_status(a, "发送失败：%s", err[0] ? err : aic_strerror(rc));
+        app_status(a, "发送失败：%s", rm->err[0] ? rm->err : aic_strerror(rm->rc));
     }
-    aic_engine_result_free(&res);
+    aic_engine_result_free(&rm->res);
+    aic_xfree(rm);
+    a->stream_len = 0;
+    a->stream_text[0] = '\0';
+    app_invalidate(a);
+}
+
+/* ---------- 导出与导入放在工作线程（§4.2：界面线程不做批量 IO） ---------- */
+#define WM_APP_IO (WM_APP + 15)
+
+typedef struct IoMsg {
+    int kind;   /* 0=JSON 1=Markdown 2=纯文本 3=导入 */
+    int rc;
+    char path[900];
+    char err[512];
+    aic_import_preview pv;
+    aic_import_result rs;
+} IoMsg;
+
+static DWORD WINAPI io_worker(LPVOID param)
+{
+    IoMsg *m = (IoMsg *)param;
+    App *a = &g_app;
+
+    if (m->kind == 3) {
+        memset(&m->pv, 0, sizeof(m->pv));
+        memset(&m->rs, 0, sizeof(m->rs));
+        m->rc = aic_transfer_preview(a->db, m->path, &m->pv, m->err, sizeof(m->err));
+        if (m->rc == AIC_OK)
+            m->rc = aic_transfer_import(a->db, m->path, AIC_CONFLICT_SKIP, &m->rs,
+                                        m->err, sizeof(m->err));
+    } else if (m->kind == 1) {
+        m->rc = aic_export_write_markdown(a->db, -1, m->path, m->err, sizeof(m->err));
+    } else if (m->kind == 2) {
+        m->rc = aic_export_write_text(a->db, -1, m->path, m->err, sizeof(m->err));
+    } else {
+        m->rc = aic_export_write_json(a->db, -1, m->path, m->err, sizeof(m->err));
+    }
+    PostMessageA(a->hwnd, WM_APP_IO, 0, (LPARAM)m);
+    return 0;
+}
+
+static int app_start_io(App *a, IoMsg *m)
+{
+    HANDLE th = CreateThread(NULL, 0, io_worker, m, 0, NULL);
+    if (!th) {
+        aic_xfree(m);
+        app_status(a, "无法创建线程，操作已取消");
+        return AIC_E_NOMEM;
+    }
+    CloseHandle(th);
+    return AIC_OK;
+}
+
+static void app_on_io(App *a, IoMsg *m)
+{
+    if (!m) return;
+    if (m->rc != AIC_OK) {
+        if (m->kind == 3)
+            app_status(a, "导入失败（已回滚）：%s", m->err[0] ? m->err : aic_strerror(m->rc));
+        else
+            app_status(a, "导出失败：%s", m->err[0] ? m->err : aic_strerror(m->rc));
+        app_toast(a, m->kind == 3 ? "导入未完成" : "导出未完成");
+        aic_xfree(m);
+        app_invalidate(a);
+        return;
+    }
+    if (m->kind == 3) {
+        app_reload_threads(a);
+        app_load_chat(a);
+        aic_guide_mark(a->db, "record_transfer", 0);
+        app_set_overlay(a, AIC_OV_CONFIRM, "导入完成");
+        snprintf(a->overlay_text, sizeof(a->overlay_text),
+                 "文件内的会话 %d 个、消息 %d 条；冲突会话 %d 个、冲突消息 %d 条。\n"
+                 "本次结果：会话新增 %d / 覆盖 %d / 跳过 %d / 改名 %d，"
+                 "消息新增 %d / 覆盖 %d / 跳过 %d / 改名 %d。",
+                 (int)m->pv.conversations, (int)m->pv.messages,
+                 (int)m->pv.conflict_conversations, (int)m->pv.conflict_messages,
+                 (int)m->rs.conv_added, (int)m->rs.conv_overwritten, (int)m->rs.conv_skipped,
+                 (int)m->rs.conv_renamed,
+                 (int)m->rs.msg_added, (int)m->rs.msg_overwritten, (int)m->rs.msg_skipped,
+                 (int)m->rs.msg_renamed);
+        app_status(a, "导入完成：新增 %d 个会话 / %d 条消息",
+                   (int)m->rs.conv_added, (int)m->rs.msg_added);
+    } else {
+        aic_guide_mark(a->db, "record_transfer", 0);
+        app_status(a, "导出成功：%s", m->path);
+        app_toast(a, "已导出到 exports 目录");
+        app_close_overlay(a);
+    }
+    aic_xfree(m);
     app_invalidate(a);
 }
 
@@ -1408,10 +1785,8 @@ static void app_export(App *a, int kind)
 {
     char dir[600];
     char name[160];
-    char path[900];
     char ts[32];
-    char err[512] = {0};
-    int rc;
+    IoMsg *m;
 
     aic_path_join(dir, sizeof(dir), a->root, "exports");
     aic_mkdir_p(dir);
@@ -1420,63 +1795,479 @@ static void app_export(App *a, int kind)
         if (*p == ':' || *p == '.') *p = '-';
     snprintf(name, sizeof(name), "record_%s.%s", ts,
              kind == 0 ? "json" : (kind == 1 ? "md" : "txt"));
-    aic_path_join(path, sizeof(path), dir, name);
 
-    if (kind == 0) rc = aic_export_write_json(a->db, -1, path, err, sizeof(err));
-    else if (kind == 1) rc = aic_export_write_markdown(a->db, -1, path, err, sizeof(err));
-    else rc = aic_export_write_text(a->db, -1, path, err, sizeof(err));
-
-    if (rc != AIC_OK) {
-        app_status(a, "导出失败：%s", err[0] ? err : aic_strerror(rc));
-        return;
-    }
-    aic_guide_mark(a->db, "record_transfer", 0);
-    app_status(a, "导出成功：%s", path);
-    app_toast(a, "已导出到 exports 目录");
-    app_close_overlay(a);
+    m = (IoMsg *)aic_xcalloc(1, sizeof(IoMsg));
+    m->kind = kind;
+    aic_path_join(m->path, sizeof(m->path), dir, name);
+    if (app_start_io(a, m) != AIC_OK) return;
+    app_status(a, "正在导出（后台线程）…");
+    app_invalidate(a);
 }
 
 static void app_import(App *a)
 {
     wchar_t wf[1024];
+    IoMsg *m;
+
+    if (!pick_file(a->hwnd, L"记录文件 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
+    m = (IoMsg *)aic_xcalloc(1, sizeof(IoMsg));
+    m->kind = 3;
+    w_to_u8(wf, m->path, sizeof(m->path));
+    if (app_start_io(a, m) != AIC_OK) return;
+    app_status(a, "正在导入（后台线程，失败自动回滚）…");
+    app_invalidate(a);
+}
+
+/* ---------- 系统主题（§7.3 跟随系统） ---------- */
+static int read_system_night(void)
+{
+    HKEY k;
+    DWORD v = 1, sz = sizeof(v), type = 0;
+    int night = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_READ, &k) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(k, L"AppsUseLightTheme", NULL, &type, (LPBYTE)&v, &sz) == ERROR_SUCCESS)
+            night = (v == 0);
+        RegCloseKey(k);
+    }
+    return night;
+}
+
+/* ---------- 头像（§7.1 选择图片 → 最长边 512px → 存 avatars/） ---------- */
+static void app_avatar_pick(App *a)
+{
+    wchar_t wf[1024];
     char path[2048];
-    aic_import_preview pv;
-    aic_import_result rs;
+    char rel[256];
+    char err[512] = {0};
+    aic_profile pr;
+
+    if (!aic_avatar_available()) {
+        app_status(a, "当前环境不支持图片处理（GDI+ 不可用）");
+        return;
+    }
+    if (!pick_file(a->hwnd, L"图片文件 (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0所有文件\0*.*\0\0",
+                   wf, 1024))
+        return;
+    w_to_u8(wf, path, sizeof(path));
+    if (aic_avatar_import(path, a->root, rel, sizeof(rel), err, sizeof(err)) != AIC_OK) {
+        app_status(a, "头像导入失败：%s", err[0] ? err : "未知错误");
+        return;
+    }
+    memset(&pr, 0, sizeof(pr));
+    aic_profile_get(a->db, &pr);
+    aic_strlcpy_utf8(pr.avatar_path, sizeof(pr.avatar_path), rel);
+    if (aic_profile_set(a->db, &pr, err, sizeof(err)) != AIC_OK) {
+        app_status(a, "保存头像路径失败：%s", err[0] ? err : "未知错误");
+        return;
+    }
+    app_status(a, "头像已更新（最长边 512px，已压缩存到 avatars/）");
+    app_invalidate(a);
+}
+
+/* ---------- 余额（FR-11：账户接口 + 本地账本并列） ---------- */
+#define WM_APP_UPD (WM_APP + 13)
+#define WM_APP_BAL (WM_APP + 14)
+
+typedef struct TextMsg {
+    int  rc;
+    char text[768];
+} TextMsg;
+
+static void balance_endpoint(App *a, char *out, size_t cap)
+{
+    char url[AIC_LLM_URL_MAX];
+    if (aic_setting_get(a->db, AIC_SET_CRED_ENDPOINT, url, sizeof(url)) != AIC_OK || !url[0])
+        aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
+    const char *slash = strstr(url, "/chat/");
+    if (slash) {
+        size_t base = (size_t)(slash - url);
+        if (base + 13 >= cap) base = cap - 14;
+        memcpy(out, url, base);
+        aic_strlcpy_utf8(out + base, cap - base, "/user/balance");
+    } else {
+        snprintf(out, cap, "https://api.deepseek.com/user/balance");
+    }
+}
+
+static DWORD WINAPI bal_worker(LPVOID param)
+{
+    App *a = &g_app;
+    TextMsg *tm = (TextMsg *)aic_xcalloc(1, sizeof(TextMsg));
+    char url[512];
+    char key[512];
+    char err[256] = {0};
+    char *body = NULL;
+    int status = 0;
+    (void)param;
+
+    balance_endpoint(a, url, sizeof(url));
+    key[0] = '\0';
+    if (aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, key, sizeof(key), err,
+                      sizeof(err)) != AIC_OK || !key[0]) {
+        tm->rc = AIC_E_AUTH;
+        aic_strlcpy_utf8(tm->text, sizeof(tm->text), "尚未配置 API Key");
+    } else {
+        tm->rc = aic_http_get_json(url, key, &body, &status, err, sizeof(err));
+        if (tm->rc == AIC_OK && body) {
+            aic_llm_balance bal;
+            char perr[128] = {0};
+            memset(&bal, 0, sizeof(bal));
+            if (aic_llm_balance_parse(body, strlen(body), &bal, perr, sizeof(perr)) == AIC_OK) {
+                char cost[48];
+                aic_llm_format_micros(bal.available_micros, cost, sizeof(cost));
+                snprintf(tm->text, sizeof(tm->text),
+                         "账户接口：可用余额 %s，未出账 %lld 微元；本地账本累计见用量面板。",
+                         cost, (long long)bal.pending_micros);
+            } else {
+                tm->rc = AIC_E_FORMAT;
+                aic_strlcpy_utf8(tm->text, sizeof(tm->text), perr);
+            }
+            if (body) aic_xfree(body);
+        } else {
+            snprintf(tm->text, sizeof(tm->text), "余额查询失败（HTTP %d）：%s", status, err);
+        }
+        aic_secure_zero(key, sizeof(key));
+    }
+    PostMessageA(a->hwnd, WM_APP_BAL, 0, (LPARAM)tm);
+    return 0;
+}
+
+static void app_balance_refresh(App *a)
+{
+    HANDLE th = CreateThread(NULL, 0, bal_worker, NULL, 0, NULL);
+    if (th) CloseHandle(th);
+    else app_status(a, "无法创建余额查询线程");
+}
+
+static void app_on_bal(App *a, TextMsg *tm)
+{
+    if (!tm) return;
+    if (tm->rc == AIC_OK) {
+        a->bal.queried_ms = aic_now_ms();
+        aic_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "账户接口");
+        a->bal.stale = 0;
+        a->bal.valid = 1;
+    } else {
+        aic_llm_balance_keep_last(&a->bal, &a->bal, aic_now_ms());
+        a->bal.valid = 0;
+        aic_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "上次结果");
+    }
+    {
+        aic_usage_summary sum;
+        memset(&sum, 0, sizeof(sum));
+        aic_usage_summary_get(a->db, 0, &sum);
+        a->bal.local_used_micros = sum.cost_micros;
+        if (a->bal.valid && aic_llm_balance_below(&a->bal,
+                aic_setting_get_int(a->db, AIC_SET_BALANCE_ALERT, 0))) {
+            a->bal.below_alert = 1;
+            aic_notify(a->hwnd, "余额偏低", "账户余额已低于告警阈值，请到设置里查看用量");
+        }
+    }
+    app_status(a, "%s", tm->text);
+    app_toast(a, tm->text);
+    aic_xfree(tm);
+    app_invalidate(a);
+}
+
+/* ---------- 更新（§14.1：启动与周期检查、非阻塞提示、断点续传、校验、替换安装） ---------- */
+static int upd_manifest_path(App *a, char *out, size_t cap)
+{
+    char dir[600];
+    aic_path_join(dir, sizeof(dir), a->root, "updates");
+    aic_mkdir_p(dir);
+    aic_path_join(out, cap, dir, "manifest.json");
+    return aic_path_exists(out) ? AIC_OK : AIC_E_NOTFOUND;
+}
+
+static void app_check_update(App *a, int user_initiated)
+{
+    char mf[900];
+    char *data = NULL;
+    size_t len = 0;
+    aic_update_manifest m;
+    aic_update_plan plan;
+    char err[512] = {0};
+    char skip[64];
+    int rc;
+
+    a->upd_last_check = aic_now_ms();
+    aic_setting_set_int(a->db, "update.last_check_ms", (long long)a->upd_last_check);
+    if (upd_manifest_path(a, mf, sizeof(mf)) != AIC_OK) {
+        if (user_initiated) app_update(a); /* 没有清单：展示更新链路说明与数据保护规则 */
+        return;
+    }
+    if (aic_file_read_all(mf, &data, &len) != AIC_OK) {
+        if (user_initiated) app_status(a, "读取更新清单失败");
+        return;
+    }
+    memset(&m, 0, sizeof(m));
+    rc = aic_update_parse_manifest(data, len, &m, err, sizeof(err));
+    aic_xfree(data);
+    if (rc != AIC_OK) {
+        if (user_initiated) app_status(a, "更新清单不可用：%s", err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    skip[0] = '\0';
+    aic_setting_get(a->db, "update.skip_version", skip, sizeof(skip));
+    memset(&plan, 0, sizeof(plan));
+    aic_update_make_plan(&m, APP_VERSION, skip, &plan);
+    if (plan.status == AIC_UPD_UP_TO_DATE || plan.status == AIC_UPD_SKIPPED) {
+        if (user_initiated) app_status(a, "已是最新版本（%s）", APP_VERSION);
+        return;
+    }
+    if (plan.status != AIC_UPD_AVAILABLE) {
+        if (user_initiated) app_status(a, "当前版本过低，需要整包安装");
+        return;
+    }
+    a->upd = m;
+    a->upd_available = 1;
+    app_set_overlay(a, AIC_OV_UPDATE, "发现新版本");
+    a->confirm_action = FORM_UPDATE;
+    snprintf(a->overlay_text, sizeof(a->overlay_text),
+             "当前版本 %s，可用版本 %s（渠道 %s，发布于 %s）%s。\n\n"
+             "安装包：%s（%lld 字节）\nSHA-256：%s\n\n更新说明：%s\n\n"
+             "更新前会做一致性检查与目录外完整备份；备份成功才会开始写入，失败自动回滚。",
+             APP_VERSION, m.version, m.channel[0] ? m.channel : "stable", m.released_at,
+             plan.mandatory ? "（强制更新）" : "", m.url, m.size, m.sha256,
+             m.notes[0] ? m.notes : "（无）");
+    if (!a->notified_update) {
+        a->notified_update = 1;
+        aic_notify(a->hwnd, "Sai 有新版本", m.version);
+    }
+}
+
+/* 把 aic_http_download 适配成更新模块要求的下载回调（断点续传由 resume=1 打开）。 */
+static int dl_http(void *ud, const char *url, const char *dst, long long max, char *err,
+                   size_t errlen)
+{
+    (void)ud;
+    return aic_http_download(url, dst, max, 1, NULL, NULL, NULL, err, errlen);
+}
+
+static DWORD WINAPI upd_worker(LPVOID param)
+{
+    App *a = &g_app;
+    TextMsg *tm = (TextMsg *)aic_xcalloc(1, sizeof(TextMsg));
+    char dir[600];
+    char bdir[600];
+    char dst[900];
+    char appdir[700];
+    char exe[700];
+    char err[512] = {0};
+    aic_update_manifest m = a->upd;
+    (void)param;
+
+    aic_path_join(dir, sizeof(dir), a->root, "updates");
+    aic_mkdir_p(dir);
+    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
+    aic_mkdir_p(bdir);
+    aic_path_join(dst, sizeof(dst), dir, "pkg.download");
+
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    aic_strlcpy_utf8(appdir, sizeof(appdir), exe);
+    {
+        char *bar = strrchr(appdir, '\\');
+        if (bar) *bar = '\0';
+    }
+    app_status(a, "正在下载更新包…");
+    tm->rc = aic_update_run_install(&m, dst, dl_http, NULL, 1, appdir, bdir, NULL,
+                                    err, sizeof(err));
+    if (tm->rc == AIC_OK)
+        snprintf(tm->text, sizeof(tm->text), "更新完成：%s，请重新启动 Sai。", m.version);
+    else
+        snprintf(tm->text, sizeof(tm->text), "更新未完成：%s", err[0] ? err : aic_strerror(tm->rc));
+    PostMessageA(a->hwnd, WM_APP_UPD, 0, (LPARAM)tm);
+    return 0;
+}
+
+static void app_update_now(App *a)
+{
+    HANDLE th;
+    if (!a->upd_available) {
+        app_status(a, "没有可用的更新包");
+        return;
+    }
+    th = CreateThread(NULL, 0, upd_worker, NULL, 0, NULL);
+    if (th) CloseHandle(th);
+    else app_status(a, "无法创建更新线程");
+}
+
+static void app_on_upd(App *a, TextMsg *tm)
+{
+    if (!tm) return;
+    app_status(a, "%s", tm->text);
+    app_toast(a, tm->text);
+    if (tm->rc == AIC_OK) a->upd_available = 0;
+    aic_xfree(tm);
+    app_invalidate(a);
+}
+
+/* ---------- 备份与清理（§8.3 数据管理） ---------- */
+static void app_backup_now(App *a)
+{
+    char bdir[700];
+    char zip[900];
+    char dbp[800];
+    char ts[32];
+    aic_backup_info info;
     char err[512] = {0};
     int rc;
 
-    if (!pick_file(a->hwnd, L"记录文件 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
-    w_to_u8(wf, path, sizeof(path));
-
-    memset(&pv, 0, sizeof(pv));
-    rc = aic_transfer_preview(a->db, path, &pv, err, sizeof(err));
+    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
+    aic_mkdir_p(bdir);
+    aic_now_iso8601(ts);
+    snprintf(zip, sizeof(zip), "%s\\sai-backup-%s.zip", bdir, ts);
+    {
+        char *q = zip + strlen(bdir) + 1;
+        for (char *r = q; *r; r++)
+            if (*r == ':' || *r == '.') *r = '-';
+    }
+    aic_path_join(dbp, sizeof(dbp), a->root, "db\\aic.db");
+    memset(&info, 0, sizeof(info));
+    rc = aic_backup_create(a->root, dbp, APP_VERSION, zip, &info, err, sizeof(err));
     if (rc != AIC_OK) {
-        app_status(a, "导入失败：%s", err[0] ? err : aic_strerror(rc));
+        app_status(a, "备份失败：%s", err[0] ? err : aic_strerror(rc));
+        aic_log_error("backup_create", rc, err);
         return;
     }
+    app_status(a, "备份完成：%s（%d 个文件，%lld 字节）", zip, info.file_count,
+               (long long)info.total_bytes);
+    app_begin_anim(a, 3, aic_motion_default().overlay_ms);
+}
 
-    memset(&rs, 0, sizeof(rs));
-    memset(err, 0, sizeof(err));
-    rc = aic_transfer_import(a->db, path, AIC_CONFLICT_SKIP, &rs, err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "导入失败（已回滚）：%s", err[0] ? err : aic_strerror(rc));
+static void app_backup_restore(App *a)
+{
+    char bdir[700];
+    char zip[900];
+    aic_backup_info info;
+    char err[512] = {0};
+    int rc;
+
+    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
+    zip[0] = '\0';
+    if (aic_backup_latest(bdir, zip, sizeof(zip), &info, err, sizeof(err)) != AIC_OK) {
+        app_status(a, "没有可恢复的备份：%s", err[0] ? err : "backups/ 为空");
         return;
     }
-
-    app_reload_threads(a);
+    rc = aic_backup_restore(zip, a->root, err, sizeof(err));
+    if (rc != AIC_OK) {
+        app_status(a, "恢复失败：%s", err[0] ? err : aic_strerror(rc));
+        return;
+    }
     app_load_chat(a);
-    aic_guide_mark(a->db, "record_transfer", 0);
-    app_set_overlay(a, AIC_OV_CONFIRM, "导入完成");
+    app_reload_threads(a);
+    app_status(a, "已从备份恢复（%s），重启后生效更完整", zip);
+}
+
+static void app_backup_clean(App *a)
+{
+    char bdir[700];
+    int removed = 0;
+    char err[512] = {0};
+    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
+    if (aic_backup_clean(bdir, 3, &removed, err, sizeof(err)) != AIC_OK) {
+        app_status(a, "清理失败：%s", err[0] ? err : "未知错误");
+        return;
+    }
+    app_status(a, "已清理 %d 个旧备份（保留最近 3 个）", removed);
+}
+
+/* ---------- 插件面板（§10：安装/启用/禁用/更新） ---------- */
+static void app_plugin_panel(App *a)
+{
+    char root[700];
+    aic_plugin *arr = NULL;
+    size_t n = 0;
+
+    aic_path_join(root, sizeof(root), a->root, "plugins");
+    aic_mkdir_p(root);
+    if (aic_plugin_list(a->db, -1, &arr, &n) != AIC_OK) n = 0;
+    if (a->plugs) aic_plugin_free_array(a->plugs, a->plug_n);
+    a->plugs = arr;
+    a->plug_n = n;
+
+    app_set_overlay(a, AIC_OV_CONFIRM, "插件");
+    a->confirm_action = FORM_PLUGIN;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
-             "文件内的会话 %d 个、消息 %d 条；冲突会话 %d 个、冲突消息 %d 条。\n"
-             "本次结果：会话新增 %d / 覆盖 %d / 跳过 %d / 改名 %d，"
-             "消息新增 %d / 覆盖 %d / 跳过 %d / 改名 %d。",
-             (int)pv.conversations, (int)pv.messages,
-             (int)pv.conflict_conversations, (int)pv.conflict_messages,
-             (int)rs.conv_added, (int)rs.conv_overwritten, (int)rs.conv_skipped, (int)rs.conv_renamed,
-             (int)rs.msg_added, (int)rs.msg_overwritten, (int)rs.msg_skipped, (int)rs.msg_renamed);
-    app_status(a, "导入完成：新增 %d 个会话 / %d 条消息",
-               (int)rs.conv_added, (int)rs.msg_added);
+             "已安装 %d 个插件，启用 %d 个。插件跑在独立进程里，超时或无响应会被宿主终止并禁用；"
+             "插件数据目录与核心目录分离，卸载时可选择保留。"
+             "扩展点：prompt.fragment（提示词片段）、ui.panel（面板按钮）、message.transform（请求改写）、"
+             "tool.provider（工具提供）。",
+             (int)n, (int)(n > 0 ? 1 : 0));
+    a->field_n = 0;
+}
+
+/* 调用 ui.panel 扩展点：所有启用且声明了 ui.panel 的插件都会被问一遍 describe。 */
+static void app_plugin_panel_call(App *a)
+{
+    char exe[900];
+    char dir[900];
+    char host[1000];
+    char err[512] = {0};
+    int rc;
+
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    aic_strlcpy_utf8(dir, sizeof(dir), exe);
+    {
+        char *bar = strrchr(dir, '\\');
+        if (bar) *bar = '\0';
+    }
+    aic_path_join(host, sizeof(host), dir, "aic_plugin_host.exe");
+    a->plugin_panel[0] = '\0';
+    rc = aic_plugin_call_point(a->db, host, "ui.panel", "describe", "{}", a->plugin_panel,
+                               sizeof(a->plugin_panel), err, sizeof(err));
+    a->plugin_panel_n = 1;
+    if (rc != AIC_OK) {
+        snprintf(a->overlay_text, sizeof(a->overlay_text), "扩展点调用失败：%s",
+                 err[0] ? err : aic_strerror(rc));
+        app_status(a, "扩展点调用失败：%s", err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    snprintf(a->overlay_text, sizeof(a->overlay_text),
+             "ui.panel 的 describe 结果（没有插件声明该扩展点时 count 为 0）：\n%s",
+             a->plugin_panel);
+    app_status(a, "已调用 ui.panel 扩展点");
+}
+
+static void app_plugin_toggle(App *a, size_t idx)
+{
+    char err[512] = {0};
+    int rc;
+    if (idx >= a->plug_n) return;
+    rc = aic_plugin_set_enabled(a->db, a->plugs[idx].id, a->plugs[idx].enabled ? 0 : 1, err,
+                                sizeof(err));
+    if (rc != AIC_OK) {
+        app_status(a, "切换插件状态失败：%s", err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    app_plugin_panel(a);
+    app_status(a, "已切换插件「%s」", a->plugs[idx].name);
+}
+
+static void app_plugin_update(App *a, size_t idx)
+{
+    wchar_t wf[1024];
+    char path[2048];
+    char root[700];
+    aic_plugin plg;
+    char err[512] = {0};
+    int rc;
+
+    if (idx >= a->plug_n) return;
+    if (!pick_file(a->hwnd, L"插件清单 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
+    w_to_u8(wf, path, sizeof(path));
+    aic_path_join(root, sizeof(root), a->root, "plugins");
+    memset(&plg, 0, sizeof(plg));
+    rc = aic_plugin_update(a->db, root, path, &plg, err, sizeof(err));
+    if (rc != AIC_OK) {
+        app_status(a, "插件更新失败：%s", err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    app_status(a, "插件「%s」已更新到 %s", plg.name, plg.version);
+    aic_plugin_free(&plg);
+    app_plugin_panel(a);
 }
 
 static void app_plugin_import(App *a)
@@ -1643,6 +2434,7 @@ static void app_data(App *a)
     }
 
     app_set_overlay(a, AIC_OV_CONFIRM, "数据管理");
+    a->confirm_action = FORM_DATA;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "数据目录：%s\n数据库：%s（%s）\n会话：%d 个（聊天 1 + 问答 %d）；"
              "本机插件 %d 个。\n\n备份：迁移前自动复制到 backups/；更新前置要求备份成功。\n"
@@ -1868,6 +2660,16 @@ static void do_action(App *a, int act)
         app_msg_open(a, act - ACT_MSG_BASE);
         return;
     }
+    if (act >= ACT_PLUGIN_TOGGLE_BASE && act < ACT_PLUGIN_TOGGLE_BASE + 100) {
+        app_plugin_toggle(a, (size_t)(act - ACT_PLUGIN_TOGGLE_BASE));
+        app_invalidate(a);
+        return;
+    }
+    if (act >= ACT_PLUGIN_UPDATE_BASE && act < ACT_PLUGIN_UPDATE_BASE + 100) {
+        app_plugin_update(a, (size_t)(act - ACT_PLUGIN_UPDATE_BASE));
+        app_invalidate(a);
+        return;
+    }
     if (act >= ACT_FIELD_BASE) {
         int i = act - ACT_FIELD_BASE;
         if (i >= 0 && i < a->field_n) {
@@ -1878,6 +2680,15 @@ static void do_action(App *a, int act)
     }
 
     switch (act) {
+    case ACT_STOP:
+        if (a->eng && a->sending) {
+            aic_engine_stop(a->eng);
+            app_status(a, "已请求停止生成");
+        }
+        break;
+    case ACT_REGENERATE:
+        app_regenerate(a);
+        break;
     case ACT_NAV_ME:
         aic_router_set_tab(a->router, AIC_TAB_ME);
         app_begin_anim(a, 2, mo.tab_switch_ms);
@@ -1981,9 +2792,9 @@ static void do_action(App *a, int act)
                  "Markdown 与纯文本仅供阅读，不参与导入。导出包不含凭证。", a->root);
         break;
     case ACT_ROW_IMPORT:   app_import(a); break;
-    case ACT_ROW_PLUGIN:   app_plugin_import(a); break;
-    case ACT_ROW_BALANCE:  app_balance(a); break;
-    case ACT_ROW_UPDATE:   app_update(a); break;
+    case ACT_ROW_PLUGIN:   app_plugin_panel(a); break;
+    case ACT_ROW_BALANCE:  app_balance(a); app_balance_refresh(a); break;
+    case ACT_ROW_UPDATE:   app_check_update(a, 1); break;
     case ACT_ROW_GUIDE:    app_guide(a); break;
     case ACT_ROW_DATA:     app_data(a); break;
     case ACT_ROW_ABOUT:
@@ -2003,6 +2814,32 @@ static void do_action(App *a, int act)
     case ACT_EXPORT_JSON:  app_export(a, 0); break;
     case ACT_EXPORT_MD:    app_export(a, 1); break;
     case ACT_EXPORT_TXT:   app_export(a, 2); break;
+    case ACT_AVATAR_PICK:
+        app_avatar_pick(a);
+        break;
+    case ACT_BACKUP_NOW:
+        app_backup_now(a);
+        break;
+    case ACT_BACKUP_RESTORE:
+        app_backup_restore(a);
+        break;
+    case ACT_BACKUP_CLEAN:
+        app_backup_clean(a);
+        break;
+    case ACT_UPDATE_NOW:
+        app_update_now(a);
+        break;
+    case ACT_UPDATE_LATER:
+        app_close_overlay(a);
+        app_status(a, "稍后提醒：启动时与固定周期会再次检查");
+        break;
+    case ACT_PLUGIN_IMPORT_ACT:
+        app_plugin_import(a);
+        app_plugin_panel(a);
+        break;
+    case ACT_PLUGIN_PANEL_CALL:
+        app_plugin_panel_call(a);
+        break;
     case ACT_UPDATE_TEST:  app_update_test(a); break;
     case ACT_UPDATE_SKIP:
         a->confirm_action = 0;
@@ -2255,6 +3092,8 @@ static void app_init(App *a)
 {
     HDC screen;
 
+    /* SAI_DEMO=1 时用本地假传输演示对话（不发任何请求），便于离线看界面。 */
+    if (getenv("SAI_DEMO")) a->offline_demo = 1;
     memset(a->scroll, 0, sizeof(a->scroll));
     a->field_focus = -1;
     a->input_focus = 1;
@@ -2296,6 +3135,14 @@ static void app_init(App *a)
     if (aic_router_state(a->router) == AIC_ST_FIRST_RUN) aic_router_start_wizard(a->router);
     DLOG("[diag] router state=%s", aic_route_state_name(aic_router_state(a->router)));
 
+    {
+        char ldir[600];
+        aic_path_join(ldir, sizeof(ldir), a->root, "logs");
+        aic_mkdir_p(ldir);
+        aic_log_init(ldir);
+        DLOG("[diag] log dir=%s", ldir);
+    }
+    a->system_night = read_system_night();
     app_setup_engine(a);
     DLOG("[diag] engine=%p", (void *)a->eng);
     app_reload_threads(a);
@@ -2303,6 +3150,13 @@ static void app_init(App *a)
     DLOG("[diag] chat conv=%s msgs=%d", a->conv_id, (int)a->msg_n);
     a->scroll[2] = 0;
     a->caret_tick = aic_now_ms();
+
+    /* §14.1：启动时检查一次（可在设置里关闭），之后按周期检查。 */
+    if (aic_setting_get_int(a->db, AIC_SET_UPDATE_AUTO, 1)) {
+        long long last = (long long)aic_setting_get_int(a->db, "update.last_check_ms", 0);
+        int hours = aic_setting_get_int(a->db, AIC_SET_UPDATE_INTERVAL, 24);
+        if (aic_update_should_check(last, hours, aic_now_ms())) app_check_update(a, 0);
+    }
 }
 
 static void app_shutdown(App *a)
@@ -2495,12 +3349,49 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == ANIM_TIMER_ID) {
             long long now = aic_now_ms();
+            if (aic_setting_get_int(a->db, AIC_SET_UPDATE_AUTO, 1)) {
+                long long last = (long long)aic_setting_get_int(a->db, "update.last_check_ms", 0);
+                int hours = aic_setting_get_int(a->db, AIC_SET_UPDATE_INTERVAL, 24);
+                if (aic_update_should_check(last, hours, now)) app_check_update(a, 0);
+            }
             if (a->anim_on && now - a->anim_start >= a->anim_dur) a->anim_on = 0;
             if (a->anim_on || (now - a->caret_tick) > 250) {
                 a->caret_tick = now;
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
+        return 0;
+    case WM_SETTINGCHANGE:
+        a->system_night = read_system_night();
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    case WM_APP_UPD:
+        app_on_upd(a, (TextMsg *)lp);
+        return 0;
+    case WM_APP_BAL:
+        app_on_bal(a, (TextMsg *)lp);
+        return 0;
+    case WM_APP_IO:
+        app_on_io(a, (IoMsg *)lp);
+        return 0;
+    case WM_APP_DELTA: {
+        char *d = (char *)lp;
+        if (d) {
+            size_t left = sizeof(a->stream_text) - a->stream_len - 1;
+            size_t dl = strlen(d);
+            if (dl > left) dl = left;
+            if (dl > 0) {
+                memcpy(a->stream_text + a->stream_len, d, dl);
+                a->stream_len += dl;
+                a->stream_text[a->stream_len] = '\0';
+            }
+            aic_xfree(d);
+        }
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    }
+    case WM_APP_DONE:
+        app_on_done(a, (ResultMsg *)lp);
         return 0;
     case WM_LBUTTONDOWN:
         SetFocus(hwnd);

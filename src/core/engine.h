@@ -51,6 +51,14 @@ int aic_engine_build_request(aic_engine *e, const char *conv_id, sb *out, char *
 int aic_engine_send(aic_engine *e, const char *conv_id, const char *user_text,
                     aic_engine_result *res, char *err, size_t errlen);
 
+/* 流式增量回调（在调用 send 的线程上同步触发；界面据此边收边显示）。 */
+void aic_engine_set_stream_cb(aic_engine *e, void (*fn)(void *ud, const char *delta), void *ud);
+
+/* 重新生成上一条回复（技术设计 6.1）：旧回复标记为 superseded（保留可回看），
+ * 新回复获得新 id。out_old_id 可为空。 */
+int  aic_engine_regenerate(aic_engine *e, const char *conv_id, char *out_old_id, size_t old_cap,
+                           aic_engine_result *res, char *err, size_t errlen);
+
 /* 请求停止（在回调里被置位的取消标志）。 */
 void aic_engine_stop(aic_engine *e);
 int  aic_engine_is_stopped(const aic_engine *e);

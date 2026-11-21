@@ -1,5 +1,6 @@
 /* plugin.c —— 插件清单、安装、启用/禁用、卸载与提示词片段拼装。 */
 #include "plugin.h"
+#include "plugin_proc.h"
 #include "json.h"
 #include "store_setting.h"
 #include "util.h"
@@ -459,5 +460,148 @@ int aic_plugin_disable_after_crash(aic_db *db, const char *id, const char *reaso
     snprintf(val, sizeof(val), "%s %s", ts, (reason && reason[0]) ? reason : "插件异常退出");
     aic_setting_set(db, key, val);
     if (err && errlen) snprintf(err, errlen, "插件「%s」已禁用：%s", p.name, val);
+    return AIC_OK;
+}
+
+/* ---------------- 插件更新（技术设计 10.1：安装/启用/禁用/卸载/更新） ---------------- */
+int aic_plugin_update(aic_db *db, const char *plugins_root, const char *manifest_path,
+                      aic_plugin *out, char *err, size_t errlen)
+{
+    if (!db || !plugins_root || !manifest_path) return AIC_E_INVAL;
+    if (err && errlen) err[0] = '\0';
+
+    char *raw = NULL;
+    size_t raw_len = 0;
+    int rc = aic_file_read_all(manifest_path, &raw, &raw_len);
+    if (rc != AIC_OK) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "读取插件清单失败");
+        return rc;
+    }
+    aic_plugin_manifest mf;
+    rc = aic_plugin_parse_manifest(raw, raw_len, &mf, err, errlen);
+    aic_xfree(raw);
+    if (rc != AIC_OK) return rc;
+
+    aic_plugin existing;
+    rc = aic_plugin_get(db, mf.id, &existing);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "插件 %s 尚未安装，请先安装", mf.id);
+        return rc;
+    }
+
+    char src_dir[1024];
+    aic_strlcpy_utf8(src_dir, sizeof(src_dir), manifest_path);
+    char *slash = strrchr(src_dir, '/');
+    char *bslash = strrchr(src_dir, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    if (slash) *slash = '\0';
+    else aic_strlcpy_utf8(src_dir, sizeof(src_dir), ".");
+
+    char entry_path[1024];
+    aic_path_join(entry_path, sizeof(entry_path), src_dir, mf.entry);
+    if (!aic_path_exists(entry_path)) {
+        if (err && errlen) snprintf(err, errlen, "插件入口文件不存在：%s", mf.entry);
+        return AIC_E_NOTFOUND;
+    }
+
+    char dst_dir[1024];
+    char joined[1024];
+    aic_path_join(joined, sizeof(joined), plugins_root, mf.id);
+    aic_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
+    rc = copy_tree(src_dir, dst_dir);
+    if (rc != AIC_OK) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "复制插件文件失败");
+        return rc;
+    }
+
+    aic_stmt *st = aic_db_prepare(db,
+        "UPDATE plugin SET name=?1, version=?2, author=?3, entry_path=?4, permissions=?5, "
+        "extension_points=?6 WHERE id=?7;");
+    if (!st) return AIC_E_DB;
+    aic_stmt_bind_text(st, 1, mf.name);
+    aic_stmt_bind_text(st, 2, mf.version);
+    aic_stmt_bind_text(st, 3, mf.author);
+    aic_stmt_bind_text(st, 4, mf.entry);
+    aic_stmt_bind_text(st, 5, mf.permissions);
+    aic_stmt_bind_text(st, 6, mf.extension_points);
+    aic_stmt_bind_text(st, 7, mf.id);
+    rc = aic_stmt_step(st);
+    aic_stmt_finalize(st);
+    if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
+    if (rc != AIC_OK) return rc;
+    if (out) aic_plugin_get(db, mf.id, out);
+    return AIC_OK;
+}
+
+/* ---------------- 扩展点调用（技术设计 10.2） ---------------- */
+static int call_one(aic_db *db, const aic_plugin *pl, const char *host_exe, const char *point,
+                    const char *op, const char *request_json, jw *w, char *err, size_t errlen)
+{
+    char entry_abs[1024];
+    aic_path_join(entry_abs, sizeof(entry_abs), pl->dir, pl->entry);
+    sb rb;
+    sb_init(&rb);
+    jw req;
+    jw_init(&req, &rb, 0);
+    jw_obj_begin(&req, NULL);
+    jw_put_str(&req, "point", point);
+    jw_put_str(&req, "op", op ? op : "");
+    if (request_json && request_json[0]) jw_put_raw(&req, "request", request_json);
+    else jw_put_null(&req, "request");
+    jw_obj_end(&req);
+    const char *body = sb_cstr(&rb);
+
+    aic_plugin_proc_result res;
+    memset(&res, 0, sizeof(res));
+    int rc = aic_plugin_proc_call(host_exe, entry_abs, body, strlen(body), 5000, pl->dir,
+                                  &res, err, errlen);
+    jw_obj_begin(w, NULL);
+    jw_put_str(w, "plugin", pl->id);
+    jw_put_bool(w, "ok", rc == AIC_OK);
+    if (rc == AIC_OK) jw_put_raw(w, "result", res.text ? res.text : "null");
+    else jw_put_str(w, "error", err && err[0] ? err : "插件调用失败");
+    jw_obj_end(w);
+    if (rc != AIC_OK) {
+        /* 插件崩溃/超时：禁用并记录事件，主程序继续（技术设计 10.1）。 */
+        aic_plugin_disable_after_crash(db, pl->id, err && err[0] ? err : "插件调用失败", NULL, 0);
+    }
+    aic_plugin_proc_free(&res);
+    sb_free(&rb);
+    return rc;
+}
+
+int aic_plugin_call_point(aic_db *db, const char *host_exe, const char *point, const char *op,
+                          const char *request_json, char *out, size_t out_cap,
+                          char *err, size_t errlen)
+{
+    if (!db || !host_exe || !point || !out) return AIC_E_INVAL;
+    if (err && errlen) err[0] = '\0';
+    if (aic_plugin_ext_point_index(point) < 0) {
+        if (err && errlen) snprintf(err, errlen, "未知扩展点：%s", point);
+        return AIC_E_INVAL;
+    }
+    aic_plugin *arr = NULL;
+    size_t n = 0;
+    int rc = aic_plugin_list(db, 1, &arr, &n);
+    if (rc != AIC_OK) return rc;
+    sb ob;
+    sb_init(&ob);
+    jw w;
+    jw_init(&w, &ob, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_str(&w, "point", point);
+    jw_arr_begin(&w, "results");
+    int called = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!strstr(arr[i].extension_points, point)) continue;
+        call_one(db, &arr[i], host_exe, point, op, request_json, &w, err, errlen);
+        called++;
+    }
+    jw_arr_end(&w);
+    jw_put_int(&w, "count", called);
+    jw_obj_end(&w);
+    aic_strlcpy_utf8(out, out_cap, sb_cstr(&ob));
+    sb_free(&ob);
+    aic_plugin_free_array(arr, n);
     return AIC_OK;
 }

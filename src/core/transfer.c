@@ -28,6 +28,7 @@ typedef struct tr_msg {
     char  role[16];
     char *content;
     int   recalled;
+    int   superseded;
     char  edited_at[32];
     char *original_content;
     char  model_id[64];
@@ -133,6 +134,7 @@ static int collect(aic_db *db, int mode, tr_doc *doc, char *err, size_t errlen)
             aic_strlcpy_utf8(tm->role, sizeof(tm->role), msgs[k].role);
             tm->content = aic_strdup(msgs[k].content ? msgs[k].content : "");
             tm->recalled = msgs[k].recalled;
+            tm->superseded = msgs[k].superseded;
             aic_strlcpy_utf8(tm->edited_at, sizeof(tm->edited_at), msgs[k].edited_at);
             tm->original_content = msgs[k].original_content ? aic_strdup(msgs[k].original_content) : NULL;
             aic_strlcpy_utf8(tm->model_id, sizeof(tm->model_id), msgs[k].model_id);
@@ -197,6 +199,7 @@ int aic_export_json(aic_db *db, int mode, sb *out, char *err, size_t errlen)
         jw_put_str(&w, "role", m->role);
         jw_put_str(&w, "content", m->content ? m->content : "");
         jw_put_int(&w, "recalled", m->recalled);
+        jw_put_int(&w, "superseded", m->superseded);
         jw_put_str(&w, "edited_at", m->edited_at);
         if (m->original_content) jw_put_str(&w, "original_content", m->original_content);
         else jw_put_null(&w, "original_content");
@@ -363,6 +366,7 @@ static int parse_doc(const char *path, tr_doc *doc, char *err, size_t errlen)
         aic_strlcpy_utf8(m->role, sizeof(m->role), jv_get_str(o, "role", "user"));
         m->content = aic_strdup(jv_get_str(o, "content", ""));
         m->recalled = jv_get_int(o, "recalled", 0);
+        m->superseded = jv_get_int(o, "superseded", 0);
         aic_strlcpy_utf8(m->edited_at, sizeof(m->edited_at), jv_get_str(o, "edited_at", ""));
         const jv *orig = jv_get(o, "original_content");
         m->original_content = (orig && orig->type == JV_STR) ? aic_strdup(jv_string(orig)) : NULL;
@@ -515,7 +519,7 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
         res->msg_overwritten++;
         aic_stmt *st = aic_db_prepare(db,
             "UPDATE message SET role=?2, content=?3, recalled=?4, edited_at=?5, original_content=?6, "
-            "model_id=?7, created_at=?8 WHERE id=?1;");
+            "model_id=?7, created_at=?8, superseded=?9 WHERE id=?1;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, id);
         aic_stmt_bind_text(st, 2, m->role);
@@ -526,6 +530,7 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
         else aic_stmt_bind_null(st, 6);
         aic_stmt_bind_text(st, 7, m->model_id);
         aic_stmt_bind_text(st, 8, m->created_at);
+        aic_stmt_bind_ll(st, 9, m->superseded);
         int rc = aic_stmt_step(st);
         aic_stmt_finalize(st);
         return rc == AIC_DONE ? AIC_OK : rc;
@@ -536,7 +541,8 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
     res->msg_added++;
     aic_stmt *st = aic_db_prepare(db,
         "INSERT INTO message (id, conversation_id, seq, role, content, recalled, edited_at, "
-        "original_content, model_id, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);");
+        "original_content, model_id, created_at, superseded) "
+        "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);");
     if (!st) return AIC_E_DB;
     aic_stmt_bind_text(st, 1, id);
     aic_stmt_bind_text(st, 2, m->conversation_id);
@@ -549,6 +555,7 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
     else aic_stmt_bind_null(st, 8);
     aic_stmt_bind_text(st, 9, m->model_id);
     aic_stmt_bind_text(st, 10, m->created_at);
+    aic_stmt_bind_ll(st, 11, m->superseded);
     int rc = aic_stmt_step(st);
     aic_stmt_finalize(st);
     return rc == AIC_DONE ? AIC_OK : rc;
