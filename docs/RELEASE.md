@@ -55,11 +55,15 @@
 | --- | --- | --- | --- |
 | Windows 便携包 | `AIChat-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `AIChat-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\AIChat` |
+| Windows ARM64 便携包 | `AIChat-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
 | Android 安装包 | `AIChat.apk` | arm64-v8a | `minSdk 24`、`targetSdk 34`，v2/v3 自签名 |
 
-**ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。当前构建链只有 ucrt64 x86_64 工具链，
-x64 产物已实测；ARM64 需要另装 `clangarm64` sysroot 才能交叉编译，本版按"未产出 ARM64 产物"如实登记，
-不把"同一份源码可编译"当作已交付。详见 `docs/PRE-RELEASE-EVIDENCE.md` 第 9 节。
+**ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。本版用本机 LLVM 23 的 `clang` +
+`lld` 加 MSYS2 `clangarm64` 的 aarch64 mingw-w64 sysroot 交叉编译出 ARM64 的 `AIChat.exe`、
+`aic_plugin_host.exe` 与示例插件 DLL（`tools\build_arm64.py`，12 秒可复现，PE 机器码 `0xAA64` 已核验）。
+**边界**：构建机是 x64，Windows 不能在本机运行 ARM64 二进制，因此 ARM64 产物只做到"编译链接成功 +
+结构与导入库核验"，未在 ARM64 真机启动验证；不提供 ARM64 安装包（自解压安装程序本身是 x64，
+在 ARM64 上靠系统仿真运行）。详见 `docs/PRE-RELEASE-EVIDENCE.md` 第 9、11 节。
 
 ## 回滚
 
@@ -67,4 +71,4 @@ x64 产物已实测；ARM64 需要另装 `clangarm64` sysroot 才能交叉编译
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/aic.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-22（对应版本 v1.0.0）。
+最后更新：2026-11-22（对应版本 v1.0.0，含 ARM64 交叉编译产物）。

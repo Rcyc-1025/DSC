@@ -32,7 +32,12 @@
 | Android SDK build-tools | 37.0.0（aapt2 / d8 / zipalign / apksigner） | 打包与签名 APK | 否 |
 | Android platform | android-35（`android.jar`） | javac 类路径 | 否 |
 | JDK | 21.0.12 | 编译 Java 界面层、生成 keystore | 否 |
+| LLVM clang + lld | 23.1.4 | 交叉编译 Windows ARM64（`tools\build_arm64.py`，目标 `aarch64-w64-windows-gnu`） | 否 |
+| MSYS2 clangarm64 sysroot | crt/headers/compiler-rt 13.0.0.r91 + 23.1.4 | ARM64 交叉编译用的 aarch64 mingw-w64 头文件、启动对象与 builtins | 否 |
 
+> 说明：ARM64 交叉编译不是必需步骤（x64 产物与 Android 包不依赖它）；只有需要 ARM64 产物时才要 clang/lld + clangarm64 sysroot，
+> 且必须按 `tools\build_arm64.py` 的做法把 `libclang_rt.builtins-aarch64.a` 放进自带 resource-dir，否则链接报 `unable to find library -lgcc`。
+>
 > 说明：JDK 必须 ≥ 21，但 d8 必须用 build-tools 37.0.0 —— 34.0.0 的 d8 在 JDK 21 上会抛
 > `Cannot invoke "String.length()" because "<parameter1>" is null`，换 build-tools 即可，不需要降 JDK。
 

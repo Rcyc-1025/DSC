@@ -84,6 +84,8 @@ python tools\verify_android.py    # APK structure / ABI / manifest / signature, 
 
 ```powershell
 python tools\package_win.py       # dist\AIChat-1.0.0-win-x64-portable.zip (+ .sha256)
+python tools\build_arm64.py       # cross-compile Windows ARM64 artifacts into build\arm64\
+python tools\package_win.py --arm64 # dist\AIChat-1.0.0-win-arm64-portable.zip
 python tools\make_installer.py    # dist\AIChat-1.0.0-win-x64-setup.exe (+ .sha256)
 ```
 
@@ -112,7 +114,7 @@ Deliberate scope limits, by decision of the requirement owner:
 - The Android APK compiles, signs and verifies, but has not been run on a real device.
 - The update flow stops at download + verification; no install action is performed.
 - Windows binaries are unsigned (no `signtool`/certificate on the build machine); the Android APK uses a self-signed key.
-- Only x64 (Windows) and arm64-v8a (Android) artifacts are produced; Windows ARM64 is not built.
+- Windows ARM64 artifacts are cross-compiled (`AIChat-1.0.0-win-arm64-portable.zip`) but **not verified on ARM64 hardware** — the build machine is x64 and cannot execute ARM64 binaries. No ARM64 installer (portable zip only).
 
 See section 9 of `docs/PRE-RELEASE-EVIDENCE.md` for the complete list.
 

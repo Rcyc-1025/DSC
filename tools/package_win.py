@@ -1,6 +1,11 @@
 
 # -*- coding: utf-8 -*-
-"""打 Windows 便携包：组装 dist/AIChat-<ver>-win-x64/ 并压成 zip，附带依赖自检与 SHA-256。"""
+r"""打 Windows 便携包：组装 dist/AIChat-<ver>-win-<arch>/ 并压成 zip，附带依赖自检与 SHA-256。
+
+用法：
+  python tools\package_win.py            # x64（默认）
+  python tools\package_win.py --arm64    # ARM64（先跑 tools\build_arm64.py）
+"""
 
 import hashlib
 import os
@@ -16,10 +21,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, 'build')
 DIST = os.path.join(ROOT, 'dist')
 VER = '1.0.0'
-NAME = 'AIChat-%s-win-x64' % VER
+ARCH = 'arm64' if '--arm64' in sys.argv else 'x64'
+NAME = 'AIChat-%s-win-%s' % (VER, ARCH)
 OUTDIR = os.path.join(DIST, NAME)
 ZIP = os.path.join(DIST, NAME + '-portable.zip')
-MINGWBIN = r'D:\Code\msys2ucrt\ucrt64\bin'
+# arm64 产物在 build\arm64，运行时 DLL 来自 MSYS2 clangarm64；x64 产物在 build
+SRCBUILD = os.path.join(BUILD, 'arm64') if ARCH == 'arm64' else BUILD
+MINGWBIN = (r'D:\Code\msys2arm64\clangarm64\bin' if ARCH == 'arm64'
+            else r'D:\Code\msys2ucrt\ucrt64\bin')
+EXES = ['AIChat.exe', 'aic_plugin_host.exe'] if ARCH == 'arm64' else ['AIChat.exe', 'aic.exe', 'aic_plugin_host.exe']
 
 # 允许的系统 DLL（其余视为需要随包分发的运行时）
 SYSTEM_DLLS = {
@@ -84,8 +94,8 @@ def sha256(path):
 def need_dlls():
     """返回 exe 需要的非系统 DLL（从 mingw 目录取）。"""
     runtime = {}
-    for exe in ['AIChat.exe', 'aic.exe', 'aic_plugin_host.exe']:
-        p = os.path.join(BUILD, exe)
+    for exe in EXES:
+        p = os.path.join(SRCBUILD, exe)
         for d in pe_imports(p):
             if d in SYSTEM_DLLS or d.startswith('api-ms-win'):
                 continue
@@ -108,10 +118,11 @@ def main():
     shutil.rmtree(OUTDIR, ignore_errors=True)
     os.makedirs(OUTDIR, exist_ok=True)
 
-    print('组装 %s' % OUTDIR)
-    copy(os.path.join(BUILD, 'AIChat.exe'), 'AIChat.exe')
-    copy(os.path.join(BUILD, 'aic.exe'), 'tools/aic.exe')
-    copy(os.path.join(BUILD, 'aic_plugin_host.exe'), 'aic_plugin_host.exe')
+    print('组装 %s（%s）' % (OUTDIR, ARCH))
+    copy(os.path.join(SRCBUILD, 'AIChat.exe'), 'AIChat.exe')
+    if ARCH != 'arm64':
+        copy(os.path.join(SRCBUILD, 'aic.exe'), 'tools/aic.exe')
+    copy(os.path.join(SRCBUILD, 'aic_plugin_host.exe'), 'aic_plugin_host.exe')
 
     for d, src in sorted(need_dlls().items()):
         copy(src, d)
@@ -120,7 +131,8 @@ def main():
     copy(os.path.join(sample, 'plugin.json'), 'plugins/sample_basic/plugin.json')
     copy(os.path.join(sample, 'prompt_fragment.txt'), 'plugins/sample_basic/prompt_fragment.txt')
     copy(os.path.join(sample, 'README.md'), 'plugins/sample_basic/README.md')
-    dll = os.path.join(BUILD, 'plugins', 'sample_basic.dll')
+    dll = (os.path.join(SRCBUILD, 'sample_basic.dll') if ARCH == 'arm64'
+           else os.path.join(BUILD, 'plugins', 'sample_basic.dll'))
     if os.path.isfile(dll):
         copy(dll, 'plugins/sample_basic/sample_basic.dll')
 
@@ -152,6 +164,16 @@ def main():
         '6. 本包未做代码签名（本机无 signtool），首次运行 SmartScreen 可能提示；\n'
         '   自签证书脚本见仓库 scripts\\gen_cert.ps1。\n'
     ) % VER
+    if ARCH == 'arm64':
+        # 交叉编译产物没有 aic.exe（验收器只有 x64 版），把第 4 条换成如实说明
+        notes = notes.replace(
+            '4. tools\aic.exe 是命令行验收器：\n'
+            '     aic.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
+            '     aic.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
+            '     aic.exe doctor            环境自检（数据库、凭据、插件宿主）\n',
+            '4. 本包是 Windows ARM64 交叉编译产物，尚未在 ARM64 真机运行验证；\n'
+            '   插件宿主与示例插件同为 ARM64，请在同一架构上使用。\n')
+        notes = notes.replace('Windows x64 便携包', 'Windows ARM64 便携包')
     with open(os.path.join(OUTDIR, '使用说明.txt'), 'w', encoding='utf-8-sig', newline='\r\n') as f:
         f.write(notes)
     print('  + 使用说明.txt')

@@ -76,6 +76,8 @@ python tools\verify_android.py    # 校验 APK：结构 / ABI / 清单 / 签名�
 
 ~~~powershell
 python tools\package_win.py       # 产出 dist\AIChat-1.0.0-win-x64-portable.zip（含 SHA-256 校验文件）
+python tools\build_arm64.py       # 交叉编译 Windows ARM64 产物到 build\arm64\
+python tools\package_win.py --arm64 # 产出 dist\AIChat-1.0.0-win-arm64-portable.zip
 ~~~
 
 便携包内含 AIChat.exe、命令行工具、示例插件、文档与 install.ps1（创建开始菜单快捷方式，不需要管理员权限）。

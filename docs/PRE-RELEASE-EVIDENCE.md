@@ -28,9 +28,33 @@
 | build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
 | dist\AIChat-1.0.0-win-x64-portable.zip | 1426460 | 806ed1f156cfeee9d60ea04e7248a3ed2e252c4b00b9eb7bea20f5f22a8bf545 |
 | dist\AIChat-1.0.0-win-x64-setup.exe | 3508462 | 9e1864ef8da65260016a551a74053259c4fef5611fe16d0a08579eab6879b0f5 |
+| build\arm64\AIChat.exe（Windows ARM64 界面，交叉编译） | 1368064 | 55a3c496ff2c2224a4cb59e33ed52ad988d0c3af8ecb4d5953d6008a4cef7a15 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 86c6534612f340c4a29d3eff46244db0086782096d69bc7aa377928ec382fe42 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | db47305f7021dd1483260fbe49ffd154c8900811939ee4004f7f6eac7645f2a6 |
+| dist\AIChat-1.0.0-win-arm64-portable.zip | 801958 | 01e1b0dcb860105678eb1ab7812c915e1bd7d2b44509c694b5f120fc11a35dcd |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
+
+### 2.1 Windows ARM64 交叉编译（修订版 §16.1 的双架构要求）
+
+    python tools\build_arm64.py          # 12.3s，产物在 build\arm64\
+    python tools\package_win.py --arm64  # dist\AIChat-1.0.0-win-arm64-portable.zip
+
+构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
+sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
+windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必须自己处理的点：
+
+1. **builtins**：clang 按 `<resource-dir>/lib/<target>/libclang_rt.builtins.a` 找内建函数库，本机 LLVM 只带
+   x86_64 版本。脚本把 clang 自带的 `include` 复制成 `build\arm64\res`，再把 sysroot 里的
+   `libclang_rt.builtins-aarch64.a` 复制成 `res\lib\aarch64-w64-windows-gnu\libclang_rt.builtins.a`，
+   编译时传 `-resource-dir=build\arm64\res -rtlib=compiler-rt`。不做这一步，链接会报
+   `unable to find library -lgcc`（前一版就是卡在这里）。
+2. **PE 架构核验**：产物头里的 machine 字段实测为 `0xAA64`（ARM64），不是 x64 的 `0x8664`。
+
+**这一版 ARM64 的诚实边界**：构建机是 x64，Windows 无法在本机执行 ARM64 二进制，所以只做到
+"编译链接成功 + 架构字段核验 + 导入库由链接器解析通过"，**没有在 ARM64 真机上启动过**（§11 第 4 条）。
+不产出 ARM64 安装包：自解压安装程序本身是 x64，在 ARM64 Windows 上要靠系统仿真运行。
 
 ## 3. 单元测试（核心层）
 
@@ -164,7 +188,9 @@ pe_imports 自检显示只导入系统 DLL）。实测：
    demo 回复由本地假传输生成，未用真实 Key 打 api.deepseek.com。
 3. **安装包的两步系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
    安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 §9），需在普通桌面环境复测。
-4. **ARM64 / 32 位 Windows**：只构建 x64；ARM64 需要另装 clangarm64 sysroot 才能交叉编译，本版未产出。
+4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `AIChat.exe` / 插件宿主 / 示例插件（§2.1），
+   但本机是 x64、无法执行 ARM64 二进制，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包）。
+   32 位 Windows 与 x86 架构不构建、不承诺。
 5. **长时间人工回归**：界面验证为离屏渲染 + 逻辑自动化（router/动画参数/主题对比度断言），未做数小时点击回归。
 6. **更新安装与余额的真实下发**：更新只到"下载 + 校验 + 备份门"，安装动作留给平台层；余额只到解析与本地账本并列展示。
 
