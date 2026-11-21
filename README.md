@@ -1,5 +1,8 @@
 # Sai
 
+[![ci](https://github.com/Rcyc-1025/Sai/actions/workflows/ci.yml/badge.svg)](https://github.com/Rcyc-1025/Sai/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/Rcyc-1025/Sai)](https://github.com/Rcyc-1025/Sai/releases/latest)
+
 一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
 
 - 双模式：**问答模式**（多会话，参照 DeepSeek 网页版）与**聊天模式**（单会话，QQ 风格三栏）
@@ -26,6 +29,19 @@
 | `tests` | 单元测试与测试插件 |
 | `tools` | 截图、报告等辅助脚本 |
 | `plugins` | 示例插件 |
+
+## 直接下载
+
+不想自己编译就去 [Releases](https://github.com/Rcyc-1025/Sai/releases/latest)：
+
+| 文件 | 平台 |
+| --- | --- |
+| `Sai-1.0.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
+| `Sai-1.0.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `Sai-1.0.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译，未在真机验证） |
+| `Sai.apk` | Android arm64-v8a（minSdk 24） |
+
+每个包都附同名 `.sha256`，完整哈希见 `docs/PRE-RELEASE-EVIDENCE.md`。
 
 ## 构建
 
