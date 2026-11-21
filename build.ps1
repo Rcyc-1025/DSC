@@ -1,4 +1,4 @@
-﻿# build.ps1 —— AIChat 构建脚本（Windows，mingw-w64 + 纯 C11）
+﻿# build.ps1 —— Sai 构建脚本（Windows，mingw-w64 + 纯 C11）
 # 用法： pwsh -File build.ps1 -Target test
 param(
     [string]$Target = 'test'
@@ -105,17 +105,17 @@ switch ($Target) {
     }
     'gui' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
-        $exe = Join-Path $Root 'build\AIChat.exe'
+        $exe = Join-Path $Root 'build\Sai.exe'
         $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-ladvapi32', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-static-libgcc')
-        Invoke-Gcc -Arguments $a -What 'AIChat.exe'
-        Write-Host 'built: build\AIChat.exe'
+        Invoke-Gcc -Arguments $a -What 'Sai.exe'
+        Write-Host 'built: build\Sai.exe'
     }
     'guidiag' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
-        $exe = Join-Path $Root 'build\AIChatDiag.exe'
+        $exe = Join-Path $Root 'build\SaiDiag.exe'
         $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-ladvapi32', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-static-libgcc')
-        Invoke-Gcc -Arguments $a -What 'AIChatDiag.exe'
-        Write-Host 'built: build\AIChatDiag.exe'
+        Invoke-Gcc -Arguments $a -What 'SaiDiag.exe'
+        Write-Host 'built: build\SaiDiag.exe'
     }
     default { Write-Host ('unknown target: ' + $Target); exit 2 }
 }

@@ -1,4 +1,4 @@
-/* aic_setup.c —— AIChat 安装程序（纯 C，Win32，无第三方运行时）。
+/* aic_setup.c —— Sai 安装程序（纯 C，Win32，无第三方运行时）。
  *
  * 形态：自解压式安装包。构建时由 tools/make_installer.py 把本程序编成 setup 桩，
  * 再把 payload（安装目录要落地的文件）以本文件约定的归档格式追加到 exe 末尾：
@@ -7,7 +7,7 @@
  *     uint32  file_count
  *     每条：uint32 path_len | path(UTF-8, 相对安装目录) | uint64 size | data
  *
- * 运行：默认装到 %LOCALAPPDATA%\Programs\AIChat，创建开始菜单快捷方式与卸载登记；
+ * 运行：默认装到 %LOCALAPPDATA%\Programs\Sai，创建开始菜单快捷方式与卸载登记；
  *       /S 静默；/D=<目录> 指定安装目录。
  */
 #define WIN32_LEAN_AND_MEAN
@@ -24,16 +24,16 @@
 
 #define MARKER "AICSETUP-PAYLOAD-V1"
 #define MARKER_LEN (sizeof(MARKER) - 1)
-#define APP_NAME L"AIChat 陪伴对话"
+#define APP_NAME L"Sai"
 #define APP_VERSION L"1.0.0"
-#define UNINST_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AIChat"
-#define INSTALLER_VERSION "AIChat Setup 1.0.0"
+#define UNINST_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Sai"
+#define INSTALLER_VERSION "Sai Setup 1.0.0"
 
 static int g_silent = 0;
 static WCHAR g_dir[MAX_PATH * 2];
 static WCHAR g_exe[MAX_PATH * 2];
 
-/* 诊断日志：写到 %TEMP%\AIChatSetup.log，只在排查安装问题时用；写失败不影响安装。 */
+/* 诊断日志：写到 %TEMP%\SaiSetup.log，只在排查安装问题时用；写失败不影响安装。 */
 static void setup_log(const char *fmt, ...)
 {
     char line[1024];
@@ -42,12 +42,12 @@ static void setup_log(const char *fmt, ...)
     WCHAR path[MAX_PATH + 32];
     va_list ap;
     int n;
-    if (GetEnvironmentVariableW(L"AICHAT_SETUP_DEBUG", dbg, 8) == 0) return;
+    if (GetEnvironmentVariableW(L"SAI_SETUP_DEBUG", dbg, 8) == 0) return;
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
     if (GetTempPathW(MAX_PATH, tmp) == 0) return;
-    _snwprintf(path, MAX_PATH + 31, L"%sAIChatSetup.log", tmp);
+    _snwprintf(path, MAX_PATH + 31, L"%sSaiSetup.log", tmp);
     path[MAX_PATH + 31] = L'\0';
     n = (int)strlen(line);
     if (n > (int)sizeof(line) - 3) n = (int)sizeof(line) - 3;
@@ -174,17 +174,17 @@ static int make_shortcut(const WCHAR *install_dir)
         return 1;
     }
     setup_log("programs=%ls", programs);
-    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\%s", programs, L"AIChat");
+    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\%s", programs, L"Sai");
     lnk[MAX_PATH * 2 - 1] = L'\0';
     CreateDirectoryW(lnk, NULL);
     {
         WCHAR name[MAX_PATH * 2];
-        _snwprintf(name, MAX_PATH * 2 - 1, L"%s\\%s.lnk", lnk, L"AIChat");
+        _snwprintf(name, MAX_PATH * 2 - 1, L"%s\\%s.lnk", lnk, L"Sai");
         name[MAX_PATH * 2 - 1] = L'\0';
         wcsncpy(lnk, name, MAX_PATH * 2 - 1);
         lnk[MAX_PATH * 2 - 1] = L'\0';
     }
-    _snwprintf(target, MAX_PATH * 2 - 1, L"%s\\AIChat.exe", install_dir);
+    _snwprintf(target, MAX_PATH * 2 - 1, L"%s\\Sai.exe", install_dir);
     target[MAX_PATH * 2 - 1] = L'\0';
 
     hr = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&link);
@@ -241,7 +241,7 @@ static void default_install_dir(void)
     if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base) != S_OK) {
         GetTempPathW(MAX_PATH, base);
     }
-    _snwprintf(g_dir, MAX_PATH * 2 - 1, L"%s\\Programs\\AIChat", base);
+    _snwprintf(g_dir, MAX_PATH * 2 - 1, L"%s\\Programs\\Sai", base);
     g_dir[MAX_PATH * 2 - 1] = L'\0';
 }
 
@@ -277,7 +277,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     parse_args();
 
     if (!g_silent && MessageBoxW(NULL,
-            L"将把 AIChat 陪伴对话安装到下面这个目录：\n\n（可在命令行用 /D=<目录> 指定）\n\n继续安装？",
+            L"将把 Sai安装到下面这个目录：\n\n（可在命令行用 /D=<目录> 指定）\n\n继续安装？",
             APP_NAME, MB_OKCANCEL | MB_ICONQUESTION) != IDOK) {
         return 0;
     }
@@ -360,14 +360,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
             int n;
             GetLocalTime(&st);
             n = snprintf(body, sizeof(body),
-                         "AIChat Setup 1.0.0\ntime=%04u-%02u-%02u %02u:%02u:%02u\nfiles=%d shortcut=%s registry=%s\n",
+                         "Sai Setup 1.0.0\ntime=%04u-%02u-%02u %02u:%02u:%02u\nfiles=%d shortcut=%s registry=%s\n",
                          st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
                          done, sc == 0 ? "ok" : "failed", rg == 0 ? "ok" : "failed");
             if (n > 0) write_file(logpath, (const unsigned char *)body, (size_t)n);
         }
 
         if (!g_silent) {
-            const WCHAR *sc_txt = sc == 0 ? L"已创建" : L"创建失败（可直接运行安装目录里的 AIChat.exe）";
+            const WCHAR *sc_txt = sc == 0 ? L"已创建" : L"创建失败（可直接运行安装目录里的 Sai.exe）";
             const WCHAR *rg_txt = rg == 0 ? L"已登记（可在「设置 - 应用」卸载）" : L"登记失败（可手工删除安装目录）";
             _snwprintf(text, 1023, L"安装完成：%s\n\n开始菜单快捷方式：%s\n卸载入口：%s",
                        g_dir, sc_txt, rg_txt);
@@ -375,7 +375,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
             msg(text, (sc == 0 && rg == 0) ? MB_ICONINFORMATION : MB_ICONWARNING);
             {
                 WCHAR target[MAX_PATH * 2];
-                _snwprintf(target, MAX_PATH * 2 - 1, L"%s\\AIChat.exe", g_dir);
+                _snwprintf(target, MAX_PATH * 2 - 1, L"%s\\Sai.exe", g_dir);
                 target[MAX_PATH * 2 - 1] = L'\0';
                 ShellExecuteW(NULL, L"open", target, NULL, g_dir, SW_SHOWNORMAL);
             }

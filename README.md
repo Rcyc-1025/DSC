@@ -1,4 +1,4 @@
-# AIChat 陪伴对话
+# Sai
 
 一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
 
@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
 
 # 桌面客户端
 powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-.\build\AIChat.exe
+.\build\Sai.exe
 ~~~
 
 默认编译参数为 `-std=c11 -O2 -Wall -Wextra`，当前 0 告警。
@@ -68,30 +68,30 @@ python tools\shots.py
 要求：Android SDK（build-tools 37.0.0 + platforms/android-35）、NDK r27c、JDK 21。**不需要 Gradle**，脚本用 javac + d8 + aapt2 + zipalign + apksigner 手工打包。
 
 ~~~powershell
-python tools\build_android.py     # 产出 build_android\AIChat.apk（arm64-v8a，v2/v3 自签名）
+python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v2/v3 自签名）
 python tools\verify_android.py    # 校验 APK：结构 / ABI / 清单 / 签名，18 项断言
 ~~~
 
 ## Windows 便携包
 
 ~~~powershell
-python tools\package_win.py       # 产出 dist\AIChat-1.0.0-win-x64-portable.zip（含 SHA-256 校验文件）
+python tools\package_win.py       # 产出 dist\Sai-1.0.0-win-x64-portable.zip（含 SHA-256 校验文件）
 python tools\build_arm64.py       # 交叉编译 Windows ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64 # 产出 dist\AIChat-1.0.0-win-arm64-portable.zip
+python tools\package_win.py --arm64 # 产出 dist\Sai-1.0.0-win-arm64-portable.zip
 ~~~
 
-便携包内含 AIChat.exe、命令行工具、示例插件、文档与 install.ps1（创建开始菜单快捷方式，不需要管理员权限）。
+便携包内含 Sai.exe、命令行工具、示例插件、文档与 install.ps1（创建开始菜单快捷方式，不需要管理员权限）。
 解压即可运行，不依赖构建目录与 mingw 运行库。
 
 ## Windows 安装包
 
 ```powershell
-python tools\make_installer.py    # 产出 dist\AIChat-1.0.0-win-x64-setup.exe（约 3.3 MB）+ .sha256
+python tools\make_installer.py    # 产出 dist\Sai-1.0.0-win-x64-setup.exe（约 3.3 MB）+ .sha256
 ```
 
 自解压式安装程序（`src/installer`，纯 C，不需要 NSIS/Inno）：
 
-- 默认安装到 `%LOCALAPPDATA%\Programs\AIChat`，不需要管理员权限；`/D=<目录>` 可指定其他目录。
+- 默认安装到 `%LOCALAPPDATA%\Programs\Sai`，不需要管理员权限；`/D=<目录>` 可指定其他目录。
 - `/S` 静默安装；安装结果写入安装目录的 `install.log`（文件数、快捷方式、卸载登记三项结果）。
 - 创建开始菜单快捷方式，并登记到「设置 - 应用」的卸载列表；配套 `uninstall.exe` 支持 `/S` 静默卸载并自删除。
 - 安装包与卸载程序的产物哈希记录在 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表。
@@ -118,7 +118,7 @@ Android 端做到可编译、可签名、产物可校验，未在真机运行。
 ## 数据与隐私
 
 - API Key 只存系统安全存储（Windows 凭据管理 / Android 系统安全存储），界面与日志不出现明文；导出包不含凭证。
-- 会话数据存在应用私有目录（`%LOCALAPPDATA%\AIChat`，便携模式可用环境变量 `AICHAT_DATA_DIR` 指定）。
+- 会话数据存在应用私有目录（`%LOCALAPPDATA%\Sai`，便携模式可用环境变量 `SAI_DATA_DIR` 指定）。
 - 所有对话请求直连用户配置的模型地址，本项目不收集任何数据。
 
 ## 许可

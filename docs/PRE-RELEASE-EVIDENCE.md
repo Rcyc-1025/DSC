@@ -1,10 +1,13 @@
-# 发布前证据（AIChat 1.0.0）
+# 发布前证据（Sai 1.0.0）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §8。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24）。
 > 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
 > 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
 > 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
+> **产品名**：2026-11-22 的存档版本把产品名从「DeepSeek 陪伴对话软件」改为 **Sai**（正文仅 3 处 + 标题，功能参数与 FR 条目未变）；
+> 本次已按该版把可执行文件名、安装包/便携包名、Android 包名与应用名、文档与仓库名统一为 Sai，核心模块前缀 `aic_` 保持不动。
+> §2 的哈希是改名重建后的实测值，本文件 §3 起的数字（578 / 254 / 24 条 FR）也是改名后重新跑出来的。
 
 ## 1. 构建环境（本机实测）
 
@@ -21,17 +24,17 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\AIChat.exe（Windows 界面） | 1411346 | 4a2b5c93cebbdda1d5a1524678f13808c4e49608c9d2e5e88c847f88cec548be |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | d53ff5f173132947ef9e947904b697f019e5788240414ed55d2c1c8ca5232c7d |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 703336c098dc1bc2c9d05b7890ef455203de5b96ff3f64ffc15095ae4f071d06 |
-| build\test_core.exe（单元测试） | 1441012 | 1bc6d6732ab48dc134adce7b9a6e35856099c4788e95bebf98f9e076788c480f |
-| build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
-| dist\AIChat-1.0.0-win-x64-portable.zip | 1426460 | 806ed1f156cfeee9d60ea04e7248a3ed2e252c4b00b9eb7bea20f5f22a8bf545 |
-| dist\AIChat-1.0.0-win-x64-setup.exe | 3508462 | 9e1864ef8da65260016a551a74053259c4fef5611fe16d0a08579eab6879b0f5 |
-| build\arm64\AIChat.exe（Windows ARM64 界面，交叉编译） | 1368064 | 55a3c496ff2c2224a4cb59e33ed52ad988d0c3af8ecb4d5953d6008a4cef7a15 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 86c6534612f340c4a29d3eff46244db0086782096d69bc7aa377928ec382fe42 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | db47305f7021dd1483260fbe49ffd154c8900811939ee4004f7f6eac7645f2a6 |
-| dist\AIChat-1.0.0-win-arm64-portable.zip | 801958 | 01e1b0dcb860105678eb1ab7812c915e1bd7d2b44509c694b5f120fc11a35dcd |
+| build\Sai.exe（Windows 界面） | 1411346 | 3d80b64b283a428e138a070948e206c121ac29a66396d4d3da34832e064b28f7 |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | f05a1e95994677f8e22b60b77adf498a1fc621676a95ad3e2b31d3245497628d |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 0fed26428a01f68a19a7e268be101ce6dfc1d33ecf14a0d6e319228b5a0445fd |
+| build\test_core.exe（单元测试） | 1441012 | be158cc887d10e38c592e1f04ba643afd4a26016224c5580ba1302208c296f33 |
+| build_android\Sai.apk | 737742 | 6f41ad74ed4005c4296f57fab3154ff461e44c7f0392300e332590f057f8fe55 |
+| dist\Sai-1.0.0-win-x64-portable.zip | 1430021 | 576584e7e27f6c781c32c90b243d499a92ae219228c850dcd2c580e54715295e |
+| dist\Sai-1.0.0-win-x64-setup.exe | 3516024 | cf1d301a192fad37c4e63f6c1868b1fb37becf5a1e143436254048b0b8bc40cd |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1368064 | e08bed2517c2722ed2d2e0a3fde29ba783348add38f860685b092c36db10067a |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 9c879002158e061099a75021c1d600b12168a0587c14c1a6eb3a583c8a089304 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | dfba6b4183a2799e45c8ff24d2c3c3930b28ec892953923008c31c604328a3f2 |
+| dist\Sai-1.0.0-win-arm64-portable.zip | 803744 | 2cbcc872967f679e9b5f86f5f33da69b25c3393133909df94444814de9bcdcce |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -39,7 +42,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 §16.1 的双架构要求）
 
     python tools\build_arm64.py          # 12.3s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\AIChat-1.0.0-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\Sai-1.0.0-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -115,15 +118,15 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 实测 18 项全部通过：
 
 - APK 0.7 MB（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so；
-- libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_aichat_app_Native_call，静态含 SQLite；
-- 清单：包名 com.aichat.app、versionName 1.0.0、minSdk 24、targetSdk 34、启动 Activity com.aichat.app.MainActivity、
-  native-code arm64-v8a、应用名「AIChat 陪伴对话」；
-- apksigner 校验通过（v2 + v3 方案），自签证书 CN=AIChat, OU=Dev, O=AIChat, L=Local, ST=Local, C=CN，
-  证书 SHA-256 摘要 5c1e9b5a6510e80cabf6bba44048faf006620c04b2ef456261338a37249505af。
+- libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call，静态含 SQLite；
+- 清单：包名 com.sai.app、versionName 1.0.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
+  native-code arm64-v8a、应用名「Sai」；
+- apksigner 校验通过（v2 + v3 方案），自签证书 CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN，
+  证书 SHA-256 摘要 12a010a148db13c75484c5167fb3011fc735c594d4f6c19861d5b00289832897（证书 DN 已随改名变更为 CN=Sai, O=Sai）。
 
 ## 8. 便携包可独立运行
 
-把 dist\AIChat-1.0.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
+把 dist\Sai-1.0.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
 pe_imports 自检显示只导入系统 DLL）。实测：
 
     tools\aic.exe doctor
@@ -134,7 +137,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
     [通过] 插件子进程宿主已就绪
     [通过] 常驻内存采样可用：当前 5.9 MB（桌面预算 240 MB）
 
-    AIChat.exe --diag --shot <bmp> --ready --demo
+    Sai.exe --diag --shot <bmp> --ready --demo
 
     [diag] open_db rc=0
     [diag] chat conv=<uuid> msgs=0
@@ -145,16 +148,16 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\AIChat-1.0.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\Sai-1.0.0-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
 实测（静默安装到 `build\installer\test_install`）：
 
-- setup 退出码 0，落地 **21 个文件**（AIChat.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
+- setup 退出码 0，落地 **21 个文件**（Sai.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
 
-      AIChat Setup 1.0.0
+      Sai Setup 1.0.0
       time=2026-11-22 00:54:54
       files=21 shortcut=failed registry=failed
 
@@ -164,7 +167,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 **为什么 shortcut / registry 是 failed（环境边界，不是代码缺陷）**：本会话的 DSH 沙箱不允许**子进程**写注册表与开始菜单。
 用最小 C 探针单独验证：`RegCreateKeyExW(HKCU,...,KEY_WRITE)` 返回 `rv=5`（ERROR_ACCESS_DENIED），
 而同机的编辑器进程里写同一键成功。安装程序调用的是标准 API（`IShellLinkW` + `IPersistFile` 建快捷方式，
-`RegCreateKeyExW` 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\AIChat`），代码路径与回执逻辑都已被执行到，
+`RegCreateKeyExW` 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sai`），代码路径与回执逻辑都已被执行到，
 只是写入被系统拒绝，程序据此降级为"不创建快捷方式、不登记卸载"，并在完成对话框里给出可手工执行的替代步骤。
 该项在普通用户桌面环境下的结果需要在真机上复测，本文按"未验证"记账。
 
@@ -188,7 +191,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
    demo 回复由本地假传输生成，未用真实 Key 打 api.deepseek.com。
 3. **安装包的两步系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
    安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 §9），需在普通桌面环境复测。
-4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `AIChat.exe` / 插件宿主 / 示例插件（§2.1），
+4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `Sai.exe` / 插件宿主 / 示例插件（§2.1），
    但本机是 x64、无法执行 ARM64 二进制，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包）。
    32 位 Windows 与 x86 架构不构建、不承诺。
 5. **长时间人工回归**：界面验证为离屏渲染 + 逻辑自动化（router/动画参数/主题对比度断言），未做数小时点击回归。

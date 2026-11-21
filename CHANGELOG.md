@@ -27,12 +27,13 @@
 - **Windows 界面**：Win32 + GDI 自绘，三栏导航、消息气泡、输入区、设置 13 项、浮层（AI 信息 / 指南 / 确认 / 编辑）、深色主题、快捷键与滚动。
 - **Android**：原生 View 界面 + 单一 JSON 桥接入口的 JNI 层，覆盖同一套功能；APK 手工打包（javac + d8 + aapt2 + zipalign + apksigner），v2/v3 自签名。
 - **工具链与验收**：`build.ps1`（test / cli / gui 目标）、`aic.exe verify`（24 条 FR 逐条断言，退出码 = 失败数）、`bench`、`perf`、`doctor`、578 项单元测试、8 张离屏界面截图、APK 结构校验。
-- **Windows 安装包**：自解压式纯 C 安装程序（`src/installer`），默认装到 `%LOCALAPPDATA%\Programs\AIChat`，支持 `/S` 静默与 `/D=<目录>`，写开始菜单快捷方式与卸载登记，安装结果写入安装目录 `install.log`；配套静默卸载程序（自删除）。
-- **Windows ARM64 交叉编译产物**：`tools\build_arm64.py` 用本机 clang + lld 与 MSYS2 `clangarm64` sysroot 交叉编译出 ARM64 的 `AIChat.exe`、`aic_plugin_host.exe` 与示例插件 DLL，打 `AIChat-1.0.0-win-arm64-portable.zip`；`tools\package_win.py --arm64`。未在 ARM64 真机验证（见已知限制）。
+- **Windows 安装包**：自解压式纯 C 安装程序（`src/installer`），默认装到 `%LOCALAPPDATA%\Programs\Sai`，支持 `/S` 静默与 `/D=<目录>`，写开始菜单快捷方式与卸载登记，安装结果写入安装目录 `install.log`；配套静默卸载程序（自删除）。
+- **Windows ARM64 交叉编译产物**：`tools\build_arm64.py` 用本机 clang + lld 与 MSYS2 `clangarm64` sysroot 交叉编译出 ARM64 的 `Sai.exe`、`aic_plugin_host.exe` 与示例插件 DLL，打 `Sai-1.0.0-win-arm64-portable.zip`；`tools\package_win.py --arm64`。未在 ARM64 真机验证（见已知限制）。
 - **仓库要件**：`DEPENDENCIES.md`、`docs/RELEASE.md`、`CHANGELOG.md`、双语 README、`CONTRIBUTING.md`、`tools/precommit_scan.py`（敏感字符串 + 许可证 + 大文件扫描）、GitHub Actions CI。
 
 ### 变更
 
+- **产品更名为 Sai**（依据 2026-11-22 技术设计文档的改名修订）：可执行文件改为 `Sai.exe` / `SaiDiag.exe`，窗口标题与窗口类、安装包与便携包文件名、Android 应用名与包名（`com.sai.app`）、JNI 入口（`Java_com_sai_app_Native_call`）、数据目录环境变量（`SAI_DATA_DIR`）、凭证服务名、文档与仓库名统一为 Sai；核心模块前缀 `aic_` 与 `aic.exe` 验收器保持不动（它是内部工具，不是产品名）。
 - 验收口径：技术设计修订版删除了原 §16「测试与验收口径」整章，改为每版由 `aic.exe verify` 生成的 `docs/FR-MATRIX.md` 与 `docs/PRE-RELEASE-EVIDENCE.md` 承载，差异记录见 `docs/TDD-DIFF-2026-11-22.md`。
 
 ### 已知限制
@@ -41,7 +42,7 @@
 - Android APK 可编译、可签名、产物可校验，未在真机上运行。
 - 更新流程止于"下载 + 校验"，不执行真实安装动作。
 - 本机无 `signtool` 与代码签名证书，Windows 产物为未签名二进制；Android 为自签名证书。
-- Windows ARM64 已有交叉编译产物（`AIChat-1.0.0-win-arm64-portable.zip`），但构建机是 x64，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包；安装程序本身是 x64，在 ARM64 上靠系统仿真运行）。
+- Windows ARM64 已有交叉编译产物（`Sai-1.0.0-win-arm64-portable.zip`），但构建机是 x64，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包；安装程序本身是 x64，在 ARM64 上靠系统仿真运行）。
 - 安装程序的"开始菜单快捷方式"与"卸载登记"两步在本机构建环境（沙箱）内被系统策略拒绝（`RegCreateKeyExW` 返回 ERROR_ACCESS_DENIED），代码路径按标准 API 实现，结果如实写入 `install.log`。
 
 ## 版本对照

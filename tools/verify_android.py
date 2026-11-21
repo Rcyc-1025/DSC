@@ -14,7 +14,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.path.expandvars(r'%LOCALAPPDATA%\Android\Sdk')
 BT = os.path.join(SDK, 'build-tools', '37.0.0')
-APK = os.path.join(ROOT, 'build_android', 'AIChat.apk')
+APK = os.path.join(ROOT, 'build_android', 'Sai.apk')
 
 fails = []
 
@@ -44,19 +44,19 @@ def main():
         check(so[4] == 2, 'libaic.so 是 64 位 ELF')
         machine = struct.unpack('<H', so[18:20])[0]
         check(machine == 183, 'libaic.so 目标架构是 AArch64（e_machine=183，实际 %d）' % machine)
-        check(b'Java_com_aichat_app_Native_call' in so, 'libaic.so 导出 JNI 入口 Java_com_aichat_app_Native_call')
+        check(b'Java_com_sai_app_Native_call' in so, 'libaic.so 导出 JNI 入口 Java_com_sai_app_Native_call')
         check(b'sqlite3_open_v2' in so, 'libaic.so 静态包含 SQLite（sqlite3_open_v2）')
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
-    check("package: name='com.aichat.app'" in badging, '包名 com.aichat.app')
+    check("package: name='com.sai.app'" in badging, '包名 com.sai.app')
     check("versionName='1.0.0'" in badging, '版本名 1.0.0')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
-    check("launchable-activity: name='com.aichat.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')
+    check("launchable-activity: name='com.sai.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')
     check("native-code: 'arm64-v8a'" in badging, '声明了 arm64-v8a 原生库')
-    check('AIChat' in badging, '应用名已写入清单')
+    check('Sai' in badging, '应用名已写入清单')
 
     p = subprocess.run([os.path.join(BT, 'apksigner.bat'), 'verify', '--print-certs', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')

@@ -1,6 +1,6 @@
 # 插件开发
 
-AIChat 的插件是**原生动态库**（Windows `.dll` / Android `.so`），用纯 C ABI 暴露一个入口函数。
+Sai 的插件是**原生动态库**（Windows `.dll` / Android `.so`），用纯 C ABI 暴露一个入口函数。
 插件不在主进程内运行：宿主为每次调用启动独立子进程 `aic_plugin_host.exe`，超时或崩溃由宿主终止该进程并禁用插件，主程序继续运行。
 
 ## 1. 目录与清单

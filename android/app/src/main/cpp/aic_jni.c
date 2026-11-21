@@ -32,7 +32,7 @@
 #include "store_usage.h"
 #include "store_guide.h"
 
-#define TAG "AIChatCore"
+#define TAG "SaiCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
 static aic_db     *g_db;
@@ -757,7 +757,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_aichat_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
+Java_com_sai_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
 {
     const char *req;
     sb out;
@@ -776,7 +776,7 @@ Java_com_aichat_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
 }
 
 JNIEXPORT void JNICALL
-Java_com_aichat_app_Native_shutdown(JNIEnv *env, jclass cls)
+Java_com_sai_app_Native_shutdown(JNIEnv *env, jclass cls)
 {
     (void)env; (void)cls;
     if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }

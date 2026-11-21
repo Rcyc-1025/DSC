@@ -67,7 +67,7 @@ def main():
     print('libaic.so', os.path.getsize(so), 'bytes')
 
     # 2. javac
-    java_srcs = glob.glob(os.path.join(APP, 'java', 'com', 'aichat', 'app', '*.java'))
+    java_srcs = glob.glob(os.path.join(APP, 'java', 'com', 'sai', 'app', '*.java'))
     run([os.path.join(JDK, 'javac.exe'), '-source', '8', '-target', '8', '-encoding', 'UTF-8',
          '-nowarn', '-cp', PLATFORM, '-d', os.path.join(OUT, 'classes')] + java_srcs)
 
@@ -98,19 +98,19 @@ def main():
     run([os.path.join(BT, 'zipalign.exe'), '-f', '-p', '4', base_apk, aligned])
 
     # 7. 自签名证书
-    ks = os.path.join(OUT, 'aichat.keystore')
+    ks = os.path.join(OUT, 'sai.keystore')
     if not os.path.exists(ks):
         run([os.path.join(JDK, 'keytool.exe'), '-genkeypair', '-keystore', ks,
-             '-alias', 'aichat', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
-             '-storepass', 'aichat123', '-keypass', 'aichat123',
-             '-dname', 'CN=AIChat, OU=Dev, O=AIChat, L=Local, ST=Local, C=CN'])
+             '-alias', 'sai', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
+             '-storepass', 'sai123', '-keypass', 'sai123',
+             '-dname', 'CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN'])
 
     # 8. apksigner 签名
-    signed = os.path.join(OUT, 'AIChat.apk')
+    signed = os.path.join(OUT, 'Sai.apk')
     if os.path.exists(signed):
         os.remove(signed)
-    run([os.path.join(BT, 'apksigner.bat'), 'sign', '--ks', ks, '--ks-key-alias', 'aichat',
-         '--ks-pass', 'pass:aichat123', '--key-pass', 'pass:aichat123',
+    run([os.path.join(BT, 'apksigner.bat'), 'sign', '--ks', ks, '--ks-key-alias', 'sai',
+         '--ks-pass', 'pass:sai123', '--key-pass', 'pass:sai123',
          '--out', signed, aligned])
     run([os.path.join(BT, 'apksigner.bat'), 'verify', '--verbose', signed])
     print('APK', signed, os.path.getsize(signed), 'bytes')

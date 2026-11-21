@@ -1,9 +1,9 @@
 ﻿# gen_cert.ps1 —— 生成自签名代码签名证书（当前用户证书库，不需要管理员）。
-# 导出 dist\signing\aichat-selfsigned.cer（公钥）与 aichat-selfsigned.pfx（私钥，密码自己保管）。
+# 导出 dist\signing\sai-selfsigned.cer（公钥）与 sai-selfsigned.pfx（私钥，密码自己保管）。
 param(
     [string]$OutDir = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\dist\signing'),
-    [string]$Subject = 'CN=AIChat Self-Signed, O=AIChat, C=CN',
-    [string]$Password = 'aichat123'
+    [string]$Subject = 'CN=Sai Self-Signed, O=Sai, C=CN',
+    [string]$Password = 'sai123'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,8 +14,8 @@ $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $Subject `
     -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}') `
     -NotAfter (Get-Date).AddYears(10)
 
-$cer = Join-Path $OutDir 'aichat-selfsigned.cer'
-$pfx = Join-Path $OutDir 'aichat-selfsigned.pfx'
+$cer = Join-Path $OutDir 'sai-selfsigned.cer'
+$pfx = Join-Path $OutDir 'sai-selfsigned.pfx'
 Export-Certificate -Cert $cert -FilePath $cer | Out-Null
 $sec = ConvertTo-SecureString -String $Password -Force -AsPlainText
 Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $sec | Out-Null

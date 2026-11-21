@@ -1,4 +1,4 @@
-# AIChat — a companion chat client in pure C
+# Sai — a companion chat client in pure C
 
 A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and Android. You bring your own DeepSeek API key; no third-party server sits in between.
 
@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
 
 # Desktop client
 powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-.\build\AIChat.exe
+.\build\Sai.exe
 ```
 
 Default flags are `-std=c11 -O2 -Wall -Wextra`, currently with zero warnings.
@@ -76,20 +76,20 @@ python tools\precommit_scan.py
 Requirements: Android SDK (build-tools 37.0.0 + platforms/android-35), NDK r27c, JDK 21. **No Gradle** — the script packs with javac + d8 + aapt2 + zipalign + apksigner.
 
 ```powershell
-python tools\build_android.py     # build_android\AIChat.apk (arm64-v8a, v2/v3 self-signed)
+python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self-signed)
 python tools\verify_android.py    # APK structure / ABI / manifest / signature, 18 assertions
 ```
 
 ## Windows packages
 
 ```powershell
-python tools\package_win.py       # dist\AIChat-1.0.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py       # dist\Sai-1.0.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py       # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64 # dist\AIChat-1.0.0-win-arm64-portable.zip
-python tools\make_installer.py    # dist\AIChat-1.0.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64 # dist\Sai-1.0.0-win-arm64-portable.zip
+python tools\make_installer.py    # dist\Sai-1.0.0-win-x64-setup.exe (+ .sha256)
 ```
 
-The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\AIChat` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
+The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
 
 ## Documentation
 
@@ -114,14 +114,14 @@ Deliberate scope limits, by decision of the requirement owner:
 - The Android APK compiles, signs and verifies, but has not been run on a real device.
 - The update flow stops at download + verification; no install action is performed.
 - Windows binaries are unsigned (no `signtool`/certificate on the build machine); the Android APK uses a self-signed key.
-- Windows ARM64 artifacts are cross-compiled (`AIChat-1.0.0-win-arm64-portable.zip`) but **not verified on ARM64 hardware** — the build machine is x64 and cannot execute ARM64 binaries. No ARM64 installer (portable zip only).
+- Windows ARM64 artifacts are cross-compiled (`Sai-1.0.0-win-arm64-portable.zip`) but **not verified on ARM64 hardware** — the build machine is x64 and cannot execute ARM64 binaries. No ARM64 installer (portable zip only).
 
 See section 9 of `docs/PRE-RELEASE-EVIDENCE.md` for the complete list.
 
 ## Data and privacy
 
 - The API key lives only in the OS credential store (Windows Credential Manager / Android Keystore-backed storage); neither the UI nor logs show it, and exports never contain credentials.
-- Conversation data stays in the app-private directory (`%LOCALAPPDATA%\AIChat`; portable mode honours `AICHAT_DATA_DIR`).
+- Conversation data stays in the app-private directory (`%LOCALAPPDATA%\Sai`; portable mode honours `SAI_DATA_DIR`).
 - Requests go directly to the model endpoint you configure. This project collects nothing.
 
 ## License

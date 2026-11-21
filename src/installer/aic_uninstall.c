@@ -1,4 +1,4 @@
-/* aic_uninstall.c —— AIChat 卸载程序（纯 C，Win32）。
+/* aic_uninstall.c —— Sai 卸载程序（纯 C，Win32）。
  *
  * 由安装程序落地到安装目录，并被登记为「设置 - 应用」里的卸载入口。
  * 行为：删除开始菜单快捷方式、清除卸载登记、删除安装目录；
@@ -13,8 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define APP_NAME L"AIChat 陪伴对话"
-#define UNINST_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AIChat"
+#define APP_NAME L"Sai"
+#define UNINST_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Sai"
 
 static int g_keep = 0;
 static int g_silent = 0;
@@ -53,10 +53,10 @@ static void remove_shortcut(void)
     WCHAR programs[MAX_PATH];
     WCHAR lnk[MAX_PATH * 2];
     if (SHGetFolderPathW(NULL, CSIDL_PROGRAMS, NULL, 0, programs) != S_OK) return;
-    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\AIChat\\AIChat.lnk", programs);
+    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\Sai\\Sai.lnk", programs);
     lnk[MAX_PATH * 2 - 1] = L'\0';
     DeleteFileW(lnk);
-    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\AIChat", programs);
+    _snwprintf(lnk, MAX_PATH * 2 - 1, L"%s\\Sai", programs);
     lnk[MAX_PATH * 2 - 1] = L'\0';
     RemoveDirectoryW(lnk);
 }
@@ -101,7 +101,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     }
 
     if (!g_keep && !g_silent) {
-        if (MessageBoxW(NULL, L"要卸载 AIChat 陪伴对话吗？\n\n会话记录与配置保存在用户数据目录，卸载默认保留。",
+        if (MessageBoxW(NULL, L"要卸载 Sai吗？\n\n会话记录与配置保存在用户数据目录，卸载默认保留。",
                         APP_NAME, MB_OKCANCEL | MB_ICONQUESTION) != IDOK) {
             return 0;
         }

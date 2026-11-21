@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""离屏界面截图驱动：跑 build\\AIChat.exe --shot 生成 BMP，再交给 tools\\bmp2png.mjs 转 PNG。
+"""离屏界面截图驱动：跑 build\\Sai.exe --shot 生成 BMP，再交给 tools\\bmp2png.mjs 转 PNG。
 
 用法（在本仓库根目录）：
     D:\\Code\\python312\\python.exe tools\\shots.py            # 全部
@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, 'build', 'AIChat.exe')
+EXE = os.path.join(ROOT, 'build', 'Sai.exe')
 OUT = os.path.join(ROOT, 'build', 'shots')
 DATA = os.path.join(ROOT, 'build', 'shotsdata')
 NODE = r'C:\Program Files\nodejs\node.exe'
@@ -42,7 +42,7 @@ def run(name, args):
     else:
         a += args
     env = dict(os.environ)
-    env['AICHAT_DATA_DIR'] = data_dir
+    env['SAI_DATA_DIR'] = data_dir
     p = subprocess.run(a, env=env, capture_output=True, timeout=90)
     if not os.path.exists(bmp):
         print('FAIL %s rc=%d %s %s' % (name, p.returncode,

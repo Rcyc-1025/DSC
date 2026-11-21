@@ -3,7 +3,7 @@
  * 界面层只通过 Native.call(json) 与核心层交换数据，不直接持有任何 C 指针，
  * 因此核心层崩溃不会把 Java 侧的视图状态带坏。
  */
-package com.aichat.app;
+package com.sai.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -453,7 +453,7 @@ public class MainActivity extends Activity {
                         if (which == 0) {
                             android.content.ClipboardManager cm =
                                     (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("AIChat", findContent(id)));
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("Sai", findContent(id)));
                             toast("已复制");
                         } else if (which == 1) {
                             JSONObject extra = new JSONObject();
@@ -799,12 +799,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "AIChat 1.0.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "Sai 1.0.0", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("关于 AIChat")
-                        .setMessage("AIChat 陪伴对话 1.0.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。")
+                        .setTitle("关于 Sai")
+                        .setMessage("Sai 1.0.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。")
                         .setPositiveButton("好", null)
                         .show();
             }
@@ -1181,7 +1181,7 @@ public class MainActivity extends Activity {
         int action = r.optInt("action", 3);
         if (action == 3) {
             new AlertDialog.Builder(this)
-                    .setTitle("退出 AIChat？")
+                    .setTitle("退出 Sai？")
                     .setMessage("会话记录保存在本地，不会丢失。")
                     .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
                         @Override

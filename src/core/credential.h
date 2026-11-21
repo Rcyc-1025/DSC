@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define AIC_CRED_SERVICE_DEFAULT "AIChat"
+#define AIC_CRED_SERVICE_DEFAULT "Sai"
 #define AIC_CRED_ACCOUNT_APIKEY  "api_key"
 
 /* 1 表示当前平台安全存储可用。 */

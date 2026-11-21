@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-r"""把 AIChat 便携目录打成一个自解压安装包（纯 C 安装程序 + 内嵌 payload）。
+r"""把 Sai 便携目录打成一个自解压安装包（纯 C 安装程序 + 内嵌 payload）。
 
 用法：
     python tools\make_installer.py [版本号]
 
 前置：先跑 build.ps1 -Target gui 与 python tools\package_win.py（便携目录在 dist\ 下）。
-产物：dist\AIChat-<版本>-win-x64-setup.exe 与其 .sha256。
+产物：dist\Sai-<版本>-win-x64-setup.exe 与其 .sha256。
 """
 import hashlib
 import os
@@ -54,7 +54,7 @@ def collect(dist_dir):
 
 
 def main():
-    dist_dir = os.path.join(ROOT, "dist", "AIChat-%s-win-x64" % VERSION)
+    dist_dir = os.path.join(ROOT, "dist", "Sai-%s-win-x64" % VERSION)
     if not os.path.isdir(dist_dir):
         print("找不到便携目录：%s（先跑 python tools\\package_win.py）" % dist_dir)
         raise SystemExit(2)
@@ -78,7 +78,7 @@ def main():
         blob += struct.pack("<Q", len(data))
         blob += data
 
-    out = os.path.join(ROOT, "dist", "AIChat-%s-win-x64-setup.exe" % VERSION)
+    out = os.path.join(ROOT, "dist", "Sai-%s-win-x64-setup.exe" % VERSION)
     with open(out, "wb") as fh:
         fh.write(blob)
 

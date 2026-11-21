@@ -39,8 +39,8 @@
 #include "update.h"
 #include "util.h"
 
-#define APP_TITLE        "AIChat 陪伴对话"
-#define APP_CLASS        L"AIChatMainWindow"
+#define APP_TITLE        "Sai"
+#define APP_CLASS        L"SaiMainWindow"
 #define NAV_W            96
 #define PAD              16
 #define LINE_H           26
@@ -163,13 +163,13 @@ static void DLOG(const char *fmt, ...)
         if (n == 0 || n >= (DWORD)(sizeof(wmod) / sizeof(wmod[0]))) return;
         w_to_u8(wmod, mod, sizeof(mod));
         {
-            char dir[600];
+            char dir[480];
             aic_strlcpy_utf8(dir, sizeof(dir), mod);
             {
                 char *slash = strrchr(dir, '\\');
                 if (slash) slash[0] = 0;
             }
-            snprintf(path, sizeof(path), "%s\\aic_diag.log", dir);
+            snprintf(path, sizeof(path), "%s\\sai_diag.log", dir);
         }
         g_logf = fopen(path, "wb");
         if (!g_logf) return;
@@ -1002,7 +1002,7 @@ static void paint_settings(App *a, HDC dc, RECT content)
     draw_row(a, dc, &y, "数据管理", "数据库 / 备份 / 清理", ACT_ROW_DATA);
     draw_row(a, dc, &y, "减少动态效果",
              aic_setting_get_int(a->db, AIC_SET_MOTION, 1) == 0 ? "开启" : "关闭", ACT_ROW_MOTION);
-    draw_row(a, dc, &y, "关于", "AIChat " APP_VERSION, ACT_ROW_ABOUT);
+    draw_row(a, dc, &y, "关于", "Sai " APP_VERSION, ACT_ROW_ABOUT);
 
     y.top += PAD;
     draw_text(dc, a->font_small,
@@ -1257,7 +1257,7 @@ static void paint(App *a, HDC dc, RECT client)
         RECT d = {client.left + 40, client.top + 130, client.right - 40, client.top + 260};
         RECT b1 = {client.left + 40, client.top + 280, client.left + 220, client.top + 320};
         RECT b2 = {client.left + 236, client.top + 280, client.left + 396, client.top + 320};
-        draw_text(dc, a->font_title, "欢迎使用 AIChat 陪伴对话", t, tok(a, AIC_TOK_TEXT),
+        draw_text(dc, a->font_title, "欢迎使用 Sai", t, tok(a, AIC_TOK_TEXT),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         draw_text(dc, a->font_ui,
                   "首次启动需要做几件事：选择默认模式、填入 DeepSeek API Key、"
@@ -1724,7 +1724,7 @@ static void app_key_edit(App *a)
     fld(a, "DeepSeek API Key（只写入系统安全存储，不写数据库）", "", 0, 0);
     a->field_focus = 0;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
-             "凭证保存在 Windows 凭据管理器（服务名 AIChat，账户 api_key）；"
+             "凭证保存在 Windows 凭据管理器（服务名 Sai，账户 api_key）；"
              "界面只显示「已配置 / 未配置」，日志与导出包都不含明文。\n"
              "当前状态：%s",
              (a->eng && aic_engine_has_key(a->eng)) ? "已配置" : "未配置");
@@ -1987,9 +1987,9 @@ static void do_action(App *a, int act)
     case ACT_ROW_GUIDE:    app_guide(a); break;
     case ACT_ROW_DATA:     app_data(a); break;
     case ACT_ROW_ABOUT:
-        app_set_overlay(a, AIC_OV_CONFIRM, "关于 AIChat");
+        app_set_overlay(a, AIC_OV_CONFIRM, "关于 Sai");
         snprintf(a->overlay_text, sizeof(a->overlay_text),
-                 "AIChat 陪伴对话 %s\n核心逻辑用 C 实现（C11），界面层调用平台原生能力；"
+                 "Sai %s\n核心逻辑用 C 实现（C11），界面层调用平台原生能力；"
                  "会话数据格式 Windows 与 Android 完全一致。\n\n"
                  "本版本按产品裁决：模型层只提供配置项与协议层，不发起真实网络请求，"
                  "因此聊天回复来自离线演示传输。", APP_VERSION);
@@ -2156,7 +2156,7 @@ static void on_key(App *a, int vk)
             aic_back_action ba = aic_router_back(a->router);
             if (ba == AIC_BACK_EXIT_CONFIRM) {
                 a->quit_confirm = 1;
-                app_set_overlay(a, AIC_OV_CONFIRM, "退出 AIChat");
+                app_set_overlay(a, AIC_OV_CONFIRM, "退出 Sai");
                 a->confirm_action = FORM_CONFIRM;
                 snprintf(a->overlay_text, sizeof(a->overlay_text),
                          "确定退出吗？聊天记录与草稿都会保留。");
@@ -2225,7 +2225,7 @@ static void on_wheel(App *a, int delta)
 /* ---------- 初始化与收尾 ---------- */
 static int app_root_dir(App *a)
 {
-    const char *base = getenv("AICHAT_DATA_DIR");
+    const char *base = getenv("SAI_DATA_DIR");
     static const char *subs[] = {"db", "plugins", "avatars", "backups", "exports", "logs", "updates"};
 
     if (base && *base) {
@@ -2241,7 +2241,7 @@ static int app_root_dir(App *a)
     }
     base = getenv("LOCALAPPDATA");
     if (!base || !*base) base = ".";
-    aic_path_join(a->root, sizeof(a->root), base, "AIChat");
+    aic_path_join(a->root, sizeof(a->root), base, "Sai");
     aic_mkdir_p(a->root);
     for (int i = 0; i < (int)(sizeof(subs) / sizeof(subs[0])); i++) {
         char p[800];
@@ -2286,7 +2286,7 @@ static void app_init(App *a)
             DLOG("[diag] db open failed, data dir=%s", a->root);
             if (!g_diag)
                 MessageBoxW(a->hwnd, L"打开本地数据库失败，请检查数据目录的写入权限。",
-                            L"AIChat", MB_ICONERROR | MB_OK);
+                            L"Sai", MB_ICONERROR | MB_OK);
             return;
         }
     }
@@ -2584,7 +2584,7 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
     if (!RegisterClassExW(&wc)) { DLOG("[diag] RegisterClass failed err=%lu", GetLastError()); return 1; }
 
     g_app.hinst = hinst;
-    hwnd = CreateWindowExW(0, APP_CLASS, L"AIChat 陪伴对话", WS_OVERLAPPEDWINDOW,
+    hwnd = CreateWindowExW(0, APP_CLASS, L"Sai", WS_OVERLAPPEDWINDOW,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1120, 760,
                            NULL, NULL, hinst, NULL);
     if (!hwnd) { DLOG("[diag] CreateWindow failed err=%lu", GetLastError()); return 1; }

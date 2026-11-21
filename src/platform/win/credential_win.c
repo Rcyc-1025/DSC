@@ -43,7 +43,7 @@ int aic_cred_save(const char *service, const char *account, const char *secret,
     cred.Type = CRED_TYPE_GENERIC;
     cred.TargetName = wtarget;
     cred.UserName = wuser;
-    cred.Comment = (LPWSTR)L"AIChat API Key";
+    cred.Comment = (LPWSTR)L"Sai API Key";
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
     cred.CredentialBlobSize = (DWORD)strlen(secret);
     cred.CredentialBlob = (LPBYTE)secret;

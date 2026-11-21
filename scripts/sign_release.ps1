@@ -1,8 +1,8 @@
 ﻿# sign_release.ps1 —— 用 signtool 给发布产物签名（需要 Windows SDK 的 signtool.exe）。
 # 本机若没有 signtool，脚本会明确报"未找到 signtool"并退出 2，不做假签名。
 param(
-    [string]$Pfx = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\dist\signing\aichat-selfsigned.pfx'),
-    [string]$Password = 'aichat123',
+    [string]$Pfx = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\dist\signing\sai-selfsigned.pfx'),
+    [string]$Password = 'sai123',
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string[]]$Files = @()
 )
@@ -23,7 +23,7 @@ if (-not $signtool) {
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if ($Files.Count -eq 0) {
     $Files = @(
-        (Join-Path $root 'build\AIChat.exe'),
+        (Join-Path $root 'build\Sai.exe'),
         (Join-Path $root 'build\aic.exe'),
         (Join-Path $root 'build\aic_plugin_host.exe')
     ) | Where-Object { Test-Path $_ }

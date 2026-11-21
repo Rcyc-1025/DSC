@@ -1,6 +1,6 @@
-# AIChat 技术设计（实现说明）
+# Sai 技术设计（实现说明）
 
-> 本文件说明 "AIChat 陪伴对话" 1.0.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "Sai" 1.0.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)。
 
 ## 1. 目标与边界
@@ -125,7 +125,7 @@ aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分
 - 平台差异只在适配层：凭据存储（Windows 凭据管理器 / Android 交给 Java 侧 Keystore 语义）、插件进程、耗时与内存采样；
 - 界面各自原生：Windows 单窗口 Win32 + GDI 双缓冲自绘；Android 纯代码构建 View 层级（不依赖 XML 布局），
   两者都只通过 JNI/直接调用的核心 API 取数据，保证数据格式与行为一致；
-- 数据目录：Windows 默认 %LOCALAPPDATA%\AIChat，可用 AICHAT_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
+- 数据目录：Windows 默认 %LOCALAPPDATA%\Sai，可用 SAI_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
 
 ## 11. 构建与打包
 

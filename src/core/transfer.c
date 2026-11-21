@@ -269,7 +269,7 @@ int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err,
     if (!db || !path) return AIC_E_INVAL;
     sb b;
     sb_init(&b);
-    sb_append(&b, "# AIChat 聊天记录导出\n\n");
+    sb_append(&b, "# Sai 聊天记录导出\n\n");
     char ts[32];
     aic_now_iso8601(ts);
     sb_appendf(&b, "导出时间：%s\n\n", ts);
@@ -285,7 +285,7 @@ int aic_export_write_text(aic_db *db, int mode, const char *path, char *err, siz
     if (!db || !path) return AIC_E_INVAL;
     sb b;
     sb_init(&b);
-    sb_append(&b, "AIChat 聊天记录导出\n\n");
+    sb_append(&b, "Sai 聊天记录导出\n\n");
     write_conv_body(db, &b, 0, err, errlen);
     int rc = write_file(path, &b, err, errlen);
     sb_free(&b);

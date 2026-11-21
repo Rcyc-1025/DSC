@@ -308,7 +308,7 @@ static void fr05(V *v, const char *wd)
     aic_mkdir_p(plugins_root);
     snprintf(mjson, sizeof(mjson),
              "{\"id\":\"verify_plugin\",\"name\":\"验收插件\",\"version\":\"1.0.0\","
-             "\"author\":\"AIChat\",\"entry\":\"verify.dll\","
+             "\"author\":\"Sai\",\"entry\":\"verify.dll\","
              "\"permissions\":[\"prompt.fragment\"],\"extension_points\":[\"prompt.fragment\"]}");
     write_text(pdir, "plugin.json", mjson);
     write_text(pdir, "verify.dll", "not-a-real-dll");
@@ -421,14 +421,14 @@ static void fr07(V *v, const char *wd)
     fr_begin(v, "FR-07", "版本检测与自动更新（清单 / 比对 / 校验）");
     aic_path_join(pdir, sizeof(pdir), wd, "fr07");
     aic_mkdir_p(pdir);
-    aic_path_join(pkg, sizeof(pkg), pdir, "AIChat-update.bin");
-    aic_file_write_all(pkg, "AIChat 1.1.0 package payload\n", 29);
+    aic_path_join(pkg, sizeof(pkg), pdir, "Sai-update.bin");
+    aic_file_write_all(pkg, "Sai 1.1.0 package payload\n", 29);
     {
         int64_t fsz = 0;
         aic_file_size(pkg, &fsz);
         len = (size_t)fsz;
     }
-    aic_sha256_hex("AIChat 1.1.0 package payload\n", 29, hash);
+    aic_sha256_hex("Sai 1.1.0 package payload\n", 29, hash);
     {
         sb js;
         sb_init(&js);
@@ -1385,7 +1385,7 @@ int aic_verify_run(const char *repo_root, const char *work_dir, FILE *out)
     aic_now_iso8601(ts);
     aic_mkdir_p(work_dir);
 
-    fprintf(out, "AIChat 自动化验收（FR-01 ~ FR-24）\n");
+    fprintf(out, "Sai 自动化验收（FR-01 ~ FR-24）\n");
     fprintf(out, "仓库：%s\n工作目录：%s\n时间：%s\n", v.repo, work_dir, ts);
     fprintf(out, "=========================================================\n");
 

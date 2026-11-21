@@ -1,6 +1,6 @@
 
 # -*- coding: utf-8 -*-
-r"""打 Windows 便携包：组装 dist/AIChat-<ver>-win-<arch>/ 并压成 zip，附带依赖自检与 SHA-256。
+r"""打 Windows 便携包：组装 dist/Sai-<ver>-win-<arch>/ 并压成 zip，附带依赖自检与 SHA-256。
 
 用法：
   python tools\package_win.py            # x64（默认）
@@ -22,14 +22,14 @@ BUILD = os.path.join(ROOT, 'build')
 DIST = os.path.join(ROOT, 'dist')
 VER = '1.0.0'
 ARCH = 'arm64' if '--arm64' in sys.argv else 'x64'
-NAME = 'AIChat-%s-win-%s' % (VER, ARCH)
+NAME = 'Sai-%s-win-%s' % (VER, ARCH)
 OUTDIR = os.path.join(DIST, NAME)
 ZIP = os.path.join(DIST, NAME + '-portable.zip')
 # arm64 产物在 build\arm64，运行时 DLL 来自 MSYS2 clangarm64；x64 产物在 build
 SRCBUILD = os.path.join(BUILD, 'arm64') if ARCH == 'arm64' else BUILD
 MINGWBIN = (r'D:\Code\msys2arm64\clangarm64\bin' if ARCH == 'arm64'
             else r'D:\Code\msys2ucrt\ucrt64\bin')
-EXES = ['AIChat.exe', 'aic_plugin_host.exe'] if ARCH == 'arm64' else ['AIChat.exe', 'aic.exe', 'aic_plugin_host.exe']
+EXES = ['Sai.exe', 'aic_plugin_host.exe'] if ARCH == 'arm64' else ['Sai.exe', 'aic.exe', 'aic_plugin_host.exe']
 
 # 允许的系统 DLL（其余视为需要随包分发的运行时）
 SYSTEM_DLLS = {
@@ -119,7 +119,7 @@ def main():
     os.makedirs(OUTDIR, exist_ok=True)
 
     print('组装 %s（%s）' % (OUTDIR, ARCH))
-    copy(os.path.join(SRCBUILD, 'AIChat.exe'), 'AIChat.exe')
+    copy(os.path.join(SRCBUILD, 'Sai.exe'), 'Sai.exe')
     if ARCH != 'arm64':
         copy(os.path.join(SRCBUILD, 'aic.exe'), 'tools/aic.exe')
     copy(os.path.join(SRCBUILD, 'aic_plugin_host.exe'), 'aic_plugin_host.exe')
@@ -150,11 +150,11 @@ def main():
     copy(os.path.join(ROOT, 'scripts', 'install.ps1'), 'install.ps1')
 
     notes = (
-        'AIChat 陪伴对话 %s（Windows x64 便携包）\n'
+        'Sai %s（Windows x64 便携包）\n'
         '\n'
-        '1. 直接双击 AIChat.exe 运行；不需要安装，也不会写注册表。\n'
-        '2. 数据默认放在 %%LOCALAPPDATA%%\\AIChat；想做成纯便携（如放 U 盘），\n'
-        '   在同目录建一个 data 文件夹，或用 set AICHAT_DATA_DIR=.<你的目录> 指定。\n'
+        '1. 直接双击 Sai.exe 运行；不需要安装，也不会写注册表。\n'
+        '2. 数据默认放在 %%LOCALAPPDATA%%\\Sai；想做成纯便携（如放 U 盘），\n'
+        '   在同目录建一个 data 文件夹，或用 set SAI_DATA_DIR=.<你的目录> 指定。\n'
         '3. 首次启动进「设置 → API Key」填自己的 DeepSeek Key（保存在 Windows 凭据管理器）。\n'
         '4. tools\\aic.exe 是命令行验收器：\n'
         '     aic.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'

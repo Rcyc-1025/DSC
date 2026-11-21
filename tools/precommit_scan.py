@@ -46,7 +46,7 @@ EXEMPT = {
 }
 
 # 明确允许的占位口令（本地自签名 keystore，仅开发期使用，不涉及任何线上凭证）
-ALLOW_LINE = re.compile(r"aichat123|AICHAT_DEV_KEY_PLACEHOLDER")
+ALLOW_LINE = re.compile(r"sai123|SAI_DEV_KEY_PLACEHOLDER")
 
 BAD_LICENSE = re.compile(r"(?i)(GNU (?:Lesser |Affero )?General Public License|AGPL|GPLv[23])")
 
@@ -168,7 +168,7 @@ def main(argv):
             notes.append("产物目录 %s 存在（发布时用，提交前不必删除，但不应被 git 跟踪）" % d)
 
     if not quiet:
-        print("AIChat 提交前扫描")
+        print("Sai 提交前扫描")
         print("  扫描目录：%s" % root)
         print("  文件数：%d" % seen_tracked)
         for n in notes:

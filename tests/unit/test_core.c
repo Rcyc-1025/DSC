@@ -1242,7 +1242,7 @@ static void test_engine(aic_db *db)
 static void test_credential(void)
 {
     char service[64];
-    snprintf(service, sizeof(service), "AIChatTest%lld", (long long)aic_now_ms());
+    snprintf(service, sizeof(service), "SaiTest%lld", (long long)aic_now_ms());
 
     CHECK_EQ_INT(aic_cred_available(), 1, "当前平台安全存储可用");
 
@@ -1284,8 +1284,8 @@ static void test_update(void)
     aic_mkdir_p(dir);
 
     char payload[600];
-    aic_path_join(payload, sizeof(payload), dir, "AIChat-1.2.0.zip");
-    const char *payload_text = "AIChat release 1.2.0 payload for automated test";
+    aic_path_join(payload, sizeof(payload), dir, "Sai-1.2.0.zip");
+    const char *payload_text = "Sai release 1.2.0 payload for automated test";
     CHECK_EQ_INT(aic_file_write_all(payload, payload_text, strlen(payload_text)), AIC_OK, "准备安装包样本");
 
     char hex[65];
@@ -1297,7 +1297,7 @@ static void test_update(void)
     snprintf(manifest, sizeof(manifest),
              "{\"channel\":\"stable\",\"version\":\"1.2.0\",\"min_app_version\":\"1.1.0\","
              "\"released_at\":\"2026-11-20T10:00:00.000Z\",\"notes\":\"修复若干问题\","
-             "\"url\":\"https://example.com/AIChat-1.2.0.zip\",\"sha256\":\"%s\",\"size\":%lld,"
+             "\"url\":\"https://example.com/Sai-1.2.0.zip\",\"sha256\":\"%s\",\"size\":%lld,"
              "\"mandatory\":false}",
              hex, (long long)psize);
 
@@ -1412,7 +1412,7 @@ static void test_plugin(aic_db *db)
     aic_mkdir_p(root);
 
     const char *manifest =
-        "{\"id\":\"sample_basic\",\"name\":\"示例插件\",\"version\":\"1.0.0\",\"author\":\"AIChat\","
+        "{\"id\":\"sample_basic\",\"name\":\"示例插件\",\"version\":\"1.0.0\",\"author\":\"Sai\","
         "\"entry\":\"sample_basic.dll\",\"permissions\":[\"prompt.fragment\"],"
         "\"extension_points\":[{\"point\":\"prompt.fragment\",\"order\":10}]}";
     aic_path_join(manifest_path, sizeof(manifest_path), src, "plugin.json");
@@ -1671,7 +1671,7 @@ static void test_plugin_proc(aic_db *db)
     aic_mkdir_p(root);
     aic_path_join(mp, sizeof(mp), src, "plugin.json");
     const char *manifest =
-        "{\"id\":\"crash_case\",\"name\":\"会崩的插件\",\"version\":\"1.0.0\",\"author\":\"AIChat\","
+        "{\"id\":\"crash_case\",\"name\":\"会崩的插件\",\"version\":\"1.0.0\",\"author\":\"Sai\","
         "\"entry\":\"crash_case.dll\",\"permissions\":[\"prompt.fragment\"],"
         "\"extension_points\":[{\"point\":\"prompt.fragment\",\"order\":1}]}";
     aic_file_write_all(mp, manifest, strlen(manifest));
@@ -1700,7 +1700,7 @@ static void test_plugin_proc(aic_db *db)
 int main(void)
 {
     init_bin_dir();
-    printf("=== AIChat 核心层自测 ===\n");
+    printf("=== Sai 核心层自测 ===\n");
     test_util();
     test_json();
     test_prompt();

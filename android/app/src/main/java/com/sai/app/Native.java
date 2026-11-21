@@ -3,7 +3,7 @@
  * 界面层只通过 Native.call(json) 与核心层交换数据，不直接持有任何 C 指针，
  * 因此核心层崩溃不会把 Java 侧的视图状态带坏。
  */
-package com.aichat.app;
+package com.sai.app;
 
 import org.json.JSONObject;
 

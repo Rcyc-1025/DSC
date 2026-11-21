@@ -1,4 +1,4 @@
-/* aic_cli.c —— AIChat 命令行验收器 / 诊断入口。
+/* aic_cli.c —— Sai 命令行验收器 / 诊断入口。
  *
  * 用法：
  *   aic.exe verify [仓库根目录] [工作目录]   逐条核对 FR-01 ~ FR-24，写 docs\FR-MATRIX.md
@@ -26,7 +26,7 @@
 static void usage(FILE *out)
 {
     fprintf(out,
-        "AIChat 命令行工具 %s\n"
+        "Sai 命令行工具 %s\n"
         "\n"
         "用法：\n"
         "  aic.exe verify [仓库根目录] [工作目录]\n"
@@ -96,7 +96,7 @@ static int run_bench(void)
     t1 = aic_perf_now_ms();
     aic_perf_rss_kb(&rss);
 
-    sb_appendf(&report, "AIChat 性能基准（%s）\n", ts);
+    sb_appendf(&report, "Sai 性能基准（%s）\n", ts);
     sb_appendf(&report, "数据集：1 个会话 / 10000 条消息 / 50 条一页\n\n");
     sb_appendf(&report, "| 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |\n");
     sb_appendf(&report, "| --- | --- | --- | --- | --- |\n");
@@ -180,7 +180,7 @@ static int run_doctor(void)
     aic_db *db = NULL;
     int rc, bad = 0;
 
-    printf("AIChat 运行环境自检 %s\n", AIC_CLI_VERSION);
+    printf("Sai 运行环境自检 %s\n", AIC_CLI_VERSION);
     printf("---------------------------------------------------------\n");
 
     aic_strlcpy_utf8(dir, sizeof(dir), "build\\doctor");
@@ -247,7 +247,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "perf") == 0) return run_perf();
     if (strcmp(cmd, "doctor") == 0) return run_doctor();
     if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) {
-        printf("AIChat %s\n", AIC_CLI_VERSION);
+        printf("Sai %s\n", AIC_CLI_VERSION);
         return 0;
     }
     usage(argc > 1 ? stderr : stdout);

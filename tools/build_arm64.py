@@ -5,7 +5,7 @@ r"""build_arm64.py —— 交叉编译 Windows ARM64 (aarch64-w64-windows-gnu) �
 工具链不下载任何东西，全部用本机已有组件：
   - 编译器/链接器驱动：本机 LLVM 的 clang.exe（-target aarch64-w64-windows-gnu，-fuse-ld=lld）
   - sysroot：MSYS2 clangarm64 的 aarch64 mingw-w64 包（crt / headers / winpthreads /
-    compiler-rt / windows-default-manifest），解压到 AICHAT_ARM64_SYSROOT（默认 D:\Code\msys2arm64\clangarm64）
+    compiler-rt / windows-default-manifest），解压到 SAI_ARM64_SYSROOT（默认 D:\Code\msys2arm64\clangarm64）
   - builtins：sysroot 里的 lib\clang\23\lib\windows\libclang_rt.builtins-aarch64.a，
     复制成 build\arm64\res\lib\aarch64-w64-windows-gnu\libclang_rt.builtins.a
     （clang 按 <resource-dir>/lib/<target>/libclang_rt.builtins.a 找它，所以自带一份 resource-dir）
@@ -13,8 +13,8 @@ r"""build_arm64.py —— 交叉编译 Windows ARM64 (aarch64-w64-windows-gnu) �
 用法：
   python tools\build_arm64.py
 环境变量：
-  AICHAT_LLVM_BIN      clang.exe 所在目录（默认 D:\Code\llvm\clang+llvm-23.1.4-x86_64-pc-windows-msvc\bin）
-  AICHAT_ARM64_SYSROOT aarch64 mingw-w64 sysroot 根（默认 D:\Code\msys2arm64\clangarm64）
+  SAI_LLVM_BIN      clang.exe 所在目录（默认 D:\Code\llvm\clang+llvm-23.1.4-x86_64-pc-windows-msvc\bin）
+  SAI_ARM64_SYSROOT aarch64 mingw-w64 sysroot 根（默认 D:\Code\msys2arm64\clangarm64）
 """
 import glob
 import hashlib
@@ -28,8 +28,8 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LLVM_BIN = os.environ.get("AICHAT_LLVM_BIN", r"D:\Code\llvm\clang+llvm-23.1.4-x86_64-pc-windows-msvc\bin")
-SYSROOT = os.environ.get("AICHAT_ARM64_SYSROOT", r"D:\Code\msys2arm64\clangarm64")
+LLVM_BIN = os.environ.get("SAI_LLVM_BIN", r"D:\Code\llvm\clang+llvm-23.1.4-x86_64-pc-windows-msvc\bin")
+SYSROOT = os.environ.get("SAI_ARM64_SYSROOT", r"D:\Code\msys2arm64\clangarm64")
 CLANG = os.path.join(LLVM_BIN, "clang.exe")
 BUILD = os.path.join(ROOT, "build", "arm64")
 OBJ = os.path.join(BUILD, "obj")
@@ -143,7 +143,7 @@ def main():
                              "-DSQLITE_DQS=0", "-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1"]))
     objs.append(compile_one(os.path.join(ROOT, "src", "ui", "win", "aic_app.c"), ["-DUNICODE", "-D_UNICODE"]))
 
-    exe = os.path.join(BUILD, "AIChat.exe")
+    exe = os.path.join(BUILD, "Sai.exe")
     link(exe, objs, ["-mwindows"] + LIBS)
 
     host_obj = compile_one(os.path.join(ROOT, "src", "plugin_runner", "aic_plugin_host.c"),
