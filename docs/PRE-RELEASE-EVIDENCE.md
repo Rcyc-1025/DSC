@@ -2,6 +2,9 @@
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §8。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24）。
+> 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
+> 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
+> 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
 
 ## 1. 构建环境（本机实测）
 
@@ -18,10 +21,10 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\AIChat.exe（Windows 界面） | 1408655 | 01ecac15e76070be19c7b5e29eec4352c0e719aeeb3086892ba6477c68cd714e |
-| build\aic.exe（验收/基准/自检 CLI） | 1392236 | 4bd3553be36bf0f759b1e0dd8f7197b4aae6afec6ae941364510730ee283e252 |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 42d19b98a00c79bddc3157de846a59059a6fbda5c9b49a02e25c6bc079d28e9c |
-| build\test_core.exe（单元测试） | 1432923 | 3bf79c34df3a2dd510d9e2e950074a180ae40dde6be7d51af141cda939afcd31 |
+| build\AIChat.exe（Windows 界面） | 1411346 | 1b54e556ea2274460ef74f401806f4386f290adf12659f30621f3c5385905456 |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1397011 | 3d0b9f12a16755fe3210c49861fb3d6dd1e857f55d94c283859914bcb4b7fd5d |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | d340e2561f0ffc165140579e96b36e5c48ccf467d15e47e4bae89a4a38dd5069 |
+| build\test_core.exe（单元测试） | 1439754 | 5476228be54a99320fcac5ef34cb6dcdbdcbb282effd02a1e1127b38177adb45 |
 | build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
 | dist \AIChat-1.0.0-win-x64-portable.zip | 见同名 .sha256 文件（zip 不能包含自己的哈希） |
 
@@ -30,15 +33,15 @@
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**557 通过，0 失败**（1.0s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
-transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf，含事务回滚、嵌套 SAVEPOINT、
+实测：**578 通过，0 失败**（1.0s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），含事务回滚、嵌套 SAVEPOINT、
 迁移幂等、导出校验和被篡改、导入冲突三策略、插件崩溃与超时终止（400ms 超时下进程被 TerminateProcess）。
 
 ## 4. 逐条 FR 验收
 
     build\aic.exe verify . build\verify
 
-实测：**24 条 FR 全部 PASS，246 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
+实测：**24 条 FR 全部 PASS，254 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
 每条 FR 都至少有一项针对实现行为的断言（不是"文件存在"式检查），例如：
 FR-13 连续切换十次后两端会话与草稿互不串台；FR-14 聊天会话唯一索引拒绝第二个 chat 会话；
 FR-15 返回键三级优先级 + 同级三栏不入栈；FR-18 导出后另库导入条数/正文一致且失败整体回滚；
@@ -58,6 +61,14 @@ FR-22 九步指南可完成、可跳过、可重置。
 
 （本轮另修掉一个真实缺陷：bench 的批量插入复用同一条 SQLite 语句却没 aic_stmt_reset，导致只落了 1 条，
 报告里的"万条"曾经名不副实；修后 10000 条真实落库，数字即上表。）
+
+另有一次性采样接口（对应模块清单里的 PerfMonitor.sample，原第 13.4 节描述的"内存曲线 / 耗时分解 / 存储分项"）：
+
+    build\aic.exe perf
+
+本机实测输出（rss_ok=true）：rss_kb 6236（6.09 MB）、frame_budget_ms 16.7、db_bytes 4096、
+wal_bytes 139920、storage_kb 140、rss_ring_kb[6236]，峰值/均值均可从环形缓冲取出。单元测试与 FR-24 验收里各有一组针对它的断言
+（默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
 
@@ -118,6 +129,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
     build.ps1 -Target test  && build\test_core.exe
     build.ps1 -Target cli   && build\aic.exe verify . build\verify
     build\aic.exe bench
+    build\aic.exe perf
     build.ps1 -Target gui   && python tools\shots.py
     python tools\build_android.py && python tools\verify_android.py
     python tools\package_win.py

@@ -1,5 +1,6 @@
 /* perf.c —— 性能预算与基准实现。 */
 #include "perf.h"
+#include "json.h"
 #include "store_message.h"
 #include "transfer.h"
 #include "util.h"
@@ -15,7 +16,7 @@
 #include <time.h>
 #endif
 
-/* 预算表：与 §13.4 一一对应（桌面 / 移动）。 */
+/* 预算表：与 §13.2 一一对应（桌面 / 移动）。 */
 typedef struct budget_row {
     aic_perf_metric metric;
     double desktop;
@@ -169,5 +170,130 @@ int aic_perf_report(aic_platform platform, sb *out)
     if (aic_perf_rss_kb(&rss) == AIC_OK) {
         sb_appendf(out, "  当前进程常驻内存：%.1f MB\n", (double)rss / 1024.0);
     }
+    return AIC_OK;
+}
+
+/* ---------- 采样（PerfMonitor.sample） ---------- */
+
+static long long g_ring[AIC_PERF_RING_MAX];
+static int       g_ring_n;
+static int       g_ring_pos;
+
+void aic_perf_ring_reset(void)
+{
+    memset(g_ring, 0, sizeof(g_ring));
+    g_ring_n = 0;
+    g_ring_pos = 0;
+}
+
+void aic_perf_ring_push(long long rss_kb)
+{
+    g_ring[g_ring_pos] = rss_kb;
+    g_ring_pos = (g_ring_pos + 1) % AIC_PERF_RING_MAX;
+    if (g_ring_n < AIC_PERF_RING_MAX) g_ring_n++;
+}
+
+int aic_perf_ring_count(void)
+{
+    return g_ring_n;
+}
+
+long long aic_perf_ring_avg_kb(void)
+{
+    long long sum = 0;
+    if (g_ring_n <= 0) return 0;
+    for (int i = 0; i < g_ring_n; i++) sum += g_ring[i];
+    return sum / g_ring_n;
+}
+
+long long aic_perf_ring_peak_kb(void)
+{
+    long long peak = 0;
+    for (int i = 0; i < g_ring_n; i++) {
+        if (g_ring[i] > peak) peak = g_ring[i];
+    }
+    return peak;
+}
+
+void aic_perf_sample_init(aic_perf_sample *s)
+{
+    if (!s) return;
+    memset(s, 0, sizeof(*s));
+    s->frame_budget_ms = AIC_PERF_FRAME_BUDGET_MS;
+}
+
+static long long size_of_or_zero(const char *path)
+{
+    int64_t n = 0;
+    if (!path || !path[0]) return 0;
+    if (aic_file_size(path, &n) != AIC_OK) return 0;
+    return (long long)n;
+}
+
+int aic_perf_sample_take(aic_db *db, const char *db_path, aic_perf_sample *s)
+{
+    /* 采样不读库内容，只按路径量文件大小，故 db 不参与计算。 */
+    (void)db;
+    if (!s) return AIC_E_INVAL;
+    aic_perf_sample_init(s);
+    s->at_ms = aic_now_ms();
+
+    long long kb = 0;
+    if (aic_perf_rss_kb(&kb) == AIC_OK) {
+        s->rss_ok = 1;
+        s->rss_kb = kb;
+        aic_perf_ring_push(kb);
+    }
+    if (db_path && db_path[0]) {
+        char tmp[1600];
+        s->db_bytes = size_of_or_zero(db_path);
+        snprintf(tmp, sizeof(tmp), "%s-wal", db_path);
+        s->wal_bytes += size_of_or_zero(tmp);
+        snprintf(tmp, sizeof(tmp), "%s-shm", db_path);
+        s->wal_bytes += size_of_or_zero(tmp);
+        s->storage_kb = (s->db_bytes + s->wal_bytes) / 1024;
+    }
+    return AIC_OK;
+}
+
+void aic_perf_sample_set_frame(aic_perf_sample *s, double frame_ms)
+{
+    if (!s) return;
+    s->frame_ms = frame_ms;
+    s->frame_over = (s->frame_budget_ms > 0.0 && frame_ms > s->frame_budget_ms) ? 1 : 0;
+}
+
+void aic_perf_sample_set_switch(aic_perf_sample *s, double mode_ms, double tab_ms)
+{
+    if (!s) return;
+    if (mode_ms >= 0.0) s->mode_switch_ms = mode_ms;
+    if (tab_ms >= 0.0) s->tab_switch_ms = tab_ms;
+}
+
+int aic_perf_sample_json(const aic_perf_sample *s, sb *out)
+{
+    if (!s || !out) return AIC_E_INVAL;
+    jw w;
+    jw_init(&w, out, 1);
+    jw_obj_begin(&w, NULL);
+    jw_put_int(&w, "at_ms", s->at_ms);
+    jw_put_int(&w, "rss_kb", s->rss_kb);
+    jw_put_bool(&w, "rss_ok", s->rss_ok);
+    jw_put_double(&w, "rss_mb", (double)s->rss_kb / 1024.0);
+    jw_put_double(&w, "frame_ms", s->frame_ms);
+    jw_put_double(&w, "frame_budget_ms", s->frame_budget_ms);
+    jw_put_bool(&w, "frame_over", s->frame_over);
+    jw_put_double(&w, "mode_switch_ms", s->mode_switch_ms);
+    jw_put_double(&w, "tab_switch_ms", s->tab_switch_ms);
+    jw_put_int(&w, "db_bytes", s->db_bytes);
+    jw_put_int(&w, "wal_bytes", s->wal_bytes);
+    jw_put_int(&w, "storage_kb", s->storage_kb);
+    /* 环形缓冲一旦写满，数组顺序是"最新在前"的循环序，只用于看趋势与峰值。 */
+    jw_arr_begin(&w, "rss_ring_kb");
+    for (int i = 0; i < g_ring_n; i++) jw_put_int(&w, NULL, g_ring[i]);
+    jw_arr_end(&w);
+    jw_put_int(&w, "rss_avg_kb", aic_perf_ring_avg_kb());
+    jw_put_int(&w, "rss_peak_kb", aic_perf_ring_peak_kb());
+    jw_obj_end(&w);
     return AIC_OK;
 }

@@ -4,6 +4,7 @@
  * 用法：
  *   aic.exe verify [仓库根目录] [工作目录]   逐条核对 FR-01 ~ FR-24，写 docs\FR-MATRIX.md
  *   aic.exe bench                            跑性能基准并打印报告
+ *   aic.exe perf                             采一次性能样本（内存 / 帧耗时 / 存储分项），输出 JSON
  *   aic.exe doctor                           检查运行环境（数据库、凭据、插件宿主）
  *   aic.exe version                          打印版本
  *
@@ -34,6 +35,8 @@ static void usage(FILE *out)
         "      退出码 = 未通过的检查项数量（0 表示全部通过）。\n"
         "  aic.exe bench\n"
         "      跑冷启动/分页/导出/内存基准并打印对照报告。\n"
+        "  aic.exe perf\n"
+        "      采一次性能样本（常驻内存、单帧耗时、存储分项），输出 JSON。\n"
         "  aic.exe doctor\n"
         "      检查数据库、凭据存储、插件宿主是否可用。\n"
         "  aic.exe version\n"
@@ -130,6 +133,46 @@ static int run_bench(void)
     return rc == AIC_OK ? 0 : 1;
 }
 
+/* ---------- perf（PerfMonitor.sample） ---------- */
+
+static int run_perf(void)
+{
+    char dir[512], path[1100];
+    aic_db *db = NULL;
+    aic_perf_sample s;
+    sb json;
+    int rc;
+
+    aic_strlcpy_utf8(dir, sizeof(dir), "build\\perf");
+    aic_mkdir_p(dir);
+    aic_path_join(path, sizeof(path), dir, "perf.db");
+
+    /* 库不存在时建一个最小库，让存储分项有真实数字可量。 */
+    rc = aic_db_open(path, &db);
+    if (rc == AIC_OK) {
+        int from = 0, to = 0;
+        aic_db_migrate(db, path, NULL, &from, &to);
+    }
+
+    rc = aic_perf_sample_take(db, path, &s);
+    if (db) aic_db_close(db);
+    if (rc != AIC_OK) {
+        fprintf(stderr, "采样失败（rc=%d）：%s\n", rc, aic_strerror(rc));
+        return 1;
+    }
+
+    sb_init(&json);
+    rc = aic_perf_sample_json(&s, &json);
+    if (rc == AIC_OK) {
+        fputs(sb_cstr(&json), stdout);
+        fputc('\n', stdout);
+    }
+    sb_free(&json);
+
+    if (!s.rss_ok) fprintf(stderr, "注意：本平台不支持常驻内存采样，rss_ok=false。\n");
+    return rc == AIC_OK ? 0 : 1;
+}
+
 /* ---------- doctor ---------- */
 
 static int run_doctor(void)
@@ -202,6 +245,7 @@ int main(int argc, char **argv)
         return fails > 255 ? 255 : fails;
     }
     if (strcmp(cmd, "bench") == 0) return run_bench();
+    if (strcmp(cmd, "perf") == 0) return run_perf();
     if (strcmp(cmd, "doctor") == 0) return run_doctor();
     if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) {
         printf("AIChat %s\n", AIC_CLI_VERSION);

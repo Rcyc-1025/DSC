@@ -1517,6 +1517,61 @@ static void test_perf(aic_db *db)
     CHECK(strstr(sb_cstr(&report), "冷启动") != NULL, "报告含指标名");
     CHECK(strstr(sb_cstr(&report), "240.0 MB") != NULL, "报告含内存预算");
     sb_free(&report);
+
+    /* 采样接口（PerfMonitor.sample）：内存曲线 + 存储分项 + 单帧预算判定。 */
+    {
+        const char *tmp_db = "perf_sample_tmp.db";
+        char blob[4096];
+        memset(blob, 'x', sizeof(blob));
+        CHECK_EQ_INT(aic_file_write_all(tmp_db, blob, sizeof(blob)), AIC_OK, "造样本文件用于存储分项");
+
+        aic_perf_sample s;
+        aic_perf_sample_init(&s);
+        CHECK(s.frame_budget_ms == AIC_PERF_FRAME_BUDGET_MS, "采样默认单帧预算 16.7ms");
+
+        aic_perf_ring_reset();
+        CHECK_EQ_INT(aic_perf_ring_count(), 0, "环形缓冲已清空");
+
+        CHECK_EQ_INT(aic_perf_sample_take(db, tmp_db, &s), AIC_OK, "采集一次性能样本");
+        CHECK_EQ_INT(s.rss_ok, 1, "样本含常驻内存");
+        CHECK(s.rss_kb > 0, "样本内存为正数");
+        CHECK(s.db_bytes == 4096, "样本含主库字节数");
+        CHECK(s.storage_kb == 4, "存储分项按 KB 换算");
+        CHECK_EQ_INT(aic_perf_ring_count(), 1, "采样同时写入内存环形缓冲");
+
+        aic_perf_sample_set_frame(&s, 8.0);
+        CHECK_EQ_INT(s.frame_over, 0, "8ms 在单帧预算内");
+        aic_perf_sample_set_frame(&s, 30.0);
+        CHECK_EQ_INT(s.frame_over, 1, "30ms 超出单帧预算");
+        aic_perf_sample_set_switch(&s, 180.0, 120.0);
+        CHECK(s.mode_switch_ms == 180.0 && s.tab_switch_ms == 120.0, "记录切换耗时");
+
+        aic_perf_ring_push(1000);
+        aic_perf_ring_push(3000);
+        CHECK_EQ_INT(aic_perf_ring_count(), 3, "环形缓冲累计 3 条");
+        CHECK(aic_perf_ring_peak_kb() >= 3000, "峰值取最大采样");
+        CHECK(aic_perf_ring_avg_kb() > 0, "均值可计算");
+
+        sb js;
+        sb_init(&js);
+        CHECK_EQ_INT(aic_perf_sample_json(&s, &js), AIC_OK, "输出采样 JSON");
+        CHECK(strstr(sb_cstr(&js), "\"frame_budget_ms\"") != NULL, "JSON 含单帧预算字段");
+        CHECK(strstr(sb_cstr(&js), "\"storage_kb\"") != NULL, "JSON 含存储分项");
+        jv *root = NULL;
+        char jerr[256];
+        jerr[0] = '\0';
+        CHECK_EQ_INT(jv_parse(sb_cstr(&js), js.len, &root, jerr, sizeof(jerr)), AIC_OK, "采样 JSON 可解析");
+        if (root) {
+            CHECK(jv_get_ll(root, "db_bytes", -1) == 4096, "JSON 主库字节数一致");
+            CHECK(jv_get_bool(root, "frame_over", 0) == 1, "JSON 标记超预算");
+            jv_free(root);
+        }
+        sb_free(&js);
+
+        aic_file_remove(tmp_db);
+        aic_perf_ring_reset();
+    }
+
     aic_conv_delete(db, conv.id);
 }
 

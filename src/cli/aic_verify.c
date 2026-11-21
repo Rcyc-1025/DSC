@@ -1303,6 +1303,36 @@ static void fr24(V *v, const char *wd)
              aic_perf_budget_value(AIC_PLATFORM_DESKTOP, AIC_PERF_TAB_SWITCH) == 150.0 &&
              aic_perf_budget_value(AIC_PLATFORM_DESKTOP, AIC_PERF_FIRST_TOKEN) == 2000.0,
           "其余预算项与规格一致（模式 200 / 三栏 150 / 首段 2000）");
+    /* PerfMonitor.sample：一次采样同时给出内存、单帧预算与存储分项。 */
+    {
+        aic_perf_sample s;
+        sb js;
+        jv *root = NULL;
+        char jerr[256];
+        jerr[0] = '\0';
+        aic_perf_ring_reset();
+        aic_perf_sample_init(&s);
+        rc = aic_perf_sample_take(db, p, &s);
+        check(v, rc == AIC_OK, "采样一次性能数据（rc=%d）", rc);
+        check(v, s.rss_ok == 1 && s.rss_kb > 0, "采样含常驻内存（%lld KB）", s.rss_kb);
+        check(v, s.db_bytes > 0 && s.storage_kb > 0, "采样含存储分项（库 %lld 字节 / %lld KB）",
+              s.db_bytes, s.storage_kb);
+        check(v, aic_perf_ring_count() == 1, "采样写入内存曲线缓冲（%d 条）", aic_perf_ring_count());
+        aic_perf_sample_set_frame(&s, AIC_PERF_FRAME_BUDGET_MS + 5.0);
+        check(v, s.frame_over == 1, "单帧耗时超出 %.1fms 预算时被标记", AIC_PERF_FRAME_BUDGET_MS);
+        sb_init(&js);
+        rc = aic_perf_sample_json(&s, &js);
+        check(v, rc == AIC_OK, "采样可序列化为 JSON（rc=%d）", rc);
+        check(v, jv_parse(sb_cstr(&js), js.len, &root, jerr, sizeof(jerr)) == AIC_OK && root != NULL,
+              "采样 JSON 可解析（%s）", jerr);
+        if (root) {
+            check(v, jv_get_ll(root, "db_bytes", -1) == s.db_bytes, "JSON 存储分项与采样一致");
+            jv_free(root);
+        }
+        sb_free(&js);
+        aic_perf_ring_reset();
+    }
+
     aic_db_close(db);
     fr_end(v);
 }
