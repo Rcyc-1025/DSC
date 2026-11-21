@@ -20,8 +20,8 @@
 | --- | --- | --- |
 | build\AIChat.exe（Windows 界面） | 1408655 | 01ecac15e76070be19c7b5e29eec4352c0e719aeeb3086892ba6477c68cd714e |
 | build\aic.exe（验收/基准/自检 CLI） | 1392236 | 4bd3553be36bf0f759b1e0dd8f7197b4aae6afec6ae941364510730ee283e252 |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 8ae86300ae8f5b0b602b05b98dfde2d1ac4e86553d7092b1cda2c8e038b0c55a |
-| build\test_core.exe（单元测试） | 1432923 | b6a3d116f32a4047bdec3d5c03feeb41abfa67abea7b0f0e05cd1fa707c775eb |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 42d19b98a00c79bddc3157de846a59059a6fbda5c9b49a02e25c6bc079d28e9c |
+| build\test_core.exe（单元测试） | 1432923 | 3bf79c34df3a2dd510d9e2e950074a180ae40dde6be7d51af141cda939afcd31 |
 | build_android\AIChat.apk | 733652 | 2da28614a323e6e9dbf5db6dae9b065a761f6a93fad55973724aae17204d4ad2 |
 | dist \AIChat-1.0.0-win-x64-portable.zip | 见同名 .sha256 文件（zip 不能包含自己的哈希） |
 
