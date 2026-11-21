@@ -19,6 +19,14 @@ import os
 import re
 import sys
 
+# CI（GitHub Actions 的 Windows runner）默认把 stdout 当 cp1252，中文 print 会直接崩，
+# 所以先把标准输出改成 UTF-8，本地与 CI 行为一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 SKIP_DIRS = {
     ".git", "build", "build_android", "dist", "obj", "shotsdata", "verify", "bench",
     ".vscode", ".idea", "__pycache__", "node_modules", "tmp",

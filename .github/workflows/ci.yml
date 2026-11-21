@@ -9,6 +9,9 @@ jobs:
   windows:
     name: Windows (MinGW-w64 ucrt64)
     runs-on: windows-latest
+    env:
+      # Windows runner 的控制台默认 code page 不是 UTF-8，中文输出会抛 UnicodeEncodeError。
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
