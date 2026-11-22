@@ -33,6 +33,12 @@ struct aic_engine {
     /* 流式增量回调：界面在工作线程里收到增量后 PostMessage 回界面线程渲染。 */
     void (*stream_cb)(void *ud, const char *delta);
     void *stream_cb_ud;
+    /* 扩展点挂钩 */
+    aic_engine_text_fn transform;
+    void *transform_ud;
+    aic_engine_tools_fn tools_provider;
+    void *tools_ud;
+    sb tools_json;
 };
 
 int aic_engine_create(aic_db *db, aic_engine **out)
@@ -46,6 +52,7 @@ int aic_engine_create(aic_db *db, aic_engine **out)
     e->stop_requested = 0;
     e->stream_err = AIC_LLM_OK;
     sb_init(&e->stream_text);
+    sb_init(&e->tools_json);
     *out = e;
     return AIC_OK;
 }
@@ -54,6 +61,7 @@ void aic_engine_destroy(aic_engine *e)
 {
     if (!e) return;
     sb_free(&e->stream_text);
+    sb_free(&e->tools_json);
     aic_xfree(e);
 }
 
@@ -102,6 +110,20 @@ void aic_engine_set_stream_cb(aic_engine *e, void (*fn)(void *ud, const char *de
     if (!e) return;
     e->stream_cb = fn;
     e->stream_cb_ud = ud;
+}
+
+void aic_engine_set_transform(aic_engine *e, aic_engine_text_fn fn, void *ud)
+{
+    if (!e) return;
+    e->transform = fn;
+    e->transform_ud = ud;
+}
+
+void aic_engine_set_tools_provider(aic_engine *e, aic_engine_tools_fn fn, void *ud)
+{
+    if (!e) return;
+    e->tools_provider = fn;
+    e->tools_ud = ud;
 }
 
 void aic_engine_stop(aic_engine *e)
@@ -166,6 +188,30 @@ int aic_engine_build_request(aic_engine *e, const char *conv_id, sb *out, char *
 
     aic_llm_request_opts opts = aic_llm_request_defaults();
     opts.context_messages = e->context_messages;
+
+    char transformed[8192];
+    transformed[0] = '\0';
+    if (e->transform) {
+        aic_message last;
+        memset(&last, 0, sizeof(last));
+        if (aic_msg_last_user(e->db, conv_id, &last) == AIC_OK) {
+            char terr[256];
+            terr[0] = '\0';
+            if (e->transform(e->transform_ud, last.content ? last.content : "", transformed,
+                             sizeof(transformed), terr, sizeof(terr)) == AIC_OK && transformed[0])
+                opts.last_user_text = transformed;
+            aic_msg_free(&last);
+        }
+    }
+    if (e->tools_provider) {
+        sb_reset(&e->tools_json);
+        char terr[256];
+        terr[0] = '\0';
+        if (e->tools_provider(e->tools_ud, &e->tools_json, terr, sizeof(terr)) == AIC_OK &&
+            e->tools_json.len > 0)
+            opts.tools_json = sb_cstr(&e->tools_json);
+    }
+
     rc = aic_llm_build_request(e->db, conv_id, effective_model(e, &conv), sb_cstr(&sys), &opts,
                                out, err, errlen);
     sb_free(&sys);

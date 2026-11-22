@@ -217,6 +217,20 @@ static void fr03(V *v, const char *wd)
     check(v, aic_llm_cost_micros(flash, 1000, 500) == 6000, "费用计算：flash 1000/500 token = 6000 微元");
     aic_llm_format_micros(6000, buf, sizeof(buf));
     check(v, strcmp(buf, "¥0.0060") == 0, "费用展示为「¥0.0060」（实际 %s）", buf);
+    {
+        /* 技术设计 9.3：新增模型通过配置文件追加，不改核心代码。 */
+        const char *mj = "{\"models\":[{\"id\":\"sai_test_model\",\"name\":\"测试模型\","
+                         "\"summary\":\"配置文件追加\",\"context_tokens\":8192,"
+                         "\"price_in_micro_per_mtok\":1000000,\"price_out_micro_per_mtok\":2000000}]}";
+        char merr[256] = {0};
+        rc = aic_llm_models_load_json(mj, strlen(mj), merr, sizeof(merr));
+        check(v, rc == AIC_OK, "配置文件追加模型（rc=%d %s）", rc, merr);
+        check(v, aic_llm_model_find("sai_test_model") != NULL, "追加的模型可按标识取到");
+        check(v, aic_llm_model_count() >= 3, "模型目录变为 3 个（实际 %d）", (int)aic_llm_model_count());
+        aic_llm_models_reset();
+        check(v, aic_llm_model_find("sai_test_model") == NULL && aic_llm_model_count() == 2,
+              "重置后回到内置的两个模型");
+    }
 
     rc = new_db(wd, "fr03", &db, p, sizeof(p));
     check(v, rc == AIC_OK, "准备数据库（rc=%d）", rc);
@@ -376,6 +390,69 @@ static void fr05(V *v, const char *wd)
             check(v, rc == AIC_OK && pr.text != NULL && strstr(pr.text, "\"plugin\"") != NULL,
                   "插件在独立进程中正常返回（rc=%d）", rc);
             aic_plugin_proc_free(&pr);
+        }
+    }
+
+    {
+        /* 技术设计 10.2：清单给了 sha256 就校验入口文件哈希；覆盖安装要显式确认。 */
+        char hash[65];
+        char mj2[1400];
+        char mpath2[PATH_MAX_L];
+        aic_plugin inst2;
+        aic_path_join(mpath2, sizeof(mpath2), pdir, "plugin2.json");
+        aic_sha256_hex("not-a-real-dll", strlen("not-a-real-dll"), hash);
+        snprintf(mj2, sizeof(mj2),
+                 "{\"id\":\"verify_plugin\",\"name\":\"验收插件\",\"version\":\"1.0.1\","
+                 "\"author\":\"Sai\",\"entry\":\"verify.dll\",\"sha256\":\"%s\","
+                 "\"permissions\":[\"prompt.fragment\"],\"extension_points\":[\"prompt.fragment\"]}", hash);
+        write_text(pdir, "plugin2.json", mj2);
+        memset(&inst2, 0, sizeof(inst2));
+        err[0] = 0;
+        rc = aic_plugin_install(db, plugins_root, mpath2, "file", &inst2, err, sizeof(err));
+        check(v, rc == AIC_OK, "入口哈希与清单一致时允许安装（rc=%d %s）", rc, err);
+        aic_plugin_free(&inst2);
+
+        /* 把哈希改成错的，期望被拒。 */
+        {
+            char bad[1400];
+            char zeros[65];
+            memset(zeros, 0, sizeof(zeros));
+            memset(zeros, (int)'0', 64);
+            snprintf(bad, sizeof(bad),
+                     "{\"id\":\"bad_plugin\",\"name\":\"坏插件\",\"version\":\"1.0.0\","
+                     "\"author\":\"Sai\",\"entry\":\"verify.dll\",\"sha256\":\"%s\","
+                     "\"permissions\":[],\"extension_points\":[]}", zeros);
+            write_text(pdir, "plugin_bad.json", bad);
+            {
+                char mb[PATH_MAX_L];
+                char me[512] = {0};
+                aic_plugin tmp;
+                aic_path_join(mb, sizeof(mb), pdir, "plugin_bad.json");
+                memset(&tmp, 0, sizeof(tmp));
+                rc = aic_plugin_install(db, plugins_root, mb, "file", &tmp, me, sizeof(me));
+                check(v, rc == AIC_E_CHECKSUM, "入口哈希不符时拒绝安装（rc=%d %s）", rc, me);
+            }
+        }
+
+        /* 覆盖安装：默认拒绝，确认后才允许。 */
+        err[0] = 0;
+        rc = aic_plugin_install(db, plugins_root, mpath, "file", &inst2, err, sizeof(err));
+        check(v, rc == AIC_E_CONFLICT, "覆盖安装需要显式确认（rc=%d）", rc);
+        {
+            char mj3[1400];
+            char mpath3[PATH_MAX_L];
+            snprintf(mj3, sizeof(mj3),
+                     "{\"id\":\"verify_plugin\",\"name\":\"验收插件\",\"version\":\"1.0.2\","
+                     "\"author\":\"Sai\",\"entry\":\"verify.dll\",\"sha256\":\"%s\","
+                     "\"permissions\":[\"prompt.fragment\"],\"extension_points\":[\"prompt.fragment\"]}", hash);
+            write_text(pdir, "plugin3.json", mj3);
+            aic_path_join(mpath3, sizeof(mpath3), pdir, "plugin3.json");
+            memset(&inst2, 0, sizeof(inst2));
+            err[0] = 0;
+            rc = aic_plugin_install_ex(db, plugins_root, mpath3, "file", 1, &inst2, err, sizeof(err));
+            check(v, rc == AIC_OK && strcmp(inst2.version, "1.0.2") == 0,
+                  "确认覆盖后版本更新到 1.0.2（rc=%d version=%s %s）", rc, inst2.version, err);
+            aic_plugin_free(&inst2);
         }
     }
     aic_db_close(db);
@@ -637,6 +714,13 @@ static void fr10(V *v, const char *wd)
     check(v, got.edited_at[0] != 0, "修改写入 edited_at（实际=\"%s\"）", got.edited_at);
     check(v, got.original_content != NULL && strcmp(got.original_content, "原始内容") == 0,
           "修改保留首次原文");
+    aic_msg_free(&got);
+    rc = aic_msg_restore(db, m.id);
+    check(v, rc == AIC_OK, "撤销修改（rc=%d）", rc);
+    memset(&got, 0, sizeof(got));
+    aic_msg_get(db, m.id, &got);
+    check(v, strcmp(got.content, "原始内容") == 0 && got.edited_at[0] == 0,
+          "撤销修改后正文回到原文并清空 edited_at");
     aic_msg_free(&got);
     aic_engine_destroy(eng);
     aic_db_close(db);
@@ -1061,6 +1145,45 @@ static void fr18(V *v, const char *wd)
               "Markdown 含会话标题（%d 字节）", (int)mlen);
         if (md) aic_xfree(md);
     }
+    {
+        /* 技术设计 8.1：导出范围可选（当前会话 / 全部 / 时间区间）并可选含头像。 */
+        aic_export_scope sc;
+        char sf[PATH_MAX_L];
+        char *txt = NULL;
+        size_t tlen = 0;
+        memset(&sc, 0, sizeof(sc));
+        aic_path_join(sf, sizeof(sf), wd, "fr18src\\scope_conv.md");
+        sc.scope = 1;
+        sc.conv_id = c2.id;
+        rc = aic_export_write_markdown_ex(src, -1, &sc, sf, err, sizeof(err));
+        check(v, rc == AIC_OK && aic_path_exists(sf), "按会话范围导出（rc=%d %s）", rc, err);
+        rc = aic_file_read_all(sf, &txt, &tlen);
+        check(v, rc == AIC_OK && txt && strstr(txt, "学习计划") != NULL && strstr(txt, "今天有点累") == NULL,
+              "指定会话导出只含该会话（%d 字节）", (int)tlen);
+        if (txt) aic_xfree(txt);
+
+        memset(&sc, 0, sizeof(sc));
+        sc.scope = 2;
+        sc.from_ms = aic_now_ms() - 86400000LL;
+        sc.to_ms = aic_now_ms() + 86400000LL;
+        aic_path_join(sf, sizeof(sf), wd, "fr18src\\scope_range.md");
+        rc = aic_export_write_markdown_ex(src, -1, &sc, sf, err, sizeof(err));
+        check(v, rc == AIC_OK && aic_path_exists(sf), "按时间区间导出（rc=%d %s）", rc, err);
+        rc = aic_file_read_all(sf, &txt, &tlen);
+        check(v, rc == AIC_OK && txt && strstr(txt, "学习计划") != NULL, "区间内含消息的会话被导出");
+        if (txt) aic_xfree(txt);
+
+        memset(&sc, 0, sizeof(sc));
+        sc.scope = 2;
+        sc.from_ms = aic_now_ms() - 86400000LL * 400;
+        sc.to_ms = aic_now_ms() - 86400000LL * 300;
+        aic_path_join(sf, sizeof(sf), wd, "fr18src\\scope_empty.md");
+        rc = aic_export_write_markdown_ex(src, -1, &sc, sf, err, sizeof(err));
+        rc = aic_file_read_all(sf, &txt, &tlen);
+        check(v, rc == AIC_OK && txt != NULL && strstr(txt, "今天有点累") == NULL,
+              "区间外没有消息时不导出正文（%d 字节）", (int)tlen);
+        if (txt) aic_xfree(txt);
+    }
     aic_db_close(src);
     aic_db_close(dst);
     fr_end(v);
@@ -1294,6 +1417,22 @@ static void fr24(V *v, const char *wd)
     check(v, over <= 0, "移动端万条导出 %.0fms <= %.0fms", export_ms,
           aic_perf_budget_value(AIC_PLATFORM_MOBILE, AIC_PERF_EXPORT_10K));
 
+    {
+        /* 技术设计 13.3：分页加载——一页 100 条，向上按需再翻。 */
+        aic_message *page1 = NULL, *page2 = NULL;
+        size_t n1 = 0, n2 = 0;
+        rc = aic_msg_page(db, c.id, 0, 100, &page1, &n1);
+        check(v, rc == AIC_OK && n1 == 100, "首屏一页 100 条（rc=%d n=%d）", rc, (int)n1);
+        check(v, n1 == 100 && page1[0].seq < page1[n1 - 1].seq, "一页内按 seq 升序排列");
+        check(v, n1 == 100 && n1 < (size_t)total, "首屏不加载全部消息（总 %d 条）", total);
+        if (n1 > 0) {
+            rc = aic_msg_page(db, c.id, page1[0].seq, 100, &page2, &n2);
+            check(v, rc == AIC_OK && n2 == 100, "向上再翻一页（rc=%d n=%d）", rc, (int)n2);
+            check(v, n2 == 100 && page2[n2 - 1].seq < page1[0].seq, "更早一页的 seq 全部小于当前首页");
+        }
+        if (page1) aic_msg_free_array(page1, n1);
+        if (page2) aic_msg_free_array(page2, n2);
+    }
     rc = aic_perf_rss_kb(&rss);
     check(v, rc == AIC_OK, "常驻内存可采样（rc=%d）", rc);
     aic_perf_check(AIC_PLATFORM_DESKTOP, AIC_PERF_MEMORY_IDLE, (double)rss / 1024.0, &over);

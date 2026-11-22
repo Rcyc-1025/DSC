@@ -21,7 +21,7 @@
 #include "plugin_proc.h"
 #include "aic_verify.h"
 
-#define AIC_CLI_VERSION "1.1.0"
+#define AIC_CLI_VERSION "1.2.0"
 
 static void usage(FILE *out)
 {

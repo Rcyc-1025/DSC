@@ -43,11 +43,29 @@ typedef struct aic_import_result {
     size_t msg_renamed;
 } aic_import_result;
 
+/* 导出范围（技术设计 8.1）：范围可选当前会话、按模式全部、按时间区间；
+ * 头像文件默认不导出，用户勾选后才把 avatar_path 指向的图片以 base64 附在 avatars 数组里。 */
+typedef struct aic_export_scope {
+    int         scope;            /* 0=按 mode 的全部会话，1=当前会话，2=按时间区间 */
+    const char *conv_id;          /* scope=1 时必需 */
+    long long   from_ms;          /* scope=2 的起止时间（毫秒时间戳，按消息 created_at 过滤） */
+    long long   to_ms;
+    int         include_avatars;  /* 1 = 附带头像文件 */
+    const char *root;             /* 数据目录（include_avatars=1 时用来定位头像文件） */
+} aic_export_scope;
+
+int aic_export_json_ex(aic_db *db, int mode, const aic_export_scope *sc, sb *out,
+                       char *err, size_t errlen);
+int aic_export_write_json_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path,
+                             char *err, size_t errlen);
+
 /* 导出为 JSON 文本（写入 out，调用方负责 sb_free）。mode 传 -1 表示全部会话。 */
 int aic_export_json(aic_db *db, int mode, sb *out, char *err, size_t errlen);
 /* 导出到文件（JSON / Markdown / 纯文本；后两者不参与导入）。 */
 int aic_export_write_json(aic_db *db, int mode, const char *path, char *err, size_t errlen);
+int aic_export_write_markdown_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path, char *err, size_t errlen);
 int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err, size_t errlen);
+int aic_export_write_text_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path, char *err, size_t errlen);
 int aic_export_write_text(aic_db *db, int mode, const char *path, char *err, size_t errlen);
 
 /* 读取并校验导出文件：先看 format/版本，再验 checksum，最后统计与本地冲突的数量。 */

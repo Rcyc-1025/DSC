@@ -21,6 +21,8 @@ typedef struct aic_plugin_proc_result {
     int       exit_code;   /* 子进程退出码；被超时终止时为 -1 */
     int       timed_out;   /* 1 表示超时被终止 */
     long long elapsed_ms;  /* 整个回合的墙钟毫秒 */
+    long long peak_mem_kb; /* 子进程峰值内存（KB），用于判断是否是内存上限触发 */
+    long long cpu_ms;      /* 子进程用户态 CPU 时间（毫秒，含 CPU 上限阈值） */
 } aic_plugin_proc_result;
 
 /* 在独立进程里调用插件入口。

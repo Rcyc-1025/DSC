@@ -41,6 +41,9 @@
 #define TAG "SaiCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
+/* 消息默认只给最近 100 条，更早的由 loadOlder 每次向上翻 100 条（技术设计 13.3）。 */
+#define AIC_MSG_PAGE 100
+
 static aic_db     *g_db;
 static aic_engine *g_eng;
 static aic_router *g_router;
@@ -728,14 +731,48 @@ static void cmd_backup_clean(int keep, sb *out)
 }
 
 /* ---------- 导出 / 导入（路径由 Java 选好，位于应用私有目录） ---------- */
-static void cmd_export_json(const char *path, sb *out)
+/* 导出范围（技术设计 8.1）：range=current|all|days7、withAvatars=0|1。
+ * conv_buf 由调用方给：aic_export_scope 里存的是指针，不能指向栈上的临时串。 */
+static int fill_export_scope(const jv *root, aic_export_scope *sc, char *conv_buf, size_t conv_cap)
+{
+    const char *range = jv_get_str(root, "range", "all");
+
+    memset(sc, 0, sizeof(*sc));
+    sc->include_avatars = jv_get_int(root, "withAvatars", 0) ? 1 : 0;
+    sc->root = g_dir;
+    if (strcmp(range, "current") == 0) {
+        const char *c = jv_get_str(root, "conv", "");
+        if (!c[0]) c = current_conv();
+        if (!c[0]) return 0;
+        aic_strlcpy_utf8(conv_buf, conv_cap, c);
+        sc->scope = 1;
+        sc->conv_id = conv_buf;
+    } else if (strcmp(range, "days7") == 0) {
+        sc->scope = 2;
+        sc->to_ms = aic_now_ms();
+        sc->from_ms = sc->to_ms - 7LL * 24LL * 3600LL * 1000LL;
+    } else {
+        sc->scope = 0;   /* all：按模式导出全部会话 */
+    }
+    return 1;
+}
+
+static const char *scope_tag(const aic_export_scope *sc)
+{
+    if (!sc) return "all";
+    if (sc->scope == 1) return "current";
+    if (sc->scope == 2) return "days7";
+    return "all";
+}
+
+static void cmd_export_json(const char *path, const aic_export_scope *sc, sb *out)
 {
     char err[256] = { 0 };
     int rc;
 
     if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!path || !path[0]) { reply_err(out, "导出路径为空"); return; }
-    rc = aic_export_write_json(g_db, -1, path, err, sizeof(err));
+    rc = aic_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
     if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导出失败"); return; }
     reply_ok_note(out, path);
 }
@@ -788,7 +825,7 @@ static void cmd_plugin_list(sb *out)
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
     jw_put_bool(&w, "procAvailable", 0);   /* Android 上插件进程隔离不可用 */
-    jw_put_str(&w, "procNote", "Android 暂不支持插件运行，仅可管理清单");
+    jw_put_str(&w, "procNote", "Android 上仅可管理清单，扩展点运行需桌面端");
     jw_arr_begin(&w, "items");
     for (i = 0; i < n; i++) {
         jw_obj_begin(&w, NULL);
@@ -807,55 +844,80 @@ static void cmd_plugin_list(sb *out)
     if (arr) aic_plugin_free_array(arr, n);
 }
 
-/* pluginInstall：zip 先解到临时目录，找到 manifest.json 再交给核心安装。 */
-static void cmd_plugin_install(const char *zip, sb *out)
+/* 插件 zip 先解到临时目录并定位清单（优先 plugin.json，兼容 manifest.json）；成功时 *work 是临时目录，
+ * 调用方负责 rm_tree(*work)。pluginInspect 与 pluginInstall 共用这一步。 */
+static int unpack_plugin_zip(const char *zip, char *work, size_t workcap,
+                             char *manifest, size_t mancap, char *err, size_t errlen)
 {
-    char err[256] = { 0 };
-    char tmp[700], uuid[37], manifest[800], child[800], plugins[700];
-    aic_plugin pl;
-    jw w;
-    int rc, n;
+    char tmp[700], uuid[37], child[800], inner[900];
     sb names;
+    int rc, n;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (!zip || !zip[0] || !aic_path_exists(zip)) { reply_err(out, "插件包不存在"); return; }
+    if (err && errlen) err[0] = '\0';
+    if (!zip || !zip[0] || !aic_path_exists(zip)) {
+        if (err) snprintf(err, errlen, "插件包不存在");
+        return AIC_E_INVAL;
+    }
     aic_uuid4(uuid);
     aic_path_join(tmp, sizeof(tmp), g_dir, "tmp");
     aic_mkdir_p(tmp);
     aic_path_join(child, sizeof(child), tmp, uuid);
     aic_mkdir_p(child);
-    rc = aic_zip_extract(zip, child, err, sizeof(err));
+    aic_strlcpy_utf8(work, workcap, child);
+    rc = aic_zip_extract(zip, child, err, errlen);
     if (rc != AIC_OK) {
         rm_tree(child);
-        reply_err(out, err[0] ? err : "插件包解压失败");
-        return;
+        if (err && !err[0]) snprintf(err, errlen, "插件包解压失败");
+        return rc;
     }
     /* 清单可能在包根，也可能在唯一的一层子目录里。 */
-    aic_path_join(manifest, sizeof(manifest), child, "manifest.json");
+    aic_path_join(manifest, mancap, child, "plugin.json");
     if (!aic_path_exists(manifest)) {
-        sb_init(&names);
-        n = aic_dir_list(child, &names, '\n');
-        if (n > 0) {
-            const char *p = sb_cstr(&names);
-            char sub[256];
-            size_t k = 0;
-            while (*p && *p != '\n' && k + 1 < sizeof(sub)) sub[k++] = *p++;
-            sub[k] = '\0';
-            aic_path_join(child, sizeof(child), child, sub);
-            aic_path_join(manifest, sizeof(manifest), child, "manifest.json");
-        }
-        sb_free(&names);
+        aic_path_join(manifest, mancap, child, "manifest.json");
         if (!aic_path_exists(manifest)) {
-            rm_tree(child);
-            reply_err(out, "插件包缺少 manifest.json");
-            return;
+            sb_init(&names);
+            n = aic_dir_list(child, &names, '\n');
+            if (n > 0) {
+                const char *p = sb_cstr(&names);
+                char sub[256];
+                size_t k = 0;
+                while (*p && *p != '\n' && k + 1 < sizeof(sub)) sub[k++] = *p++;
+                sub[k] = '\0';
+                aic_path_join(inner, sizeof(inner), child, sub);
+                aic_path_join(manifest, mancap, inner, "plugin.json");
+                if (!aic_path_exists(manifest)) aic_path_join(manifest, mancap, inner, "manifest.json");
+            }
+            sb_free(&names);
+            if (!aic_path_exists(manifest)) {
+                rm_tree(child);
+                if (err) snprintf(err, errlen, "插件包缺少 plugin.json");
+                return AIC_E_INVAL;
+            }
         }
+    }
+    return AIC_OK;
+}
+
+/* pluginInstall：用户已确认后才调用；overwrite=1 表示覆盖同名已安装插件（技术设计 10.2）。 */
+static void cmd_plugin_install(const char *zip, int allow_overwrite, sb *out)
+{
+    char err[256] = { 0 };
+    char work[900], manifest[1000], plugins[700];
+    aic_plugin pl;
+    jw w;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != AIC_OK) {
+        reply_err(out, err[0] ? err : "插件包处理失败");
+        return;
     }
     aic_path_join(plugins, sizeof(plugins), g_dir, "plugins");
     aic_mkdir_p(plugins);
     memset(&pl, 0, sizeof(pl));
-    rc = aic_plugin_install(g_db, plugins, manifest, "zip", &pl, err, sizeof(err));
-    rm_tree(child);
+    rc = aic_plugin_install_ex(g_db, plugins, manifest, "zip", allow_overwrite ? 1 : 0,
+                               &pl, err, sizeof(err));
+    rm_tree(work);
     if (rc != AIC_OK) { reply_err(out, err[0] ? err : "插件安装失败"); return; }
 
     sb_reset(out);
@@ -866,10 +928,82 @@ static void cmd_plugin_install(const char *zip, sb *out)
     jw_put_str(&w, "id", pl.id);
     jw_put_str(&w, "name", pl.name);
     jw_put_str(&w, "version", pl.version);
+    jw_put_str(&w, "author", pl.author);
     jw_put_bool(&w, "enabled", pl.enabled);
-    jw_put_str(&w, "note", "Android 暂不支持插件运行，安装后仅登记清单（默认禁用）");
+    jw_put_bool(&w, "overwriteAllowed", allow_overwrite ? 1 : 0);
+    jw_put_str(&w, "note", "Android 上仅可管理清单，扩展点运行需桌面端；安装后默认禁用");
     jw_obj_end(&w);
     aic_plugin_free(&pl);
+}
+
+/* 清单里的权限/扩展点是逗号分隔串，界面按条目展示，这里拆成 JSON 数组。 */
+static void jw_put_csv_array(jw *w, const char *key, const char *csv)
+{
+    char item[128];
+    const char *p = csv;
+
+    jw_arr_begin(w, key);
+    while (p && *p) {
+        size_t k = 0;
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        while (*p && *p != ',' && k + 1 < sizeof(item)) item[k++] = *p++;
+        while (k > 0 && (item[k - 1] == ' ' || item[k - 1] == '\t')) k--;
+        item[k] = '\0';
+        if (k > 0) jw_put_str(w, NULL, item);
+        while (*p && *p != ',') p++;   /* 超长条目跳过余下部分，避免死循环 */
+    }
+    jw_arr_end(w);
+}
+
+/* pluginInspect：安装前把清单（名称/版本/作者/权限/扩展点）读出来给用户确认，不落库。 */
+static void cmd_plugin_inspect(const char *zip, sb *out)
+{
+    char err[256] = { 0 };
+    char work[900], manifest[1000];
+    char *text = NULL;
+    size_t len = 0;
+    aic_plugin_manifest mf;
+    aic_plugin exist;
+    int rc, exists = 0;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != AIC_OK) {
+        reply_err(out, err[0] ? err : "插件包处理失败");
+        return;
+    }
+    rc = aic_file_read_all(manifest, &text, &len);
+    if (rc != AIC_OK || !text) {
+        rm_tree(work);
+        reply_err(out, "插件清单读取失败");
+        return;
+    }
+    memset(&mf, 0, sizeof(mf));
+    rc = aic_plugin_parse_manifest(text, len, &mf, err, sizeof(err));
+    aic_xfree(text);
+    rm_tree(work);
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "插件清单格式不合法"); return; }
+
+    memset(&exist, 0, sizeof(exist));
+    exists = aic_plugin_get(g_db, mf.id, &exist) == AIC_OK;
+    if (exists) aic_plugin_free(&exist);
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "id", mf.id);
+    jw_put_str(&w, "name", mf.name);
+    jw_put_str(&w, "version", mf.version);
+    jw_put_str(&w, "author", mf.author);
+    jw_put_str(&w, "entry", mf.entry);
+    jw_put_csv_array(&w, "permissions", mf.permissions);
+    jw_put_csv_array(&w, "extensionPoints", mf.extension_points);
+    jw_put_bool(&w, "hasSha256", mf.sha256[0] ? 1 : 0);
+    jw_put_bool(&w, "exists", exists ? 1 : 0);
+    jw_put_str(&w, "procNote", "Android 上仅可管理清单，扩展点运行需桌面端");
+    jw_obj_end(&w);
 }
 
 static void cmd_plugin_set_enabled(const char *id, int enabled, sb *out)
@@ -1113,27 +1247,61 @@ static void put_persona(jw *w)
     aic_persona_free(&per);
 }
 
+/* 一串消息写进 key 数组：界面只读这些字段，不需要碰核心结构。 */
+static void put_msg_items(jw *w, const char *key, aic_message *arr, size_t n)
+{
+    size_t i;
+
+    jw_arr_begin(w, key);
+    for (i = 0; i < n; i++) {
+        jw_obj_begin(w, NULL);
+        jw_put_str(w, "id", arr[i].id);
+        jw_put_int(w, "seq", arr[i].seq);
+        jw_put_str(w, "role", arr[i].role);
+        jw_put_str(w, "content", arr[i].content ? arr[i].content : "");
+        jw_put_bool(w, "recalled", arr[i].recalled);
+        jw_put_bool(w, "superseded", arr[i].superseded);
+        jw_put_bool(w, "edited", arr[i].edited_at[0] != 0);
+        /* 有原文才能「撤销修改」（FR-07）：菜单只在这种消息上给入口。 */
+        jw_put_bool(w, "hasOriginal", arr[i].original_content != NULL && arr[i].original_content[0] != 0);
+        jw_put_str(w, "ts", arr[i].created_at);
+        jw_obj_end(w);
+    }
+    jw_arr_end(w);
+}
+
+/* oldest 之前还有没有消息：拿 1 条探一下（比 COUNT 更省，且不依赖额外接口）。 */
+static int has_older_msgs(const char *conv_id, long long oldest)
+{
+    aic_message *arr = NULL;
+    size_t n = 0;
+    int more = 0;
+
+    if (!conv_id || !conv_id[0] || oldest <= 0) return 0;
+    if (aic_msg_page(g_db, conv_id, oldest, 1, &arr, &n) == AIC_OK) {
+        more = n > 0;
+        aic_msg_free_array(arr, n);
+    }
+    return more;
+}
+
+/* 默认只给最近 AIC_MSG_PAGE 条 + hasMore/oldestSeq，向上翻页走 loadOlder。 */
 static void put_msgs(jw *w, const char *conv_id)
 {
     aic_message *arr = NULL;
-    size_t n = 0, i;
+    size_t n = 0;
+    long long oldest = 0;
 
-    jw_arr_begin(w, "msgs");
-    if (conv_id && conv_id[0] && aic_msg_export_all(g_db, conv_id, &arr, &n) == AIC_OK) {
-        for (i = 0; i < n; i++) {
-            jw_obj_begin(w, NULL);
-            jw_put_str(w, "id", arr[i].id);
-            jw_put_int(w, "seq", arr[i].seq);
-            jw_put_str(w, "role", arr[i].role);
-            jw_put_str(w, "content", arr[i].content ? arr[i].content : "");
-            jw_put_bool(w, "recalled", arr[i].recalled);
-            jw_put_bool(w, "edited", arr[i].edited_at[0] != 0);
-            jw_put_str(w, "ts", arr[i].created_at);
-            jw_obj_end(w);
-        }
-        aic_msg_free_array(arr, n);
+    if (conv_id && conv_id[0] && aic_msg_page(g_db, conv_id, 0, AIC_MSG_PAGE, &arr, &n) != AIC_OK) {
+        arr = NULL;
+        n = 0;
     }
-    jw_arr_end(w);
+    put_msg_items(w, "msgs", arr, n);
+    if (n > 0) oldest = arr[0].seq;
+    jw_put_int(w, "oldestSeq", oldest);
+    jw_put_bool(w, "hasMore", has_older_msgs(conv_id, oldest) ? 1 : 0);
+    jw_put_int(w, "pageSize", AIC_MSG_PAGE);
+    if (arr) aic_msg_free_array(arr, n);
 }
 
 static void put_threads(jw *w)
@@ -1277,7 +1445,7 @@ static void build_state(sb *out)
     jw_put_bool(&w, "systemNight", g_system_night ? 1 : 0);
     jw_put_bool(&w, "streaming", g_gen.active ? 1 : 0);
     jw_put_bool(&w, "pluginProcAvailable", 0);
-    jw_put_str(&w, "pluginProcNote", "Android 暂不支持插件运行，仅可管理清单");
+    jw_put_str(&w, "pluginProcNote", "Android 上仅可管理清单，扩展点运行需桌面端");
     jw_put_bool(&w, "hasBackup", g_backup_ok ? 1 : 0);
     jw_put_int(&w, "balanceAlertCents", aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
     jw_put_int(&w, "updateAuto", aic_setting_get_int(g_db, AIC_SET_UPDATE_AUTO, 1));
@@ -1359,20 +1527,20 @@ static int cmd_send(const char *text, sb *out)
     return AIC_OK;
 }
 
-static int cmd_export(const char *kind, sb *out)
+static int cmd_export(const char *kind, const aic_export_scope *sc, sb *out)
 {
-    char dir[512], path[512], name[128], err[256] = { 0 };
+    char dir[512], path[512], name[160], err[256] = { 0 };
     int rc;
 
     aic_path_join(dir, sizeof(dir), g_dir, "exports");
     aic_mkdir_p(dir);
-    snprintf(name, sizeof(name), "chat_record_%lld.%s",
-             (long long)(aic_now_ms() / 1000), strcmp(kind, "md") == 0 ? "md"
+    snprintf(name, sizeof(name), "chat_record_%lld_%s.%s",
+             (long long)(aic_now_ms() / 1000), scope_tag(sc), strcmp(kind, "md") == 0 ? "md"
                      : (strcmp(kind, "txt") == 0 ? "txt" : "json"));
     aic_path_join(path, sizeof(path), dir, name);
-    if (strcmp(kind, "md") == 0) rc = aic_export_write_markdown(g_db, -1, path, err, sizeof(err));
-    else if (strcmp(kind, "txt") == 0) rc = aic_export_write_text(g_db, -1, path, err, sizeof(err));
-    else rc = aic_export_write_json(g_db, -1, path, err, sizeof(err));
+    if (strcmp(kind, "md") == 0) rc = aic_export_write_markdown_ex(g_db, -1, sc, path, err, sizeof(err));
+    else if (strcmp(kind, "txt") == 0) rc = aic_export_write_text_ex(g_db, -1, sc, path, err, sizeof(err));
+    else rc = aic_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
     if (rc != AIC_OK) {
         reply_err(out, err[0] ? err : aic_strerror(rc));
         return rc;
@@ -1417,6 +1585,148 @@ static int cmd_import(const char *path, int policy, sb *out)
     return AIC_OK;
 }
 
+/* ---------- 消息分页：向上翻页（技术设计 13.3） ---------- */
+static void cmd_load_older(const char *conv_in, long long before_seq, sb *out)
+{
+    const char *conv = (conv_in && conv_in[0]) ? conv_in : current_conv();
+    aic_message *arr = NULL;
+    size_t n = 0;
+    long long oldest = 0;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!conv || !conv[0]) { reply_err(out, "没有可用的会话"); return; }
+    if (before_seq <= 0) { reply_err(out, "缺少翻页起点（oldestSeq）"); return; }
+    if (aic_msg_page(g_db, conv, before_seq, AIC_MSG_PAGE, &arr, &n) != AIC_OK) {
+        reply_err(out, "读取更早消息失败");
+        return;
+    }
+    if (n > 0) oldest = arr[0].seq;
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "conv", conv);
+    put_msg_items(&w, "msgs", arr, n);
+    jw_put_int(&w, "added", (long long)n);
+    jw_put_int(&w, "oldestSeq", oldest);
+    jw_put_bool(&w, "hasMore", has_older_msgs(conv, oldest) ? 1 : 0);
+    jw_obj_end(&w);
+    if (arr) aic_msg_free_array(arr, n);
+}
+
+/* ---------- 人设版本（FR-04）：列历史版本 + 用旧版本内容生成新版本 ---------- */
+static void cmd_persona_versions(sb *out)
+{
+    aic_persona per;
+    aic_prompt_version *arr = NULL;
+    size_t n = 0, i;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&per, 0, sizeof(per));
+    if (aic_persona_ensure_default(g_db, &per) != AIC_OK) {
+        aic_persona_free(&per);
+        reply_err(out, "人设读取失败");
+        return;
+    }
+    aic_persona_versions(g_db, per.id, &arr, &n);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "personaId", per.id);
+    jw_put_int(&w, "current", per.current_version);
+    jw_arr_begin(&w, "versions");
+    /* 最近的版本排在前面，界面第一行就是当前版本。 */
+    for (i = 0; i < n; i++) {
+        size_t k = n - 1 - i;
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", arr[k].id);
+        jw_put_int(&w, "version", arr[k].version);
+        jw_put_str(&w, "createdAt", arr[k].created_at);
+        jw_put_str(&w, "content", arr[k].content ? arr[k].content : "");
+        jw_put_bool(&w, "current", arr[k].version == per.current_version ? 1 : 0);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+    if (arr) aic_prompt_version_free_array(arr, n);
+    aic_persona_free(&per);
+}
+
+/* 回退：把指定历史版本的内容当作一次「新的修改」写回去，历史不丢（版本号继续加）。 */
+static void cmd_persona_rollback(const char *version_id, int version, sb *out)
+{
+    aic_persona per, upd;
+    aic_prompt_version *arr = NULL;
+    size_t n = 0, i;
+    const char *pick = NULL;
+    int rc;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&per, 0, sizeof(per));
+    if (aic_persona_ensure_default(g_db, &per) != AIC_OK) {
+        aic_persona_free(&per);
+        reply_err(out, "人设读取失败");
+        return;
+    }
+    aic_persona_versions(g_db, per.id, &arr, &n);
+    for (i = 0; i < n; i++) {
+        if (version_id && version_id[0]) {
+            if (strcmp(arr[i].id, version_id) == 0) { pick = arr[i].content; break; }
+        } else if (version > 0 && arr[i].version == version) {
+            pick = arr[i].content;
+            break;
+        }
+    }
+    if (!pick) {
+        if (arr) aic_prompt_version_free_array(arr, n);
+        aic_persona_free(&per);
+        reply_err(out, "指定的历史版本不存在");
+        return;
+    }
+    memset(&upd, 0, sizeof(upd));
+    rc = aic_persona_update(g_db, per.id, per.name, per.description, pick, &upd);
+    if (arr) aic_prompt_version_free_array(arr, n);
+    aic_persona_free(&per);
+    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "version", upd.current_version);
+    jw_obj_end(&w);
+    aic_persona_free(&upd);
+}
+
+/* 问答会话重命名（FR-20 的历史会话管理）。 */
+static void cmd_rename_thread(const char *id_in, const char *title, sb *out)
+{
+    const char *id = (id_in && id_in[0]) ? id_in : current_conv();
+    int rc;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!id || !id[0]) { reply_err(out, "没有可用的会话"); return; }
+    if (!title || !title[0]) { reply_err(out, "标题不能为空"); return; }
+    rc = aic_conv_update_meta(g_db, id, title, NULL, NULL);
+    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "id", id);
+    jw_put_str(&w, "title", title);
+    jw_obj_end(&w);
+}
+
 static void handle(const char *req_text, size_t req_len, sb *out)
 {
     jv *root = NULL;
@@ -1436,7 +1746,18 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         aic_strlcpy_utf8(g_dir, sizeof(g_dir), jv_get_str(root, "dir", ""));
         rc = ensure_env();
         if (rc != AIC_OK) reply_err(out, g_err[0] ? g_err : aic_strerror(rc));
-        else reply_ok(out);
+        else {
+            /* models.json（技术设计 9.3）：存在就加载，失败只记日志，不影响启动。 */
+            char mpath[600];
+            aic_path_join(mpath, sizeof(mpath), g_dir, "models.json");
+            if (aic_path_exists(mpath)) {
+                char merr[256] = { 0 };
+                if (aic_llm_models_load_file(mpath, merr, sizeof(merr)) != AIC_OK) {
+                    JLOG("models.json 加载失败，已忽略：%s", merr[0] ? merr : "未知原因");
+                }
+            }
+            reply_ok(out);
+        }
     } else if (strcmp(cmd, "state") == 0) {
         if (ensure_env() != AIC_OK) { reply_err(out, g_err); }
         else build_state(out);
@@ -1560,7 +1881,12 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         if (le == AIC_LLM_OK) reply_ok(out);
         else reply_err(out, err[0] ? err : aic_llm_err_text(le));
     } else if (strcmp(cmd, "export") == 0) {
-        cmd_export(jv_get_str(root, "kind", "json"), out);
+        aic_export_scope sc;
+        char conv_buf[64] = { 0 };
+        if (ensure_env() != AIC_OK) reply_err(out, g_err[0] ? g_err : "初始化失败");
+        else if (!fill_export_scope(root, &sc, conv_buf, sizeof(conv_buf)))
+            reply_err(out, "没有可导出的当前会话");
+        else cmd_export(jv_get_str(root, "kind", "json"), &sc, out);
     } else if (strcmp(cmd, "import") == 0) {
         cmd_import(jv_get_str(root, "path", ""), jv_get_int(root, "policy", 0), out);
     } else if (strcmp(cmd, "back") == 0) {
@@ -1666,17 +1992,36 @@ static void handle(const char *req_text, size_t req_len, sb *out)
     } else if (strcmp(cmd, "backupClean") == 0) {
         cmd_backup_clean((int)jv_get_int(root, "keep", 5), out);
     } else if (strcmp(cmd, "exportJson") == 0) {
-        cmd_export_json(jv_get_str(root, "path", ""), out);
+        aic_export_scope sc;
+        char conv_buf[64] = { 0 };
+        if (!fill_export_scope(root, &sc, conv_buf, sizeof(conv_buf)))
+            reply_err(out, "没有可导出的当前会话");
+        else cmd_export_json(jv_get_str(root, "path", ""), &sc, out);
     } else if (strcmp(cmd, "importJson") == 0) {
         cmd_import_json(jv_get_str(root, "path", ""), (int)jv_get_int(root, "policy", 0), out);
     } else if (strcmp(cmd, "pluginList") == 0) {
         cmd_plugin_list(out);
+    } else if (strcmp(cmd, "pluginInspect") == 0) {
+        cmd_plugin_inspect(jv_get_str(root, "path", ""), out);
     } else if (strcmp(cmd, "pluginInstall") == 0) {
-        cmd_plugin_install(jv_get_str(root, "path", ""), out);
+        cmd_plugin_install(jv_get_str(root, "path", ""), jv_get_int(root, "overwrite", 0) ? 1 : 0, out);
     } else if (strcmp(cmd, "pluginSetEnabled") == 0) {
         cmd_plugin_set_enabled(jv_get_str(root, "id", ""), jv_get_bool(root, "enabled", 0), out);
     } else if (strcmp(cmd, "pluginUninstall") == 0) {
         cmd_plugin_uninstall(jv_get_str(root, "id", ""), jv_get_bool(root, "keepData", 0), out);
+    } else if (strcmp(cmd, "loadOlder") == 0) {
+        cmd_load_older(jv_get_str(root, "conv", ""), jv_get_int(root, "beforeSeq", 0), out);
+    } else if (strcmp(cmd, "restoreEdit") == 0) {
+        /* 撤销修改（FR-07）：content 回滚 original_content，清空 edited_at / original_content。 */
+        rc = aic_msg_restore(g_db, jv_get_str(root, "id", ""));
+        if (rc != AIC_OK) reply_err(out, "这条消息没有可撤销的修改");
+        else reply_ok(out);
+    } else if (strcmp(cmd, "personaVersions") == 0) {
+        cmd_persona_versions(out);
+    } else if (strcmp(cmd, "personaRollback") == 0) {
+        cmd_persona_rollback(jv_get_str(root, "versionId", ""), (int)jv_get_int(root, "version", 0), out);
+    } else if (strcmp(cmd, "renameThread") == 0) {
+        cmd_rename_thread(jv_get_str(root, "id", ""), jv_get_str(root, "title", ""), out);
     } else {
         reply_err(out, "未知命令");
     }

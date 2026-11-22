@@ -877,3 +877,96 @@ int aic_scan_sensitive(const char *text, sb *hit)
     }
     return found;
 }
+
+/* ---------- Base64 ---------- */
+static const char g_b64tab[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int aic_base64_encode(const void *data, size_t len, sb *out)
+{
+    if (!out) return AIC_E_INVAL;
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i = 0;
+    for (; i + 3 <= len; i += 3) {
+        unsigned int v = ((unsigned int)p[i] << 16) | ((unsigned int)p[i + 1] << 8) | p[i + 2];
+        sb_appendc(out, g_b64tab[(v >> 18) & 0x3F]);
+        sb_appendc(out, g_b64tab[(v >> 12) & 0x3F]);
+        sb_appendc(out, g_b64tab[(v >> 6) & 0x3F]);
+        sb_appendc(out, g_b64tab[v & 0x3F]);
+    }
+    if (len - i == 1) {
+        unsigned int v = (unsigned int)p[i] << 16;
+        sb_appendc(out, g_b64tab[(v >> 18) & 0x3F]);
+        sb_appendc(out, g_b64tab[(v >> 12) & 0x3F]);
+        sb_appendc(out, '=');
+        sb_appendc(out, '=');
+    } else if (len - i == 2) {
+        unsigned int v = ((unsigned int)p[i] << 16) | ((unsigned int)p[i + 1] << 8);
+        sb_appendc(out, g_b64tab[(v >> 18) & 0x3F]);
+        sb_appendc(out, g_b64tab[(v >> 12) & 0x3F]);
+        sb_appendc(out, g_b64tab[(v >> 6) & 0x3F]);
+        sb_appendc(out, '=');
+    }
+    return AIC_OK;
+}
+
+static int b64val(char ch)
+{
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+}
+
+int aic_base64_decode(const char *s, size_t len, unsigned char **out, size_t *out_len)
+{
+    if (!s || !out || !out_len) return AIC_E_INVAL;
+    unsigned char *buf = (unsigned char *)aic_xmalloc(len / 4 * 3 + 4);
+    size_t n = 0;
+    int quad[4];
+    int qn = 0;
+    for (size_t i = 0; i < len; i++) {
+        char ch = s[i];
+        if (ch == '\r' || ch == '\n' || ch == ' ' || ch == '\t') continue;
+        if (ch == '=') {
+            quad[qn++] = 0;
+            if (qn == 4) {
+                unsigned int v = ((unsigned int)quad[0] << 18) | ((unsigned int)quad[1] << 12) |
+                                 ((unsigned int)quad[2] << 6) | (unsigned int)quad[3];
+                buf[n++] = (unsigned char)((v >> 16) & 0xFF);
+                if (s[i - 1] != '=') buf[n++] = (unsigned char)((v >> 8) & 0xFF);
+                qn = 0;
+            }
+            continue;
+        }
+        int v = b64val(ch);
+        if (v < 0) { aic_xfree(buf); return AIC_E_FORMAT; }
+        quad[qn++] = v;
+        if (qn == 4) {
+            unsigned int x = ((unsigned int)quad[0] << 18) | ((unsigned int)quad[1] << 12) |
+                             ((unsigned int)quad[2] << 6) | (unsigned int)quad[3];
+            buf[n++] = (unsigned char)((x >> 16) & 0xFF);
+            buf[n++] = (unsigned char)((x >> 8) & 0xFF);
+            buf[n++] = (unsigned char)(x & 0xFF);
+            qn = 0;
+        }
+    }
+    if (qn == 2) {
+        unsigned int x = ((unsigned int)quad[0] << 18) | ((unsigned int)quad[1] << 12);
+        buf[n++] = (unsigned char)((x >> 16) & 0xFF);
+    } else if (qn == 3) {
+        unsigned int x = ((unsigned int)quad[0] << 18) | ((unsigned int)quad[1] << 12) |
+                         ((unsigned int)quad[2] << 6);
+        buf[n++] = (unsigned char)((x >> 16) & 0xFF);
+        buf[n++] = (unsigned char)((x >> 8) & 0xFF);
+    } else if (qn == 1) {
+        aic_xfree(buf);
+        return AIC_E_FORMAT;
+    }
+    *out = buf;
+    *out_len = n;
+    return AIC_OK;
+}
+

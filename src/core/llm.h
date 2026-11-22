@@ -36,6 +36,15 @@ size_t aic_llm_model_count(void);
 const aic_llm_model *aic_llm_model_at(size_t i);
 /* 找不到返回 NULL。 */
 const aic_llm_model *aic_llm_model_find(const char *id);
+/* 从配置文件追加模型（技术设计 9.3「新增模型通过配置文件追加，不改动核心代码」）。
+ * 文件是 JSON：{"models":[{"id","name","summary","context_tokens",
+ * "price_in_micro_per_mtok","price_out_micro_per_mtok"}]}，同 id 覆盖内置项。
+ * 已加载的模型不会因为再次调用而重复追加。 */
+int aic_llm_models_load_json(const char *json, size_t len, char *err, size_t errlen);
+int aic_llm_models_load_file(const char *path, char *err, size_t errlen);
+/* 恢复成只有两个内置模型（测试与「配置文件被删」时用）。 */
+void aic_llm_models_reset(void);
+
 /* 找不到时回退到默认模型（flash）。 */
 const aic_llm_model *aic_llm_model_or_default(const char *id);
 
@@ -80,6 +89,11 @@ typedef struct aic_llm_request_opts {
     double temperature;       /* <0 表示不写该字段 */
     int    max_tokens;        /* <=0 表示不写该字段 */
     int    context_messages;  /* 带入的历史消息条数 */
+    /* 扩展点 message.transform 的结果：只替换「最后一条 user 消息」送进模型的文本，
+     * 库里保存的仍是用户原文；NULL 表示不替换。 */
+    const char *last_user_text;
+    /* 扩展点 tool.provider 的结果：原样作为请求的 "tools" 数组；NULL 表示不带工具。 */
+    const char *tools_json;
 } aic_llm_request_opts;
 
 aic_llm_request_opts aic_llm_request_defaults(void);

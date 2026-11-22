@@ -25,9 +25,9 @@
 #define MARKER "AICSETUP-PAYLOAD-V1"
 #define MARKER_LEN (sizeof(MARKER) - 1)
 #define APP_NAME L"Sai"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.2.0"
 #define UNINST_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Sai"
-#define INSTALLER_VERSION "Sai Setup 1.1.0"
+#define INSTALLER_VERSION "Sai Setup 1.2.0"
 
 static int g_silent = 0;
 static WCHAR g_dir[MAX_PATH * 2];
@@ -360,7 +360,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
             int n;
             GetLocalTime(&st);
             n = snprintf(body, sizeof(body),
-                         "Sai Setup 1.1.0\ntime=%04u-%02u-%02u %02u:%02u:%02u\nfiles=%d shortcut=%s registry=%s\n",
+                         "Sai Setup 1.2.0\ntime=%04u-%02u-%02u %02u:%02u:%02u\nfiles=%d shortcut=%s registry=%s\n",
                          st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
                          done, sc == 0 ? "ok" : "failed", rg == 0 ? "ok" : "failed");
             if (n > 0) write_file(logpath, (const unsigned char *)body, (size_t)n);

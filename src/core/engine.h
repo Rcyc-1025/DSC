@@ -54,6 +54,16 @@ int aic_engine_send(aic_engine *e, const char *conv_id, const char *user_text,
 /* 流式增量回调（在调用 send 的线程上同步触发；界面据此边收边显示）。 */
 void aic_engine_set_stream_cb(aic_engine *e, void (*fn)(void *ud, const char *delta), void *ud);
 
+/* 扩展点挂钩（技术设计 9.1 / 10.1）：
+ *   message.transform —— 改写"送进模型的最后一条 user 文本"，库里仍保存用户原文；
+ *   tool.provider     —— 提供请求里的 tools 数组（返回原始 JSON 数组文本）。
+ * 任一挂钩返回非 AIC_OK 时按"该扩展点不可用"处理，不影响正常对话。 */
+typedef int (*aic_engine_text_fn)(void *ud, const char *text, char *out, size_t cap,
+                                  char *err, size_t errlen);
+typedef int (*aic_engine_tools_fn)(void *ud, sb *out_json, char *err, size_t errlen);
+void aic_engine_set_transform(aic_engine *e, aic_engine_text_fn fn, void *ud);
+void aic_engine_set_tools_provider(aic_engine *e, aic_engine_tools_fn fn, void *ud);
+
 /* 重新生成上一条回复（技术设计 6.1）：旧回复标记为 superseded（保留可回看），
  * 新回复获得新 id。out_old_id 可为空。 */
 int  aic_engine_regenerate(aic_engine *e, const char *conv_id, char *out_old_id, size_t old_cap,

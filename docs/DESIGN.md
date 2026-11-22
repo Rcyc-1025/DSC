@@ -1,6 +1,6 @@
 # Sai 技术设计（实现说明）
 
-> 本文件说明 "Sai" 1.1.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "Sai" 1.2.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)。
 
 ## 1. 目标与边界
@@ -53,7 +53,7 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 | user_profile | id=1 单行、name、avatar_path、gender、birthday、occupation、extra_note | 昵称 ≤40 字符、职业 ≤60、补充说明 ≤500、生日 YYYY-MM-DD、头像必须本地相对路径 |
 | persona / prompt_version | base_prompt、version | 改提示词才 +1 版本；旧版本保留可回溯 |
 | conversation | mode('qa'/'chat')、persona_id、model_id、pinned、last_seq | 部分唯一索引 uq_conversation_chat_single(mode) WHERE mode='chat' 保证聊天模式只有一个会话 |
-| message | conversation_id、seq、role、content、recalled、edited_at、original_content | UNIQUE(conversation_id,seq)；撤回写 recalled=1 并把正文换成系统提示，原文进 original_content |
+| message | conversation_id、seq、role、content、recalled、edited_at、original_content、superseded | UNIQUE(conversation_id,seq)；撤回写 recalled=1 并把正文换成系统提示，原文进 original_content；重新生成把旧回复置 superseded=1，不再进上下文但留在库与导出里 |
 | setting | key/value | 主题、默认模式、模型、上下文条数、撤回窗、更新周期等 |
 | usage_ledger | prompt/completion/total tokens、cost_micros | 微元（1e-6 元）存储，避免浮点误差 |
 | guide_progress | step_id、completed_at、skipped | 九步指南，跳过单独标记 |
@@ -77,7 +77,9 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 
 1. 用户输入 → engine 先落库用户消息（失败则保留草稿，不丢内容）；
 2. 组装系统提示词：基础指令 → 人设 → 用户资料变量（未填替换为空串）→ 插件片段（按扩展点顺序拼接）；
-3. 按会话模型与最近 N 条未撤回消息组装请求体（JSON，stream=true）；
+3. 按会话模型与最近 N 条未撤回、未作废消息组装请求体（JSON，stream=true）；
+   组装时可套两个扩展点：message.transform 只替换**最后一条 user 消息**送模型的文本（库里原文不动），
+   tool.provider 产出的 JSON 写进请求的 tools 字段；两者都返回非 0 即视为「未启用」并退回原样请求；
 4. 传输层（可注入）返回流式片段 → SSE 解析器产出 DELTA / USAGE / DONE / ERROR 事件；
 5. 增量拼成回复后落库助手消息，按模型单价算费用写入 usage_ledger；
 6. 失败分类：网络/服务端可退避重试（500ms 起指数增长，上限 8 秒，最多 3 次），凭证失效跳 Key 设置且不清会话，
@@ -107,7 +109,10 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 - ABI：int (*aic_plugin_call)(const char *request_json, char *out, size_t out_cap)，输出上限 64KiB；
 - 宿主用 CreateProcessW + CREATE_NO_WINDOW 启动，超时（默认 5 秒）TerminateProcess，主程序继续运行；
 - 崩溃/超时后写 setting plugin.crash.<id> 并禁用该插件，错误文案写入用户可见提示；
-- 安装前展示来源、版本、权限、扩展点并要求确认；插件目录 plugins/<id>/ 与核心数据分离，卸载时用户决定是否保留数据。
+- 清单可选 sha256：给了就校验入口文件哈希，不符拒绝安装（AIC_E_CHECKSUM）；
+- 进程塞进 Job Object：内存上限 128MB、CPU 上限 5 秒，超限由内核结束并禁用插件；
+- 安装前展示来源、版本、权限、扩展点、入口与入口哈希并要求确认；同名插件已安装时走覆盖安装（aic_plugin_install_ex allow_overwrite=1），不静默替换；
+- 插件目录 plugins/<id>/ 与核心数据分离（表里记 data_dir），卸载时用户决定是否保留数据。
 
 ## 8. 更新与数据保护（FR-07 / FR-08）
 
@@ -132,7 +137,8 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 ## 8.3 线程模型（§4.2）
 
 界面线程只做绘制与输入；网络发送、流式解析、导出、导入、更新下载、余额查询、备份都在工作线程执行，
-结果通过 `PostMessage`（`WM_APP_DELTA` / `WM_APP_DONE` / `WM_APP_IO` / `WM_APP_UPD` / `WM_APP_BAL`）回到界面线程。
+结果通过 `PostMessage`（`WM_APP_DELTA` / `WM_APP_DONE` / `WM_APP_IO` / `WM_APP_UPD` / `WM_APP_BAL`）回到界面线程；
+备份、恢复、清理与更新下载也在工作线程里跑，界面只收结果；会话正文按 100 条一页取（`aic_msg_page`），万条会话不整表进内存。
 界面线程不直接操作数据库句柄做批量读写，SQLite 以 serialized 模式编译（`SQLITE_THREADSAFE=1`），
 写操作统一走事务，跨线程写入由连接自身的互斥保护。
 
@@ -155,7 +161,7 @@ aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分
 ## 11. 构建与打包
 
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test|cli|gui|guidiag
-    python tools\shots.py             # 离屏渲染 8 张界面截图
+    python tools\shots.py             # 离屏渲染 12 张界面截图（对话/我/设置/问答/指南/AI 信息/向导/窄窗/进阶指南/导出/消息操作/插件）
     python tools\build_android.py     # 交叉编译 + javac + d8 + aapt2 + zipalign + apksigner
     python tools\verify_android.py    # APK 产物校验（无真机时的自动化证据）
     python tools\package_win.py       # 组装 Windows 便携包并算 SHA-256
@@ -172,5 +178,6 @@ Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
    余额仍取本地账本口径，头像不读 EXIF 方向，系统对话框外观不随深色主题切换。
 3. Windows 产物未做代码签名（本机无 signtool/公开证书）；Android APK 用自签名 key。
 4. 32 位 Windows 未构建；ARM64 为交叉编译产物（便携 zip），未在 ARM64 硬件上运行。
-5. 插件扩展点中 prompt.fragment（提示词片段）与 ui.panel（面板 describe/invoke）已接通；message.transform 与
-tool.provider 只有协议与登记，界面尚未消费。
+5. 插件扩展点四个都已在 Windows 侧接通：prompt.fragment 拼提示词、ui.panel（describe/invoke）面板按钮、
+message.transform 改送模型的最后一条 user 文本、tool.provider 产出 tools 声明；Android 侧只做到清单管理，
+扩展点调用尚未接（state 里 pluginProcAvailable=0）。

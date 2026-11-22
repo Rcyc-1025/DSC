@@ -36,7 +36,8 @@ typedef struct aic_plugin_manifest {
     char author[AIC_PLUGIN_NAME_MAX];
     char entry[128];                 /* 动态库文件名 */
     char permissions[256];           /* 逗号分隔的权限声明 */
-    char extension_points[256];      /* 逗号分隔的扩展点名 */
+    char extension_points[256];      /* 逗号分隔的扩展点名（按声明顺序拼接） */
+    char sha256[65];                 /* 可选：entry 文件的 SHA-256（技术设计 10.2 校验签名或哈希） */
 } aic_plugin_manifest;
 
 typedef struct aic_plugin {
@@ -57,9 +58,14 @@ typedef struct aic_plugin {
 int aic_plugin_parse_manifest(const char *json, size_t len, aic_plugin_manifest *out,
                               char *err, size_t errlen);
 
-/* 安装：校验清单 → 复制文件到 plugins_root/<id> → 写库（默认禁用，等用户启用）。 */
+/* 安装：校验清单 → 校验 entry 的 SHA-256（清单里给了才校验）→ 复制文件到 plugins_root/<id>
+ * → 写库（默认禁用，等用户启用）。
+ * allow_overwrite=1 表示用户确认「覆盖已安装的同名插件」（技术设计 10.2）。 */
 int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifest_path,
                        const char *import_source, aic_plugin *out, char *err, size_t errlen);
+int aic_plugin_install_ex(aic_db *db, const char *plugins_root, const char *manifest_path,
+                          const char *import_source, int allow_overwrite,
+                          aic_plugin *out, char *err, size_t errlen);
 
 int aic_plugin_get(aic_db *db, const char *id, aic_plugin *out);
 /* enabled<0 表示全部。 */

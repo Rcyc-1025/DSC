@@ -3,46 +3,162 @@
 #include "store_message.h"
 #include "store_setting.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* ---------- 模型目录 ---------- */
-static const aic_llm_model g_models[] = {
-    { AIC_MODEL_FLASH, "DeepSeek V4.1 Flash", "短轮次快响应，日常陪伴对话默认用它", 65536,
-      2000000, 8000000 },
-    { AIC_MODEL_PRO, "DeepSeek V4 Pro", "长文本与复杂推理，回答更慢但更稳", 131072,
-      4000000, 16000000 }
-};
+/* 内置两项 + 配置文件追加项（同 id 覆盖），文本字段各有独立存储，避免悬空指针。 */
+#define AIC_LLM_MODELS_MAX 16
+#define AIC_LLM_MODEL_TEXT 128
 
-size_t aic_llm_model_count(void) { return sizeof(g_models) / sizeof(g_models[0]); }
+typedef struct model_slot {
+    aic_llm_model m;
+    char id[AIC_LLM_MODEL_TEXT];
+    char name[AIC_LLM_MODEL_TEXT];
+    char summary[256];
+} model_slot;
 
-const aic_llm_model *aic_llm_model_at(size_t i)
+static model_slot g_slots[AIC_LLM_MODELS_MAX];
+static size_t g_model_n;
+
+static void model_set(model_slot *s, const char *id, const char *name, const char *summary,
+                     long long ctx, long long pin, long long pout)
 {
-    if (i >= aic_llm_model_count()) return NULL;
-    return &g_models[i];
+    aic_strlcpy_utf8(s->id, sizeof(s->id), id ? id : "");
+    aic_strlcpy_utf8(s->name, sizeof(s->name), name ? name : "");
+    aic_strlcpy_utf8(s->summary, sizeof(s->summary), summary ? summary : "");
+    s->m.id = s->id;
+    s->m.name = s->name;
+    s->m.summary = s->summary;
+    s->m.context_tokens = ctx;
+    s->m.price_in_micro_per_mtok = pin;
+    s->m.price_out_micro_per_mtok = pout;
 }
 
-const aic_llm_model *aic_llm_model_find(const char *id)
+static void ensure_models(void)
 {
+    if (g_model_n > 0) return;
+    model_set(&g_slots[0], AIC_MODEL_FLASH, "DeepSeek V4.1 Flash",
+              "短轮次快响应，日常陪伴对话默认用它", 65536, 2000000, 8000000);
+    model_set(&g_slots[1], AIC_MODEL_PRO, "DeepSeek V4 Pro",
+              "长文本与复杂推理，回答更慢但更稳", 131072, 4000000, 16000000);
+    g_model_n = 2;
+}
+
+static aic_llm_model *find_mut(const char *id)
+{
+    ensure_models();
     if (!id || !id[0]) return NULL;
-    for (size_t i = 0; i < aic_llm_model_count(); i++) {
-        if (strcmp(g_models[i].id, id) == 0) return &g_models[i];
+    for (size_t i = 0; i < g_model_n; i++) {
+        if (strcmp(g_slots[i].id, id) == 0) return &g_slots[i].m;
     }
     return NULL;
 }
 
+size_t aic_llm_model_count(void)
+{
+    ensure_models();
+    return g_model_n;
+}
+
+const aic_llm_model *aic_llm_model_at(size_t i)
+{
+    ensure_models();
+    if (i >= g_model_n) return NULL;
+    return &g_slots[i].m;
+}
+
+const aic_llm_model *aic_llm_model_find(const char *id)
+{
+    return find_mut(id);
+}
+
 const aic_llm_model *aic_llm_model_or_default(const char *id)
 {
+    ensure_models();
     const aic_llm_model *m = aic_llm_model_find(id);
-    return m ? m : &g_models[0];
+    return m ? m : &g_slots[0].m;
+}
+
+void aic_llm_models_reset(void)
+{
+    g_model_n = 0;
+    memset(g_slots, 0, sizeof(g_slots));
+    ensure_models();
+}
+
+/* 配置文件追加：{"models":[{...}]} 或直接数组；同 id 覆盖已有项。 */
+int aic_llm_models_load_json(const char *json, size_t len, char *err, size_t errlen)
+{
+    if (!json) return AIC_E_INVAL;
+    ensure_models();
+    jv *root = NULL;
+    if (jv_parse(json, len, &root, err, errlen) != AIC_OK) { jv_free(root); return AIC_E_FORMAT; }
+
+    const jv *arr = root;
+    if (root && root->type == JV_OBJ) arr = jv_get(root, "models");
+    if (!arr || arr->type != JV_ARR) {
+        if (err && errlen) snprintf(err, errlen, "配置文件缺少 models 数组");
+        jv_free(root);
+        return AIC_E_FORMAT;
+    }
+    size_t added = 0;
+    for (size_t i = 0; i < jv_len(arr); i++) {
+        const jv *it = jv_at(arr, i);
+        if (!it || it->type != JV_OBJ) continue;
+        const char *id = jv_get_str(it, "id", NULL);
+        if (!id || !id[0]) {
+            if (err && errlen) snprintf(err, errlen, "第 %d 个模型缺少 id", (int)(i + 1));
+            jv_free(root);
+            return AIC_E_FORMAT;
+        }
+        aic_llm_model *exist = find_mut(id);
+        model_slot *slot = NULL;
+        if (exist) {
+            slot = (model_slot *)((char *)exist - offsetof(model_slot, m));
+        } else {
+            if (g_model_n >= AIC_LLM_MODELS_MAX) {
+                if (err && errlen) snprintf(err, errlen, "模型数量上限为 %d", AIC_LLM_MODELS_MAX);
+                jv_free(root);
+                return AIC_E_LIMIT;
+            }
+            slot = &g_slots[g_model_n++];
+        }
+        model_set(slot, id, jv_get_str(it, "name", id),
+                  jv_get_str(it, "summary", ""),
+                  jv_get_ll(it, "context_tokens", 65536),
+                  jv_get_ll(it, "price_in_micro_per_mtok", 2000000),
+                  jv_get_ll(it, "price_out_micro_per_mtok", 8000000));
+        added++;
+    }
+    jv_free(root);
+    if (added == 0 && err && errlen) snprintf(err, errlen, "配置文件里没有可用的模型项");
+    return AIC_OK;
+}
+
+int aic_llm_models_load_file(const char *path, char *err, size_t errlen)
+{
+    if (!path) return AIC_E_INVAL;
+    if (!aic_path_exists(path)) return AIC_E_NOTFOUND;
+    char *data = NULL;
+    size_t len = 0;
+    int rc = aic_file_read_all(path, &data, &len);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "读取模型配置失败：%s", aic_strerror(rc));
+        return rc;
+    }
+    rc = aic_llm_models_load_json(data, len, err, errlen);
+    aic_xfree(data);
+    return rc;
 }
 
 /* ---------- 费用 ---------- */
 long long aic_llm_cost_micros(const aic_llm_model *m, long long prompt_tokens,
                               long long completion_tokens)
 {
-    if (!m) m = &g_models[0];
+    if (!m) m = aic_llm_model_or_default(NULL);
     if (prompt_tokens < 0) prompt_tokens = 0;
     if (completion_tokens < 0) completion_tokens = 0;
     long long in_cost = 0, out_cost = 0;
@@ -173,15 +289,21 @@ int aic_llm_build_request(aic_db *db, const char *conv_id, const char *model_id,
         const char *role = msgs[i].role;
         if (strcmp(role, "user") != 0 && strcmp(role, "assistant") != 0 && strcmp(role, "system") != 0)
             continue;
+        const char *content = msgs[i].content ? msgs[i].content : "";
+        /* message.transform：只替换最后一条 user 消息（库里的原文不动）。 */
+        if (opts->last_user_text && opts->last_user_text[0] && i + 1 == n &&
+            strcmp(role, "user") == 0)
+            content = opts->last_user_text;
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "role", role);
-        jw_put_str(&w, "content", msgs[i].content ? msgs[i].content : "");
+        jw_put_str(&w, "content", content);
         jw_obj_end(&w);
     }
     jw_arr_end(&w);
     jw_put_bool(&w, "stream", opts->stream ? 1 : 0);
     if (opts->temperature >= 0.0) jw_put_double(&w, "temperature", opts->temperature);
     if (opts->max_tokens > 0) jw_put_int(&w, "max_tokens", opts->max_tokens);
+    if (opts->tools_json && opts->tools_json[0]) jw_put_raw(&w, "tools", opts->tools_json);
     jw_obj_end(&w);
 
     aic_msg_free_array(msgs, n);

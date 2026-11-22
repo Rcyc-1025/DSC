@@ -44,7 +44,11 @@ int aic_msg_edit(aic_db *db, const char *id, const char *new_content, char *err,
 int aic_msg_delete(aic_db *db, const char *id);
 /* 重新生成：把旧回复标记为被替换（保留数据，不删除）。 */
 int aic_msg_supersede(aic_db *db, const char *id);
+/* 撤销修改：正文回滚到 original_content，并清掉 original_content 与 edited_at。 */
+int aic_msg_restore(aic_db *db, const char *id);
 /* 会话内最后一条未被替换、未撤回的助手消息；没有返回 AIC_E_NOTFOUND。 */
+/* 最近一条未撤回、未替换的 user 消息（扩展点 message.transform 的输入）。 */
+int aic_msg_last_user(aic_db *db, const char *conv_id, aic_message *out);
 int aic_msg_last_assistant(aic_db *db, const char *conv_id, aic_message *out);
 int aic_msg_count(aic_db *db, const char *conv_id, long long *out_count);
 /* 会话内消息的创建时间（用于撤回时间窗判断）。 */

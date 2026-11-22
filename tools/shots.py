@@ -27,6 +27,10 @@ SCENES = [
     ('06_ai_info', ['--ready', '--demo', '--overlay', '1']),
     ('07_wizard', ['--shot-first']),
     ('08_narrow', ['--ready', '--demo', '--size', '900x620']),
+    ('09_advanced', ['--ready', '--demo', '--adv']),
+    ('10_export', ['--ready', '--demo', '--overlay', '3']),
+    ('11_msg_menu', ['--ready', '--demo', '--overlay', '4']),
+    ('12_plugins', ['--ready', '--demo', '--overlay', '6']),
 ]
 
 

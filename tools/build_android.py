@@ -72,9 +72,14 @@ def main():
          '-nowarn', '-cp', PLATFORM, '-d', os.path.join(OUT, 'classes')] + java_srcs)
 
     # 3. d8 -> classes.dex
-    class_files = glob.glob(os.path.join(OUT, 'classes', '**', '*.class'), recursive=True)
+    #    类文件逐个当参数传给 d8 会撞上 Windows 命令行长度上限（内部类一多就 "The command line is too long."），
+    #    先打成 jar 再让 d8 读这一个输入。
+    classes_jar = os.path.join(OUT, 'classes.jar')
+    if os.path.exists(classes_jar):
+        os.remove(classes_jar)
+    run([os.path.join(JDK, 'jar.exe'), 'cf', classes_jar, '-C', os.path.join(OUT, 'classes'), '.'])
     run([os.path.join(BT, 'd8.bat'), '--min-api', '24', '--lib', PLATFORM,
-         '--output', os.path.join(OUT, 'dex')] + class_files)
+         '--output', os.path.join(OUT, 'dex'), classes_jar])
 
     # 4. aapt2 compile + link
     res_dir = os.path.join(APP, 'res')
@@ -84,7 +89,7 @@ def main():
     manifest = os.path.join(APP, 'AndroidManifest.xml')
     run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
          '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '2', '--version-name', '1.1.0',
+         '--target-sdk-version', '34', '--version-code', '3', '--version-name', '1.2.0',
          '--auto-add-overlay', flat_zip])
 
     # 5. 塞入 classes.dex 与 lib/arm64-v8a/libaic.so

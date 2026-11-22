@@ -108,6 +108,16 @@ int aic_plugin_parse_manifest(const char *json, size_t len, aic_plugin_manifest 
     flatten(root, "permissions", out->permissions, sizeof(out->permissions));
     flatten(root, "extension_points", out->extension_points, sizeof(out->extension_points));
 
+    v = jv_get_str(root, "sha256", NULL);
+    if (v) {
+        if (!aic_hex_valid(v, 64)) {
+            jv_free(root);
+            if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单的 sha256 必须是 64 位十六进制串");
+            return AIC_E_FORMAT;
+        }
+        aic_strlcpy_utf8(out->sha256, sizeof(out->sha256), v);
+    }
+
     jv_free(root);
     return AIC_OK;
 }
@@ -167,6 +177,13 @@ static void read_row(aic_stmt *st, aic_plugin *p)
 int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifest_path,
                        const char *import_source, aic_plugin *out, char *err, size_t errlen)
 {
+    return aic_plugin_install_ex(db, plugins_root, manifest_path, import_source, 0, out, err, errlen);
+}
+
+int aic_plugin_install_ex(aic_db *db, const char *plugins_root, const char *manifest_path,
+                          const char *import_source, int allow_overwrite,
+                          aic_plugin *out, char *err, size_t errlen)
+{
     if (!db || !plugins_root || !manifest_path) return AIC_E_INVAL;
     if (err && errlen) err[0] = '\0';
 
@@ -182,9 +199,10 @@ int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifes
     aic_xfree(raw);
     if (rc != AIC_OK) return rc;
 
-    /* 已安装则拒绝（升级走卸载再装，避免半途覆盖）。 */
+    /* 已安装：默认提示冲突，用户确认覆盖时走更新语义（技术设计 10.2「提示覆盖或取消」）。 */
     aic_plugin existing;
-    if (aic_plugin_get(db, mf.id, &existing) == AIC_OK) {
+    int has_existing = (aic_plugin_get(db, mf.id, &existing) == AIC_OK);
+    if (has_existing && !allow_overwrite) {
         if (err && errlen) snprintf(err, errlen, "插件 %s 已安装（版本 %s）", mf.id, existing.version);
         return AIC_E_CONFLICT;
     }
@@ -205,12 +223,30 @@ int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifes
         return AIC_E_NOTFOUND;
     }
 
+    /* 清单声明了 sha256 就先校验源文件（技术设计 10.2「校验签名或哈希」）。 */
+    if (mf.sha256[0]) {
+        char *data = NULL;
+        size_t len = 0;
+        rc = aic_file_read_all(entry_path, &data, &len);
+        if (rc != AIC_OK) {
+            if (err && errlen) aic_strlcpy_utf8(err, errlen, "读取插件入口文件失败");
+            return rc;
+        }
+        char sha[65];
+        aic_sha256_hex(data, len, sha);
+        aic_xfree(data);
+        if (strcmp(sha, mf.sha256) != 0) {
+            if (err && errlen) snprintf(err, errlen, "插件入口文件哈希校验失败（期望 %s，实际 %s）", mf.sha256, sha);
+            return AIC_E_CHECKSUM;
+        }
+    }
+
     char dst_dir[AIC_PLUGIN_PATH_MAX];
     char joined[1024];
     aic_path_join(joined, sizeof(joined), plugins_root, mf.id);
     aic_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
     if (aic_path_exists(dst_dir)) {
-        /* 上一次残留：先清掉，避免新旧文件混杂。 */
+        /* 上一次残留或覆盖安装：先清掉，避免新旧文件混杂。 */
         sb names;
         sb_init(&names);
         aic_dir_list(dst_dir, &names, '\n');
@@ -240,23 +276,44 @@ int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifes
 
     char ts[32];
     aic_now_iso8601(ts);
-    aic_stmt *st = aic_db_prepare(db,
-        "INSERT INTO plugin (" PLUGIN_COLS ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10);");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_text(st, 1, mf.id);
-    aic_stmt_bind_text(st, 2, mf.name);
-    aic_stmt_bind_text(st, 3, mf.version);
-    aic_stmt_bind_text(st, 4, mf.author);
-    aic_stmt_bind_text(st, 5, mf.entry);
-    aic_stmt_bind_text(st, 6, mf.permissions);
-    aic_stmt_bind_text(st, 7, mf.extension_points);
-    aic_stmt_bind_text(st, 8, import_source && import_source[0] ? import_source : "file");
-    aic_stmt_bind_text(st, 9, ts);
-    aic_stmt_bind_text(st, 10, dst_dir);
-    rc = aic_stmt_step(st);
-    aic_stmt_finalize(st);
-    if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
-    if (rc != AIC_OK) return rc;
+    const char *src_label = (import_source && import_source[0]) ? import_source : "file";
+    if (has_existing) {
+        aic_stmt *st = aic_db_prepare(db,
+            "UPDATE plugin SET name=?2, version=?3, author=?4, entry_path=?5, permissions=?6, "
+            "extension_points=?7, import_source=?8, data_dir=?9 WHERE id=?1;");
+        if (!st) return AIC_E_DB;
+        aic_stmt_bind_text(st, 1, mf.id);
+        aic_stmt_bind_text(st, 2, mf.name);
+        aic_stmt_bind_text(st, 3, mf.version);
+        aic_stmt_bind_text(st, 4, mf.author);
+        aic_stmt_bind_text(st, 5, mf.entry);
+        aic_stmt_bind_text(st, 6, mf.permissions);
+        aic_stmt_bind_text(st, 7, mf.extension_points);
+        aic_stmt_bind_text(st, 8, src_label);
+        aic_stmt_bind_text(st, 9, dst_dir);
+        rc = aic_stmt_step(st);
+        aic_stmt_finalize(st);
+        if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
+        if (rc != AIC_OK) return rc;
+    } else {
+        aic_stmt *st = aic_db_prepare(db,
+            "INSERT INTO plugin (" PLUGIN_COLS ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10);");
+        if (!st) return AIC_E_DB;
+        aic_stmt_bind_text(st, 1, mf.id);
+        aic_stmt_bind_text(st, 2, mf.name);
+        aic_stmt_bind_text(st, 3, mf.version);
+        aic_stmt_bind_text(st, 4, mf.author);
+        aic_stmt_bind_text(st, 5, mf.entry);
+        aic_stmt_bind_text(st, 6, mf.permissions);
+        aic_stmt_bind_text(st, 7, mf.extension_points);
+        aic_stmt_bind_text(st, 8, src_label);
+        aic_stmt_bind_text(st, 9, ts);
+        aic_stmt_bind_text(st, 10, dst_dir);
+        rc = aic_stmt_step(st);
+        aic_stmt_finalize(st);
+        if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
+        if (rc != AIC_OK) return rc;
+    }
 
     if (out) {
         memset(out, 0, sizeof(*out));
@@ -267,11 +324,10 @@ int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifes
         aic_strlcpy_utf8(out->entry, sizeof(out->entry), mf.entry);
         aic_strlcpy_utf8(out->permissions, sizeof(out->permissions), mf.permissions);
         aic_strlcpy_utf8(out->extension_points, sizeof(out->extension_points), mf.extension_points);
-        aic_strlcpy_utf8(out->import_source, sizeof(out->import_source),
-                         import_source && import_source[0] ? import_source : "file");
+        aic_strlcpy_utf8(out->import_source, sizeof(out->import_source), src_label);
         aic_strlcpy_utf8(out->dir, sizeof(out->dir), dst_dir);
         aic_strlcpy_utf8(out->installed_at, sizeof(out->installed_at), ts);
-        out->enabled = 0;
+        out->enabled = has_existing ? existing.enabled : 0;
     }
     return AIC_OK;
 }

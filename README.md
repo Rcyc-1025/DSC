@@ -9,6 +9,9 @@
 - 真实网络直连：WinHTTP（Windows）/ HttpURLConnection（Android），流式逐段渲染，生成中可停止、可重新生成
 - 数据管理：整包备份（数据库 + 头像 + 插件数据 + 校验清单）、一键恢复、旧备份清理
 - 更新：启动与固定周期检查 → 断点续传下载 → 哈希/版本校验 → 覆盖安装 → 失败回滚
+- 模型可选：内置 Flash / Pro 两个标识，数据目录放一份 `models.json` 就能追加或覆盖模型与单价
+- 长会话不卡：消息按 100 条一页加载，导出可选当前会话 / 全部会话 / 近 7 天，并可连同头像一起导出
+- 插件四个扩展点全部接通（提示词片段、面板、请求改写、工具声明），装前摊开权限与哈希再确认
 
 需求与技术设计见 `docs/DESIGN.md`，进阶用法见 `docs/ADVANCED.md`。English: [README.en.md](README.en.md)。
 
@@ -29,15 +32,14 @@
 
 ## 直接下载
 
-去 [Releases](https://github.com/Rcyc-1025/Sai/releases/latest)：
+每个版本在 Releases 页面提供下列产物（本仓库本地构建时产在 `dist\`）：
 
 | 文件 | 平台 |
 | --- | --- |
-| `Sai-1.1.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
-| `Sai-1.1.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `Sai-1.1.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `Sai-1.1.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
-| `Sai.apk` | Android arm64-v8a（minSdk 24） |
+| `Sai-1.2.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
+| `Sai-1.2.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `Sai-1.2.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `Sai-1.2.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 
 每个包都附同名 `.sha256`。
 
@@ -63,10 +65,10 @@ python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.1.0-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\Sai-1.2.0-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.1.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.1.0-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\Sai-1.2.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.2.0-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `Sai.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
@@ -83,7 +85,7 @@ python tools\make_installer.py       # dist\Sai-1.1.0-win-x64-setup.exe + .sha25
 | 文件 | 内容 |
 | --- | --- |
 | `docs/DESIGN.md` | 实现级技术设计：分层、数据模型、状态机、对话链路、跨平台策略 |
-| `docs/ADVANCED.md` | 进阶操作：提示词变量、双模式、导出导入、更新与数据管理 |
+| `docs/ADVANCED.md` | 进阶操作：提示词变量、双模式、导出导入、分页、模型配置、更新与数据管理 |
 | `docs/PLUGIN.md` | 插件清单字段、扩展点、C ABI、宿主协议与排错 |
 | `docs/RELEASE.md` | 版本号规则、发布流程、产物命名口径、ARM64 口径说明 |
 | `DEPENDENCIES.md` | 运行期与构建期依赖清单、明确不使用的依赖、升级约束 |

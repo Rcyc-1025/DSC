@@ -99,6 +99,10 @@ int  aic_version_compare(const char *a, const char *b);
 int  aic_version_valid(const char *v);
 /* 是否恰为 need_len 位的十六进制串。 */
 int  aic_hex_valid(const char *hex, size_t need_len);
+/* Base64 编解码（导出可选附带头像文件时用；标准表 + = 填充）。 */
+int  aic_base64_encode(const void *data, size_t len, sb *out);
+int  aic_base64_decode(const char *s, size_t len, unsigned char **out, size_t *out_len);
+
 /* 敏感字符串扫描：命中返回 1，并把命中位置描述写入 hit。 */
 int  aic_scan_sensitive(const char *text, sb *hit);
 

@@ -1967,6 +1967,282 @@ static void test_plugin_extra(aic_db *db)
     CHECK(strstr(resp, "\"count\":0") != NULL, "没有声明该扩展点的插件");
 }
 
+/* ---------- TDD 补齐项：Base64 / 导出范围 / 模型配置 / 插件哈希与覆盖 / 引擎扩展点 ---------- */
+static int tf_transform(void *ud, const char *text, char *out, size_t cap, char *err, size_t errlen)
+{
+    (void)ud; (void)err; (void)errlen;
+    snprintf(out, cap, "【改写】%s", text);
+    return AIC_OK;
+}
+
+static int tf_tools(void *ud, sb *out_json, char *err, size_t errlen)
+{
+    (void)ud; (void)err; (void)errlen;
+    sb_append(out_json, "[{\"type\":\"function\",\"function\":{\"name\":\"demo\"}}]");
+    return AIC_OK;
+}
+
+static void test_tdd_extra(aic_db *db)
+{
+    /* Base64 往返（导出附带头像与插件哈希展示都依赖它）。 */
+    sb b64;
+    sb_init(&b64);
+    unsigned char raw[] = { 0x00, 0x01, 0xFE, 0x7F, 'S', 'a', 'i' };
+    CHECK_EQ_INT(aic_base64_encode(raw, sizeof(raw), &b64), AIC_OK, "Base64 编码成功");
+    CHECK_EQ_STR(sb_cstr(&b64), "AAH+f1NhaQ==", "Base64 编码结果正确");
+    unsigned char *dec = NULL;
+    size_t dec_len = 0;
+    CHECK_EQ_INT(aic_base64_decode(sb_cstr(&b64), b64.len, &dec, &dec_len), AIC_OK, "Base64 解码成功");
+    CHECK_EQ_INT((int)dec_len, (int)sizeof(raw), "解码长度一致");
+    CHECK(dec && memcmp(dec, raw, sizeof(raw)) == 0, "解码内容一致");
+    aic_xfree(dec);
+    sb_free(&b64);
+    CHECK_EQ_INT(aic_base64_decode("!!!!", 4, &dec, &dec_len), AIC_E_FORMAT, "非法 Base64 报格式错误");
+
+    /* 模型配置追加（技术设计 9.3：新增模型通过配置文件追加，不改核心代码）。 */
+    CHECK_EQ_INT((int)aic_llm_model_count(), 2, "内置模型两个");
+    const char *cfg =
+        "{\"models\":[{\"id\":\"deepseekv4mini\",\"name\":\"DeepSeek V4 Mini\","
+        "\"summary\":\"配置文件追加的模型\",\"context_tokens\":32000,"
+        "\"price_in_micro_per_mtok\":1000000,\"price_out_micro_per_mtok\":2000000}]}";
+    char err[512];
+    err[0] = '\0';
+    CHECK_EQ_INT(aic_llm_models_load_json(cfg, strlen(cfg), err, sizeof(err)), AIC_OK,
+                 "从配置追加自定义模型");
+    CHECK_EQ_INT((int)aic_llm_model_count(), 3, "模型数增加到 3");
+    const aic_llm_model *cm = aic_llm_model_find("deepseekv4mini");
+    CHECK(cm != NULL, "能按 id 找到自定义模型");
+    CHECK_EQ_INT(cm ? cm->context_tokens : -1, 32000, "自定义模型上下文取自配置");
+    CHECK_EQ_INT(cm ? (int)aic_llm_cost_micros(cm, 1000, 1000) : -1, 3000,
+                 "自定义模型费用按配置单价计算");
+    /* 同 id 覆盖内置项。 */
+    const char *cfg2 = "{\"models\":[{\"id\":\"deepseekv4pro\",\"name\":\"覆盖后的 Pro\","
+                       "\"summary\":\"s\",\"context_tokens\":262144,"
+                       "\"price_in_micro_per_mtok\":1,\"price_out_micro_per_mtok\":1}]}";
+    CHECK_EQ_INT(aic_llm_models_load_json(cfg2, strlen(cfg2), err, sizeof(err)), AIC_OK,
+                 "同 id 覆盖内置模型");
+    CHECK_EQ_INT((int)aic_llm_model_count(), 3, "覆盖不改变模型数");
+    const aic_llm_model *pm = aic_llm_model_find(AIC_MODEL_PRO);
+    CHECK_EQ_INT(pm ? pm->context_tokens : -1, 262144, "内置模型被配置覆盖");
+    CHECK_EQ_INT(aic_llm_models_load_json("{\"models\":}", 11, err, sizeof(err)), AIC_E_FORMAT,
+                 "坏配置返回格式错误");
+    aic_llm_models_reset();
+    CHECK_EQ_INT((int)aic_llm_model_count(), 2, "重置后恢复内置两个模型");
+
+    /* 导出范围：当前会话 / 时间区间 / 附带头像。 */
+    aic_conversation c1, c2;
+    memset(&c1, 0, sizeof(c1));
+    memset(&c2, 0, sizeof(c2));
+    char title1[64], title2[64];
+    snprintf(title1, sizeof(title1), "范围会话甲_%lld", (long long)aic_now_ms());
+    snprintf(title2, sizeof(title2), "范围会话乙_%lld", (long long)aic_now_ms() + 1);
+    CHECK_EQ_INT(aic_conv_create(db, AIC_MODE_QA, title1, NULL, AIC_MODEL_FLASH, &c1), AIC_OK,
+                 "创建范围测试会话甲");
+    CHECK_EQ_INT(aic_conv_create(db, AIC_MODE_QA, title2, NULL, AIC_MODEL_FLASH, &c2), AIC_OK,
+                 "创建范围测试会话乙");
+    aic_message m1, m2;
+    memset(&m1, 0, sizeof(m1));
+    memset(&m2, 0, sizeof(m2));
+    CHECK_EQ_INT(aic_msg_append(db, c1.id, AIC_ROLE_USER, "甲会话的消息", AIC_MODEL_FLASH, &m1), AIC_OK,
+                 "甲会话写一条消息");
+    CHECK_EQ_INT(aic_msg_append(db, c2.id, AIC_ROLE_USER, "乙会话的消息", AIC_MODEL_FLASH, &m2), AIC_OK,
+                 "乙会话写一条消息");
+    aic_msg_free(&m1);
+    aic_msg_free(&m2);
+
+    sb out;
+    sb_init(&out);
+    aic_export_scope sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.scope = 1;
+    sc.conv_id = c1.id;
+    CHECK_EQ_INT(aic_export_json_ex(db, -1, &sc, &out, err, sizeof(err)), AIC_OK, "按当前会话导出");
+    CHECK(strstr(sb_cstr(&out), title1) != NULL, "包含当前会话");
+    CHECK(strstr(sb_cstr(&out), title2) == NULL, "不包含其它会话");
+
+    sb_reset(&out);
+    sc.scope = 2;
+    sc.conv_id = NULL;
+    sc.from_ms = (long long)aic_now_ms() - 3600000LL;
+    sc.to_ms = (long long)aic_now_ms() + 3600000LL;
+    CHECK_EQ_INT(aic_export_json_ex(db, -1, &sc, &out, err, sizeof(err)), AIC_OK, "按时间区间导出");
+    CHECK(strstr(sb_cstr(&out), title1) != NULL && strstr(sb_cstr(&out), title2) != NULL,
+          "区间内两个会话都在");
+
+    sb_reset(&out);
+    sc.from_ms = (long long)aic_now_ms() - 7200000LL;
+    sc.to_ms = (long long)aic_now_ms() - 3600000LL;
+    CHECK_EQ_INT(aic_export_json_ex(db, -1, &sc, &out, err, sizeof(err)), AIC_OK, "区间内无消息时导出");
+    CHECK(strstr(sb_cstr(&out), "\"conversations\":[]") != NULL, "无命中时会话列表为空");
+
+    /* 附带头像文件 */
+    char root[512];
+    snprintf(root, sizeof(root), "aic_test_scope_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(root);
+    char avdir[700], avfile[800];
+    aic_path_join(avdir, sizeof(avdir), root, "avatars");
+    aic_mkdir_p(avdir);
+    aic_path_join(avfile, sizeof(avfile), avdir, "demo.jpg");
+    CHECK_EQ_INT(aic_file_write_all(avfile, "JPEGDATA", 8), AIC_OK, "写出测试头像文件");
+    aic_profile prof;
+    memset(&prof, 0, sizeof(prof));
+    CHECK_EQ_INT(aic_profile_get(db, &prof), AIC_OK, "读取资料");
+    aic_strlcpy_utf8(prof.avatar_path, sizeof(prof.avatar_path), "avatars/demo.jpg");
+    CHECK_EQ_INT(aic_profile_set(db, &prof, err, sizeof(err)), AIC_OK, "资料写入头像路径");
+    sb_reset(&out);
+    sc.scope = 0;
+    sc.from_ms = 0;
+    sc.to_ms = 0;
+    sc.include_avatars = 1;
+    sc.root = root;
+    CHECK_EQ_INT(aic_export_json_ex(db, -1, &sc, &out, err, sizeof(err)), AIC_OK, "导出并附带头像");
+    CHECK(strstr(sb_cstr(&out), "\"avatars\":[{") != NULL, "导出含 avatars 数组");
+    CHECK(strstr(sb_cstr(&out), "data_base64") != NULL, "头像以 base64 附带");
+    sb_free(&out);
+
+    /* 插件：哈希校验与覆盖安装（技术设计 10.2）。 */
+    char pdir[400], psrc[500], proot[500];
+    snprintf(pdir, sizeof(pdir), "aic_test_plus_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(pdir);
+    aic_path_join(psrc, sizeof(psrc), pdir, "src");
+    aic_mkdir_p(psrc);
+    aic_path_join(proot, sizeof(proot), pdir, "plugins");
+    aic_mkdir_p(proot);
+    char pdll[700], pjson[700];
+    aic_path_join(pdll, sizeof(pdll), psrc, "demo.dll");
+    CHECK_EQ_INT(aic_file_write_all(pdll, "MZDLL", 5), AIC_OK, "写出插件模块");
+    char dll_hash[65];
+    aic_sha256_hex("MZDLL", 5, dll_hash);
+    CHECK_EQ_INT((int)strlen(dll_hash), 64, "计算插件模块哈希");
+    char mf[1600];
+    snprintf(mf, sizeof(mf),
+             "{\"id\":\"scope_demo\",\"name\":\"范围演示\",\"version\":\"1.0.0\",\"author\":\"t\","
+             "\"entry\":\"demo.dll\",\"permissions\":[],\"extension_points\":[],\"sha256\":\"%s\"}",
+             dll_hash);
+    aic_path_join(pjson, sizeof(pjson), psrc, "plugin.json");
+    CHECK_EQ_INT(aic_file_write_all(pjson, mf, strlen(mf)), AIC_OK, "写出带哈希的插件清单");
+    aic_plugin p1;
+    memset(&p1, 0, sizeof(p1));
+    err[0] = '\0';
+    CHECK_EQ_INT(aic_plugin_install_ex(db, proot, pjson, "file", 0, &p1, err, sizeof(err)), AIC_OK,
+                 "哈希匹配时安装成功");
+    aic_plugin_free(&p1);
+    memset(&p1, 0, sizeof(p1));
+    CHECK_EQ_INT(aic_plugin_install_ex(db, proot, pjson, "file", 0, &p1, err, sizeof(err)), AIC_E_CONFLICT,
+                 "已安装同名插件时报冲突");
+    memset(&p1, 0, sizeof(p1));
+    CHECK_EQ_INT(aic_plugin_install_ex(db, proot, pjson, "file", 1, &p1, err, sizeof(err)), AIC_OK,
+                 "确认覆盖后安装成功");
+    aic_plugin_free(&p1);
+    /* 哈希不符时拒绝安装 */
+    char bad_mf[1600];
+    snprintf(bad_mf, sizeof(bad_mf),
+             "{\"id\":\"scope_bad\",\"name\":\"坏哈希\",\"version\":\"1.0.0\",\"author\":\"t\","
+             "\"entry\":\"demo.dll\",\"permissions\":[],\"extension_points\":[],"
+             "\"sha256\":\"%s\"}", "0000000000000000000000000000000000000000000000000000000000000000");
+    CHECK_EQ_INT(aic_file_write_all(pjson, bad_mf, strlen(bad_mf)), AIC_OK, "写出哈希不符的清单");
+    memset(&p1, 0, sizeof(p1));
+    err[0] = '\0';
+    CHECK_EQ_INT(aic_plugin_install_ex(db, proot, pjson, "file", 0, &p1, err, sizeof(err)), AIC_E_CHECKSUM,
+                 "哈希不符时拒绝安装");
+    CHECK(strstr(err, "哈希校验失败") != NULL, "哈希失败给出中文原因");
+
+    /* 引擎扩展点：message.transform 改写送模型文本、tool.provider 提供 tools 数组。 */
+    aic_conversation c3;
+    memset(&c3, 0, sizeof(c3));
+    /* 聊天模式的唯一会话可能已被前面的用例建出来，取不到新建就用已有的。 */
+    if (aic_conv_create(db, AIC_MODE_CHAT, "扩展点会话", NULL, AIC_MODEL_FLASH, &c3) != AIC_OK) {
+        CHECK_EQ_INT(aic_conv_get_chat(db, &c3), AIC_OK, "取到聊天模式的唯一会话");
+    }
+    fake_transport fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.chunks[0] = "data: {\"choices\":[{\"delta\":{\"content\":\"好的\"}}]}\n\ndata: [DONE]\n\n";
+    fake.chunk_n = 1;
+    aic_llm_transport tr;
+    memset(&tr, 0, sizeof(tr));
+    tr.ud = &fake;
+    tr.post_stream = fake_post;
+    tr.probe = fake_probe;
+    aic_engine *eng = NULL;
+    CHECK_EQ_INT(aic_engine_create(db, &eng), AIC_OK, "创建扩展点引擎");
+    aic_engine_set_transport(eng, tr);
+    aic_engine_set_api_key(eng, "sk-test-key");
+    aic_engine_set_transform(eng, tf_transform, NULL);
+    aic_engine_set_tools_provider(eng, tf_tools, NULL);
+    aic_engine_result r3;
+    memset(&r3, 0, sizeof(r3));
+    err[0] = '\0';
+    CHECK_EQ_INT(aic_engine_send(eng, c3.id, "原始文本", &r3, err, sizeof(err)), AIC_OK,
+                 "带扩展点时发送成功");
+    CHECK(strstr(fake.last_body, "【改写】原始文本") != NULL, "送模型的文本被 message.transform 改写");
+    CHECK(strstr(fake.last_body, "\"tools\"") != NULL, "请求里带上 tool.provider 提供的 tools 数组");
+    aic_message lastu;
+    memset(&lastu, 0, sizeof(lastu));
+    CHECK_EQ_INT(aic_msg_last_user(db, c3.id, &lastu), AIC_OK, "取到最近一条用户消息");
+    CHECK_EQ_STR(lastu.content, "原始文本", "库里保存的仍是用户原文");
+    aic_msg_free(&lastu);
+    aic_engine_result_free(&r3);
+    aic_engine_destroy(eng);
+
+    /* 撤销修改：aic_msg_restore 把正文回滚到原文并清掉修改痕迹（技术设计 9.2）。 */
+    {
+        aic_message em;
+        memset(&em, 0, sizeof(em));
+        CHECK_EQ_INT(aic_msg_append(db, c1.id, AIC_ROLE_USER, "原始提问", AIC_MODEL_FLASH, &em), AIC_OK,
+                     "撤销测试落一条消息");
+        err[0] = '\0';
+        CHECK_EQ_INT(aic_msg_edit(db, em.id, "改过的提问", err, sizeof(err)), AIC_OK, "修改消息成功");
+        aic_message em2;
+        memset(&em2, 0, sizeof(em2));
+        CHECK_EQ_INT(aic_msg_get(db, em.id, &em2), AIC_OK, "读回修改后的消息");
+        CHECK_EQ_STR(em2.content, "改过的提问", "正文已改");
+        CHECK_EQ_STR(em2.original_content, "原始提问", "原文保留");
+        aic_msg_free(&em2);
+        CHECK_EQ_INT(aic_msg_restore(db, em.id), AIC_OK, "撤销修改成功");
+        memset(&em2, 0, sizeof(em2));
+        CHECK_EQ_INT(aic_msg_get(db, em.id, &em2), AIC_OK, "撤销后读回消息");
+        CHECK_EQ_STR(em2.content, "原始提问", "正文回滚到原文");
+        CHECK(em2.edited_at[0] == '\0', "撤销后清掉 edited_at");
+        CHECK(em2.original_content == NULL, "撤销后清掉 original_content");
+        aic_msg_free(&em2);
+        aic_msg_free(&em);
+    }
+
+    /* Markdown / 纯文本导出同样支持范围（技术设计 8.1）。 */
+    {
+        char xdir[512], mdp[700], txtp[700];
+        snprintf(xdir, sizeof(xdir), "aic_test_scope_md_%lld", (long long)aic_now_ms());
+        aic_mkdir_p(xdir);
+        aic_path_join(mdp, sizeof(mdp), xdir, "scope.md");
+        aic_path_join(txtp, sizeof(txtp), xdir, "scope.txt");
+        aic_export_scope s2;
+        memset(&s2, 0, sizeof(s2));
+        s2.scope = 1;
+        s2.conv_id = c1.id;
+        err[0] = '\0';
+        CHECK_EQ_INT(aic_export_write_markdown_ex(db, -1, &s2, mdp, err, sizeof(err)), AIC_OK,
+                     "按范围导出 Markdown");
+        CHECK_EQ_INT(aic_export_write_text_ex(db, -1, &s2, txtp, err, sizeof(err)), AIC_OK,
+                     "按范围导出纯文本");
+        char *txt = NULL;
+        size_t tlen = 0;
+        CHECK_EQ_INT(aic_file_read_all(mdp, &txt, &tlen), AIC_OK, "读回 Markdown 导出");
+        CHECK(txt && strstr(txt, title1) != NULL, "Markdown 含当前会话标题");
+        CHECK(txt && strstr(txt, title2) == NULL, "Markdown 不含其它会话");
+        aic_xfree(txt);
+        txt = NULL;
+        tlen = 0;
+        CHECK_EQ_INT(aic_file_read_all(txtp, &txt, &tlen), AIC_OK, "读回纯文本导出");
+        CHECK(txt && strstr(txt, "甲会话的消息") != NULL, "纯文本含当前会话正文");
+        CHECK(txt && strstr(txt, "乙会话的消息") == NULL, "纯文本不含其它会话正文");
+        aic_xfree(txt);
+    }
+    aic_msg_free(&m1);
+    aic_msg_free(&m2);
+    aic_conv_delete(db, c1.id);
+    aic_conv_delete(db, c2.id);
+}
+
 int main(void)
 {
     init_bin_dir();
@@ -2013,6 +2289,7 @@ int main(void)
         test_plugin_proc(db);
         test_regenerate(db);
         test_plugin_extra(db);
+        test_tdd_extra(db);
         test_avatar();
         test_perf(db);
 

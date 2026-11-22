@@ -1,4 +1,4 @@
-# 发布前证据（Sai 1.1.0）
+# 发布前证据（Sai 1.2.0）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 `8。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-24）。
@@ -7,7 +7,7 @@
 > 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 `13.4 已改为 `13.2）。
 > **产品名**：2026-11-22 的存档版本把产品名从「DeepSeek 陪伴对话软件」改为 **Sai**（正文仅 3 处 + 标题，功能参数与 FR 条目未变）；
 > 本次已按该版把可执行文件名、安装包/便携包名、Android 包名与应用名、文档与仓库名统一为 Sai，核心模块前缀 `aic_` 保持不动。
-> `2 的哈希是改名重建后的实测值，本文件 `3 起的数字（626 / 254 / 24 条 FR）也是改名后重新跑出来的。
+> `2 的哈希是改名重建后的实测值，本文件 §3 起的数字（694 / 274 / 24 条 FR）是 1.2.0 重建后重新跑出来的。
 
 ## 1. 构建环境（本机实测）
 
@@ -24,17 +24,17 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，1.1.0） | 1468849 | a6107db2efb3e7235843bbc7934774734e15928d08110955fe9f7354c233c680 |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1445485 | 270c33d1bcfc2177e0f4d5275182973497bb03d16e99c570d5c6d081f34e2d27 |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 994e264123d0c2ccdfac6afc998f4787f7789689eb871d1c19002f20c00a9513 |
-| build\test_core.exe（单元测试） | 1499486 | 76ffa742a5e4f93738ce6840513e2993f45ae821ceadc09c8b512dee41c51cbb |
+| build\Sai.exe（Windows 界面，1.2.0） | 1497679 | 04fa62cdf58cff8f8e8fb4ebd1cdc4b45a61ef97b529148461b69c202998d89f |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1462698 | a2e71d77cdd60d1ee039c94f06ed471b3daba373f2a0f9fa992cf939b7602bf9 |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 67cef858a80e55114c733c11dcac3ac6516c07089b322c055920122d56256f24 |
+| build\test_core.exe（单元测试） | 1525027 | fe4a8159d2591f90949fab043fa05ae8d989719d1ea0b04b0681b23d65db7d33 |
 | build_android\Sai.apk | 778702 | dbbc1bcf69b8364661f0a1b210f7fc3f1c937cb757943774467589f85c42c129 |
-| dist\Sai-1.1.0-win-x64-portable.zip | 1477967 | be18cc2b99ab0bcb3b97b2ceddc27deaee6c83931c120ab1b4acad29f40fa139 |
-| dist\Sai-1.1.0-win-x64-setup.exe | 3628039 | fc00d37719bd4e36d42e4e3de0ed6410f171c2ba6b5478319ee66a76c7597863 |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1413120 | 57547073fcbf010d9c8839adcfcd7eb3202b2b659956ab369e8bf74d750ba613 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 398d264d3d459826ac30624535ed8f9878706406d1ab8701f9e107823b6f6151 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 013b27abcfde399e955dff6c6c415e3c37ce9c8d19b1b12b98bc6da013bd49e0 |
-| dist\Sai-1.1.0-win-arm64-portable.zip | 830259 | eac4d98f57fb1b463a1167694ff1cbb970f0d5c46afb65dace7b93d89a8e5cf9 |
+| dist\Sai-1.2.0-win-x64-portable.zip | 1502465 | 33c76d20fe1857bcafea55b40927a8f5e2f65013bbec6cb8bb2f9bfd2538805e |
+| dist\Sai-1.2.0-win-x64-setup.exe | 3683836 | 6f630ef59b48c3be193657d43714123868fbcc5d5a8b2c3cd42503d604cd75a1 |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1443328 | 247227cd9f744fa37377d9a9697b9d9d0df77ba1f06d4cf671ced922bda1b603 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | f82894b14bcaac5532cd70664c12ab8ca9487417a3a43b9f019b4e97a5412d1e |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | c6a77d1c5d1f5969c923c2f18cdef554bebc11ec641f27bf6b1e72a77c752761 |
+| dist\Sai-1.2.0-win-arm64-portable.zip | 849152 | d7f7c8b8dafe156f4f903fbd1528c52a7eaee02729b32f2c86663c81d1d07b3c |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -42,7 +42,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 12.3s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\Sai-1.1.0-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\Sai-1.2.0-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -64,7 +64,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**626 通过，0 失败**（1.1s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+实测：**694 通过，0 失败**（1.1s）。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），含事务回滚、嵌套 SAVEPOINT、
 迁移幂等、导出校验和被篡改、导入冲突三策略、插件崩溃与超时终止（400ms 超时下进程被 TerminateProcess）。
 
@@ -72,7 +72,7 @@ transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含
 
     build\aic.exe verify . build\verify
 
-实测：**24 条 FR 全部 PASS，254 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
+实测：**24 条 FR 全部 PASS，274 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
 每条 FR 都至少有一项针对实现行为的断言（不是"文件存在"式检查），例如：
 FR-13 连续切换十次后两端会话与草稿互不串台；FR-14 聊天会话唯一索引拒绝第二个 chat 会话；
 FR-15 返回键三级优先级 + 同级三栏不入栈；FR-18 导出后另库导入条数/正文一致且失败整体回滚；
@@ -105,8 +105,9 @@ wal_bytes 32768、storage_kb 136、rss_ring_kb[5960]，峰值/均值均可从环
 
     python tools\shots.py
 
-8 张真实渲染截图（build\shots\*.png，1120x760 与 900x620 两种尺寸）：聊天三栏 / 我 / 设置（13 行含「关于」）/
-问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 首次运行向导 / 窄窗口。
+12 张真实渲染截图（build\shots\*.png，1120x760 与 900x620 两种尺寸）：聊天三栏 / 我 / 设置（14 行含「进阶指南」与「关于」）/
+问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 首次运行向导 / 窄窗口 / 进阶指南页 /
+导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板（含扩展点面板入口）。
 离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码），修过的 5 处视觉问题（问答头部重叠、
 AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内容区溢出盖住导航栏）均以截图复核。
 
@@ -117,10 +118,10 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 
 实测 18 项全部通过：
 
-- APK 778702 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so；
+- APK 790990 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so（1482648 字节）；
 - libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call 与
   Java_com_sai_app_Native_feed（1.1.0 新增的三段协议喂数据入口），静态含 SQLite；
-- 清单：包名 com.sai.app、versionName 1.1.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
+- 清单：包名 com.sai.app、versionCode 3、versionName 1.2.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
   native-code arm64-v8a、应用名「Sai」；
 - apksigner 校验通过（v2 + v3 方案），自签证书 CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN，
   证书 SHA-256 摘要 12a010a148db13c75484c5167fb3011fc735c594d4f6c19861d5b00289832897（证书 DN 已随改名变更为 CN=Sai, O=Sai）。
@@ -150,7 +151,7 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 
 ## 8. 便携包可独立运行
 
-把 dist\Sai-1.1.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
+把 dist\Sai-1.2.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
 pe_imports 自检显示只导入系统 DLL）。实测：
 
     tools\aic.exe doctor
@@ -172,7 +173,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\Sai-1.1.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\Sai-1.2.0-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
 实测（静默安装到 `build\installer\test_install`）：
@@ -181,7 +182,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
 
-      Sai Setup 1.1.0
+      Sai Setup 1.2.0
       time=2026-11-22 04:41:06
       files=21 shortcut=failed registry=failed
 
@@ -230,7 +231,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 | --- | --- | --- |
 | 真实传输（WinHTTP，流式 + 取消） | `src/platform/win/http_win.c`、`src/core/http.h` | 引擎测试用假传输覆盖事件流；传输层本身用本地 HTTP 服务验证 |
 | 停止生成 / 重新生成 | `src/core/engine.c`（stop_requested / aic_engine_regenerate + superseded 列） | 单测 `test_regenerate`：旧回复置 superseded、分页只剩新回复、导出仍含历史 |
-| Markdown 渲染、代码块、上下文用量、字数 | `src/ui/win/aic_app.c`（md_strip / 生成中气泡 / 底部 "已输入 N 字 · 上下文 M 条"） | 8 张离屏截图 |
+| Markdown 渲染、代码块、上下文用量、字数 | `src/ui/win/aic_app.c`（md_strip / 生成中气泡 / 底部 "已输入 N 字 · 上下文 M 条"） | 12 张离屏截图 |
 | 导入导出搬工作线程 | `src/ui/win/aic_app.c`（WM_APP_IO + io_worker） | 单测覆盖 transfer 本身；界面线程不再同步做批量 IO |
 | 整包备份 / 恢复 / 清理 | `src/core/backup.c`、`src/core/zip.c` | 单测 `test_zip_backup`（创建 / 校验 / 清理 / 取最新 / 恢复） |
 | 头像导入（GDI+，最长边 512，圆形绘制） | `src/platform/win/avatar_win.c` | 单测 `test_avatar`（8×8 BMP → avatars/xxx.jpg → 绘制成功） |
@@ -238,6 +239,23 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 | 余额阈值通知 | `src/platform/win/notify_win.c` + `app_on_bal` | 单测覆盖余额解析与阈值判断 |
 | 插件更新 / 扩展点调用 | `src/core/plugin.c`（aic_plugin_update / aic_plugin_call_point） | 单测 `test_plugin_extra`（清单 v1→v2、扩展点 describe 返回 count=0） |
 | 启动与周期更新检查、替换安装与回滚 | `app_check_update`、`src/platform/win/update_apply_win.c` | 单测 `test_update` + 本节第 6 条口径 |
+
+## 11.2 1.2.0 补齐的能力与证据
+
+| 能力 | 实现位置 | 证据 |
+| --- | --- | --- |
+| 模型注册表 + `models.json` 启动加载 | `src/core/llm.c`（aic_llm_models_load_json / load_file / reset）、`aic_app.c` app_init | 单测与 FR-03 断言：追加 sai_test_model 后 count≥3、可 find、reset 回 2 个内置模型 |
+| 导出范围（当前会话 / 全部 / 近 7 天）与含头像 | `src/core/transfer.c`（aic_export_scope + 四个 _ex 入口） | FR-18 断言 scope=1 只含指定会话、scope=2 区间外无正文；单测 `test_tdd_extra` 覆盖 Markdown/纯文本 |
+| 消息分页（100 条/页，加载更早） | `src/ui/win/aic_app.c`（MSG_PAGE_SIZE / app_load_older）、`aic_msg_page` | FR-24 断言首页 100 条升序、次页 seq 全小于首页首条；截图含「加载更早」 |
+| 撤销修改 | `src/core/store_message.c`（aic_msg_restore） | FR-10 断言正文回到原始内容且 edited_at 清空；单测同断言 |
+| 插件安装前确认 / 覆盖安装 / 入口哈希 | `src/core/plugin.c`（aic_plugin_install_ex + manifest.sha256） | FR-05 断言：正确哈希安装成功、全 0 哈希 AIC_E_CHECKSUM、重复安装 AIC_E_CONFLICT、覆盖安装版本变 1.0.2 |
+| 插件进程资源上限（128MB / 5s） | `src/platform/win/plugin_proc_win.c`（Job Object） | 单测 test_plugin_proc 覆盖超时与崩溃退出码；峰值内存/CPU 随结果返回 |
+| 四个扩展点全部接通 | `src/core/engine.c`（transform / tools_provider）、`plugin_call_point` | 单测 `test_plugin_extra` 的 ui.panel describe；Advanced 指南页与插件面板有调用入口 |
+| 进阶指南页 / 会话重命名 / 人设头像与版本回退 / 未保存改动保护 | `src/ui/win/aic_app.c`（paint_advanced、FORM_RENAME、FORM_VERSIONS、FORM_DISCARD） | 12 张截图（09_advanced、11_msg_menu 等）；表单保护在 app_try_close |
+
+Android 侧对应 7 项（分页 loadOlder、models.json、restoreEdit、导出范围与含头像、人设版本与回退、会话重命名、插件安装前确认与覆盖安装）
+已在 `android/app/src/main/cpp/aic_jni.c`（49 → 55 条桥命令）与 `MainActivity.java` 落地，APK 重建后 18 项结构校验全 PASS；
+与桌面一样只到「编译 + 结构核验」，未在设备上运行。
 
 ## 12. 复核命令速查
 

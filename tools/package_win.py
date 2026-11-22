@@ -20,7 +20,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, 'build')
 DIST = os.path.join(ROOT, 'dist')
-VER = '1.1.0'
+VER = '1.2.0'
 ARCH = 'arm64' if '--arm64' in sys.argv else 'x64'
 NAME = 'Sai-%s-win-%s' % (VER, ARCH)
 OUTDIR = os.path.join(DIST, NAME)

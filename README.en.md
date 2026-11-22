@@ -11,6 +11,9 @@ A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and A
 - Real network access: WinHTTP on Windows, HttpURLConnection on Android; responses stream token by token, and generation can be stopped or regenerated
 - Data management: full backup (database + avatars + plugin data + checksum manifest), one-click restore, old-backup cleanup
 - Update flow: check on start and on a fixed interval → resumable download → hash/version check → in-place install → rollback on failure
+- Model catalogue: two built-in identifiers plus a `models.json` in the data directory to add or override models and prices
+- Long threads stay responsive: messages load 100 per page, and exports can cover the current thread, everything, or the last seven days, optionally with avatars
+- All four plugin extension points are wired (prompt fragment, panel, request rewrite, tool declarations); the manifest's permissions and entry hash are shown before installing
 
 Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs/ADVANCED.md`.
 
@@ -31,14 +34,14 @@ Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs
 
 ## Download
 
-Prebuilt packages are attached to [Releases](https://github.com/Rcyc-1025/Sai/releases/latest):
+Each version ships the packages below (produced under `dist\` for a local build):
 
 | File | What it is |
 | --- | --- |
-| `Sai-1.1.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
-| `Sai-1.1.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `Sai-1.1.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `Sai-1.1.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+| `Sai-1.2.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
+| `Sai-1.2.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `Sai-1.2.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `Sai-1.2.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
 
 ## Build
 
@@ -62,10 +65,10 @@ python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.1.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\Sai-1.2.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.1.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.1.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\Sai-1.2.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.2.0-win-x64-setup.exe (+ .sha256)
 ~~~
 
 The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
@@ -75,11 +78,11 @@ The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plug
 | File | Contents |
 | --- | --- |
 | `docs/DESIGN.md` | Implementation-level design: layering, data model, state machines, chat pipeline, cross-platform strategy |
-| `docs/ADVANCED.md` | Prompt variables, the two modes, export/import, updates and data management |
+| `docs/ADVANCED.md` | Prompt variables, the two modes, export/import, paging, model config, updates and data management |
 | `docs/PLUGIN.md` | Plugin manifest fields, extension points, C ABI, host protocol, troubleshooting |
 | `docs/RELEASE.md` | Version policy and the release checklist |
 | `DEPENDENCIES.md` | Runtime and build-time dependencies, what is deliberately not used |
-| `CHANGELOG.md` | Changelog, with the 1.0.0 entry |
+| `CHANGELOG.md` | Changelog, one section per released version |
 
 ## Data and privacy
 

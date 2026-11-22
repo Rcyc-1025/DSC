@@ -1,6 +1,7 @@
 /* transfer.c —— 聊天记录导出/导入实现。 */
 #include "transfer.h"
 #include "store_conversation.h"
+#include "store_profile.h"
 #include "store_message.h"
 
 #include <stdarg.h>
@@ -89,7 +90,18 @@ static void checksum_of(const tr_msg *msgs, size_t n, char out[65])
 }
 
 /* ---------- 导出 ---------- */
-static int collect(aic_db *db, int mode, tr_doc *doc, char *err, size_t errlen)
+/* scope=2 的时间区间转成 ISO 文本，与 message.created_at 做字典序比较（同为 UTC 定长格式）。 */
+static void scope_bounds(const aic_export_scope *sc, char *from_iso, char *to_iso)
+{
+    from_iso[0] = '\0';
+    to_iso[0] = '\0';
+    if (!sc || sc->scope != 2) return;
+    if (sc->from_ms > 0) aic_ms_to_iso8601(sc->from_ms, from_iso);
+    if (sc->to_ms > 0) aic_ms_to_iso8601(sc->to_ms, to_iso);
+}
+
+static int collect(aic_db *db, int mode, const aic_export_scope *sc, tr_doc *doc,
+                   char *err, size_t errlen)
 {
     aic_conversation *convs = NULL;
     size_t conv_n = 0;
@@ -101,7 +113,13 @@ static int collect(aic_db *db, int mode, tr_doc *doc, char *err, size_t errlen)
     size_t msg_cap = 64, msg_n = 0;
     doc->msgs = aic_xcalloc(msg_cap, sizeof(tr_msg));
 
+    char from_iso[32], to_iso[32];
+    scope_bounds(sc, from_iso, to_iso);
+
     for (size_t i = 0; i < conv_n; i++) {
+        if (sc && sc->scope == 1) {
+            if (!sc->conv_id || strcmp(convs[i].id, sc->conv_id) != 0) continue;
+        }
         tr_conv *tc = &doc->convs[doc->conv_n++];
         aic_strlcpy_utf8(tc->id, sizeof(tc->id), convs[i].id);
         aic_strlcpy_utf8(tc->mode, sizeof(tc->mode), convs[i].mode);
@@ -121,7 +139,13 @@ static int collect(aic_db *db, int mode, tr_doc *doc, char *err, size_t errlen)
             set_err(err, errlen, "读取消息失败：%s", aic_strerror(rc));
             return rc;
         }
+        size_t kept_before = msg_n;
         for (size_t k = 0; k < n; k++) {
+            if (sc && sc->scope == 2) {
+                const char *ts = msgs[k].created_at;
+                if (from_iso[0] && strcmp(ts, from_iso) < 0) continue;
+                if (to_iso[0] && strcmp(ts, to_iso) > 0) continue;
+            }
             if (msg_n == msg_cap) {
                 msg_cap *= 2;
                 doc->msgs = aic_xrealloc(doc->msgs, msg_cap * sizeof(tr_msg));
@@ -141,13 +165,47 @@ static int collect(aic_db *db, int mode, tr_doc *doc, char *err, size_t errlen)
             aic_strlcpy_utf8(tm->created_at, sizeof(tm->created_at), msgs[k].created_at);
         }
         aic_msg_free_array(msgs, n);
+        if (sc && sc->scope == 2 && msg_n == kept_before) doc->conv_n--;  /* 区间内没有消息的会话不导出 */
     }
     doc->msg_n = msg_n;
     aic_conv_free(convs, conv_n);
     return AIC_OK;
 }
 
+static void emit_avatars(aic_db *db, jw *w, const aic_export_scope *sc)
+{
+    jw_arr_begin(w, "avatars");
+    if (!sc || !sc->include_avatars || !sc->root || !sc->root[0]) { jw_arr_end(w); return; }
+    aic_profile p;
+    memset(&p, 0, sizeof(p));
+    if (aic_profile_get(db, &p) != AIC_OK || !p.avatar_path[0]) { jw_arr_end(w); return; }
+    char full[1024];
+    if (aic_path_join(full, sizeof(full), sc->root, p.avatar_path) != AIC_OK) { jw_arr_end(w); return; }
+    char *data = NULL;
+    size_t len = 0;
+    if (aic_file_read_all(full, &data, &len) != AIC_OK) { jw_arr_end(w); return; }
+    char sha[65];
+    aic_sha256_hex(data, len, sha);
+    sb b64;
+    sb_init(&b64);
+    aic_base64_encode(data, len, &b64);
+    aic_xfree(data);
+    jw_obj_begin(w, NULL);
+    jw_put_str(w, "path", p.avatar_path);
+    jw_put_str(w, "sha256", sha);
+    jw_put_str(w, "data_base64", sb_cstr(&b64));
+    jw_obj_end(w);
+    sb_free(&b64);
+    jw_arr_end(w);
+}
+
 int aic_export_json(aic_db *db, int mode, sb *out, char *err, size_t errlen)
+{
+    return aic_export_json_ex(db, mode, NULL, out, err, errlen);
+}
+
+int aic_export_json_ex(aic_db *db, int mode, const aic_export_scope *sc, sb *out,
+                       char *err, size_t errlen)
 {
     if (!db || !out) return AIC_E_INVAL;
     if (err && errlen) err[0] = '\0';
@@ -160,7 +218,7 @@ int aic_export_json(aic_db *db, int mode, sb *out, char *err, size_t errlen)
     else if (mode == AIC_MODE_CHAT) aic_strlcpy_utf8(doc.source_mode, sizeof(doc.source_mode), "chat");
     else aic_strlcpy_utf8(doc.source_mode, sizeof(doc.source_mode), "all");
 
-    int rc = collect(db, mode, &doc, err, errlen);
+    int rc = collect(db, mode, sc, &doc, err, errlen);
     if (rc != AIC_OK) { tr_doc_free(&doc); return rc; }
     checksum_of(doc.msgs, doc.msg_n, doc.checksum);
 
@@ -209,6 +267,7 @@ int aic_export_json(aic_db *db, int mode, sb *out, char *err, size_t errlen)
     }
     jw_arr_end(&w);
 
+    emit_avatars(db, &w, sc);
     jw_put_str(&w, "checksum", doc.checksum);
     jw_obj_end(&w);
     tr_doc_free(&doc);
@@ -219,6 +278,18 @@ static int write_file(const char *path, sb *content, char *err, size_t errlen)
 {
     int rc = aic_file_write_all(path, sb_cstr(content), content->len);
     if (rc != AIC_OK) set_err(err, errlen, "写入文件失败：%s", aic_strerror(rc));
+    return rc;
+}
+
+int aic_export_write_json_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path,
+                             char *err, size_t errlen)
+{
+    if (!path) return AIC_E_INVAL;
+    sb b;
+    sb_init(&b);
+    int rc = aic_export_json_ex(db, mode, sc, &b, err, errlen);
+    if (rc == AIC_OK) rc = write_file(path, &b, err, errlen);
+    sb_free(&b);
     return rc;
 }
 
@@ -233,22 +304,35 @@ int aic_export_write_json(aic_db *db, int mode, const char *path, char *err, siz
     return rc;
 }
 
-static void write_conv_body(aic_db *db, sb *out, int markdown, char *err, size_t errlen)
+static void write_conv_body(aic_db *db, int mode, const aic_export_scope *sc, sb *out,
+                            int markdown, char *err, size_t errlen)
 {
     aic_conversation *convs = NULL;
     size_t n = 0;
-    if (aic_conv_list(db, -1, &convs, &n) != AIC_OK) {
+    char from_iso[32], to_iso[32];
+    scope_bounds(sc, from_iso, to_iso);
+    if (aic_conv_list(db, mode, &convs, &n) != AIC_OK) {
         set_err(err, errlen, "读取会话失败");
         return;
     }
     for (size_t i = 0; i < n; i++) {
         const aic_conversation *c = &convs[i];
+        size_t written = 0;
+        if (sc && sc->scope == 1) {
+            if (!sc->conv_id || strcmp(c->id, sc->conv_id) != 0) continue;
+        }
         if (markdown) sb_appendf(out, "# %s（%s）\n\n", c->title, c->mode);
         else sb_appendf(out, "===== %s（%s） =====\n\n", c->title, c->mode);
         aic_message *msgs = NULL;
         size_t mn = 0;
         if (aic_msg_export_all(db, c->id, &msgs, &mn) == AIC_OK) {
             for (size_t k = 0; k < mn; k++) {
+                if (sc && sc->scope == 2) {
+                    const char *ts = msgs[k].created_at;
+                    if (from_iso[0] && strcmp(ts, from_iso) < 0) continue;
+                    if (to_iso[0] && strcmp(ts, to_iso) > 0) continue;
+                }
+                written++;
                 const char *who = strcmp(msgs[k].role, "user") == 0 ? "用户"
                                 : (strcmp(msgs[k].role, "system") == 0 ? "系统" : "助手");
                 if (msgs[k].recalled) {
@@ -261,14 +345,15 @@ static void write_conv_body(aic_db *db, sb *out, int markdown, char *err, size_t
             }
             aic_msg_free_array(msgs, mn);
         }
+        if (sc && sc->scope == 2 && written == 0) continue;   /* 区间内没有消息的会话不导出 */
         if (markdown) sb_append(out, "---\n\n");
     }
     aic_conv_free(convs, n);
 }
 
-int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err, size_t errlen)
+int aic_export_write_markdown_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path,
+                                 char *err, size_t errlen)
 {
-    (void)mode;
     if (!db || !path) return AIC_E_INVAL;
     sb b;
     sb_init(&b);
@@ -276,7 +361,25 @@ int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err,
     char ts[32];
     aic_now_iso8601(ts);
     sb_appendf(&b, "导出时间：%s\n\n", ts);
-    write_conv_body(db, &b, 1, err, errlen);
+    write_conv_body(db, mode, sc, &b, 1, err, errlen);
+    int rc = write_file(path, &b, err, errlen);
+    sb_free(&b);
+    return rc;
+}
+
+int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err, size_t errlen)
+{
+    return aic_export_write_markdown_ex(db, mode, NULL, path, err, errlen);
+}
+
+int aic_export_write_text_ex(aic_db *db, int mode, const aic_export_scope *sc, const char *path,
+                             char *err, size_t errlen)
+{
+    if (!db || !path) return AIC_E_INVAL;
+    sb b;
+    sb_init(&b);
+    sb_append(&b, "Sai 聊天记录导出\n\n");
+    write_conv_body(db, mode, sc, &b, 0, err, errlen);
     int rc = write_file(path, &b, err, errlen);
     sb_free(&b);
     return rc;
@@ -284,15 +387,7 @@ int aic_export_write_markdown(aic_db *db, int mode, const char *path, char *err,
 
 int aic_export_write_text(aic_db *db, int mode, const char *path, char *err, size_t errlen)
 {
-    (void)mode;
-    if (!db || !path) return AIC_E_INVAL;
-    sb b;
-    sb_init(&b);
-    sb_append(&b, "Sai 聊天记录导出\n\n");
-    write_conv_body(db, &b, 0, err, errlen);
-    int rc = write_file(path, &b, err, errlen);
-    sb_free(&b);
-    return rc;
+    return aic_export_write_text_ex(db, mode, NULL, path, err, errlen);
 }
 
 /* ---------- 读取并校验 ---------- */

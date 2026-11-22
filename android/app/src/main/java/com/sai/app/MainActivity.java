@@ -96,6 +96,14 @@ public class MainActivity extends Activity {
     private JSONObject updatePlan;
     private String updateApkPath;
 
+    /** 向上翻页（技术设计 13.3）：state 只给最近 100 条，更早的按页缓存在这里，拼在列表最前面。 */
+    private JSONArray olderMsgs = new JSONArray();
+    private long olderOldestSeq = 0;
+    private boolean olderHasMore = false;
+    private String olderConv = "";
+    /** 翻页后要重新对齐的消息 id：重建列表时滚回它，免得用户被甩回列表顶部。 */
+    private String anchorMsgId = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -256,10 +264,20 @@ public class MainActivity extends Activity {
     /* ---------- 状态与渲染 ---------- */
 
     private void refresh() {
+        String prevConv = olderConv;
         st = Native.req("state");
         if (!opt(st, "ok")) {
             toast(optStr(st, "err", "读取状态失败"));
             return;
+        }
+        /* 换了会话就把翻页缓存清掉，否则会把上一个会话的旧消息拼到新会话里。 */
+        JSONObject convObj = st.optJSONObject("conv");
+        String convNow = convObj == null ? "" : optStr(convObj, "id", "");
+        if (prevConv != null && !prevConv.equals(convNow)) {
+            olderMsgs = new JSONArray();
+            olderOldestSeq = 0;
+            olderHasMore = false;
+            olderConv = "";
         }
         readTheme();
         render();
@@ -408,18 +426,71 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         JSONArray msgs = st.optJSONArray("msgs");
-        if (msgs == null || msgs.length() == 0) {
+
+        /* 分页（技术设计 13.3）：默认只显示最近 100 条，更早的按需向上翻，拼在列表最前面。 */
+        boolean more = olderMsgs.length() > 0 ? olderHasMore : st.optBoolean("hasMore", false);
+        long beforeSeq = olderMsgs.length() > 0 ? olderOldestSeq : st.optLong("oldestSeq", 0);
+        if (more && beforeSeq > 0) {
+            final long bseq = beforeSeq;
+            Button olderBtn = new Button(this);
+            olderBtn.setText("加载更早消息（每次 100 条）");
+            olderBtn.setAllCaps(false);
+            olderBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            styleButton(olderBtn, cCard, cText);
+            olderBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    loadOlder(bseq);
+                }
+            });
+            LinearLayout.LayoutParams op = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            op.bottomMargin = dp(8);
+            list.addView(olderBtn, op);
+        }
+
+        /* 翻页后维持视角：把 anchorMsgId 那一行滚回可见位置（找不到就退化成列表顶部）。 */
+        final View[] anchor = new View[1];
+        int shownCount = 0;
+        for (int i = 0; i < olderMsgs.length(); i++) {
+            JSONObject m = olderMsgs.optJSONObject(i);
+            if (m != null) {
+                View row = bubble(m);
+                if (anchorMsgId != null && anchorMsgId.equals(optStr(m, "id", ""))) anchor[0] = row;
+                list.addView(row);
+                shownCount++;
+            }
+        }
+        if (msgs != null) {
+            for (int i = 0; i < msgs.length(); i++) {
+                JSONObject m = msgs.optJSONObject(i);
+                if (m != null) {
+                    View row = bubble(m);
+                    if (anchorMsgId != null && anchorMsgId.equals(optStr(m, "id", ""))) anchor[0] = row;
+                    list.addView(row);
+                    shownCount++;
+                }
+            }
+        }
+        if (anchorMsgId != null) {
+            final View av = anchor[0];
+            if (av != null) {
+                scroll.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        scroll.smoothScrollTo(0, av.getTop());
+                    }
+                });
+            }
+            anchorMsgId = null;
+        }
+        if (shownCount == 0) {
             TextView empty = new TextView(this);
             empty.setText("还没有消息。说点什么开始吧。");
             empty.setTextColor(cSub);
             empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
             empty.setPadding(dp(4), dp(20), dp(4), dp(4));
             list.addView(empty);
-        } else {
-            for (int i = 0; i < msgs.length(); i++) {
-                JSONObject m = msgs.optJSONObject(i);
-                if (m != null) list.addView(bubble(m));
-            }
         }
 
         /* 生成中：放一个占位气泡，增量文本直接追加到它上面，不重建整个列表（避免闪）。 */
@@ -560,10 +631,22 @@ public class MainActivity extends Activity {
     }
 
     private void messageMenu(final String id) {
+        /* 条目按消息实际状态拼：只有「改过且留着原文」的消息才给「撤销修改」（核心 aic_msg_restore）。 */
+        JSONObject cur = findMsg(id);
+        boolean hasOriginal = cur != null && cur.optBoolean("hasOriginal", false);
         /* 生成中先给「停止」：这是用户最想按的那个键。 */
-        final String[] items = streaming
-                ? new String[]{"停止生成", "复制"}
-                : new String[]{"复制", "撤回（2 分钟内）", "修改", "重新生成"};
+        java.util.ArrayList<String> acts = new java.util.ArrayList<String>();
+        if (streaming) {
+            acts.add("停止生成");
+            acts.add("复制");
+        } else {
+            acts.add("复制");
+            acts.add("撤回（2 分钟内）");
+            acts.add("修改");
+            if (hasOriginal) acts.add("撤销修改");
+            acts.add("重新生成");
+        }
+        final String[] items = acts.toArray(new String[acts.size()]);
         new AlertDialog.Builder(this)
                 .setTitle("消息操作")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
@@ -589,7 +672,16 @@ public class MainActivity extends Activity {
                             refresh();
                         } else if ("修改".equals(action)) {
                             editMessage(id);
-                        } else {
+                        } else if ("撤销修改".equals(action)) {
+                            JSONObject extra = new JSONObject();
+                            try {
+                                extra.put("id", id);
+                            } catch (Exception ignored) {
+                            }
+                            JSONObject r = Native.req("restoreEdit", extra);
+                            toast(opt(r, "ok") ? "已撤销修改，正文回到原文" : optStr(r, "err", "撤销失败"));
+                            refresh();
+                        } else if ("重新生成".equals(action)) {
                             /* 重新生成只对助手的回复有意义：核心会先给旧回复打「被替代」标记再重发。 */
                             if (!"assistant".equals(findRole(id))) {
                                 toast("只能对自己的回复重新生成");
@@ -603,27 +695,31 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** 同时查当前页（state.msgs）与向上翻页缓存（olderMsgs），翻上去的旧消息也能操作。 */
+    private JSONObject findMsg(String id) {
+        JSONObject hit = findIn(st.optJSONArray("msgs"), id);
+        if (hit != null) return hit;
+        return findIn(olderMsgs, id);
+    }
+
+    private JSONObject findIn(JSONArray arr, String id) {
+        if (arr == null) return null;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject m = arr.optJSONObject(i);
+            if (m != null && id.equals(optStr(m, "id", ""))) return m;
+        }
+        return null;
+    }
+
     /** 从当前快照里查某条消息的角色（user / assistant）。 */
     private String findRole(String id) {
-        JSONArray msgs = st.optJSONArray("msgs");
-        if (msgs != null) {
-            for (int i = 0; i < msgs.length(); i++) {
-                JSONObject m = msgs.optJSONObject(i);
-                if (m != null && id.equals(optStr(m, "id", ""))) return optStr(m, "role", "");
-            }
-        }
-        return "";
+        JSONObject m = findMsg(id);
+        return m == null ? "" : optStr(m, "role", "");
     }
 
     private String findContent(String id) {
-        JSONArray msgs = st.optJSONArray("msgs");
-        if (msgs != null) {
-            for (int i = 0; i < msgs.length(); i++) {
-                JSONObject m = msgs.optJSONObject(i);
-                if (m != null && id.equals(optStr(m, "id", ""))) return optStr(m, "content", "");
-            }
-        }
-        return "";
+        JSONObject m = findMsg(id);
+        return m == null ? "" : optStr(m, "content", "");
     }
 
     private void editMessage(final String id) {
@@ -648,6 +744,60 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /** 向上翻一页（技术设计 13.3）：每次 100 条，拼到列表最前面；桥命令 loadOlder。 */
+    private void loadOlder(final long beforeSeq) {
+        if (streaming) {
+            toast("生成中先不要翻页");
+            return;
+        }
+        JSONObject convObj = st.optJSONObject("conv");
+        final String convId = convObj == null ? "" : optStr(convObj, "id", "");
+        /* 记住当前列表的第一条，翻完滚回它，视角不跳。 */
+        JSONArray cur = olderMsgs.length() > 0 ? olderMsgs : st.optJSONArray("msgs");
+        if (cur != null && cur.length() > 0) {
+            JSONObject first = cur.optJSONObject(0);
+            if (first != null) anchorMsgId = optStr(first, "id", "");
+        }
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("conv", convId);
+                    extra.put("beforeSeq", beforeSeq);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("loadOlder", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            anchorMsgId = null;
+                            toast(optStr(r, "err", "加载更早消息失败"));
+                            return;
+                        }
+                        JSONArray added = r.optJSONArray("msgs");
+                        JSONArray merged = new JSONArray();
+                        try {
+                            if (added != null) {
+                                for (int i = 0; i < added.length(); i++) merged.put(added.get(i));
+                            }
+                            for (int i = 0; i < olderMsgs.length(); i++) merged.put(olderMsgs.get(i));
+                        } catch (Exception ignored) {
+                        }
+                        olderMsgs = merged;
+                        olderConv = convId;
+                        olderOldestSeq = r.optLong("oldestSeq", 0);
+                        olderHasMore = r.optBoolean("hasMore", false);
+                        int n = added == null ? 0 : added.length();
+                        toast(n > 0 ? ("已加载 " + n + " 条更早的消息") : "没有更早的消息了");
+                        refresh();
+                    }
+                });
+            }
+        });
     }
 
     private void doSend() {
@@ -951,24 +1101,90 @@ public class MainActivity extends Activity {
                         });
                         return;
                     }
-                    final JSONObject extra = new JSONObject();
+                    /* 装之前先读清单（pluginInspect 不落库），摊给用户看，确认后才真装。 */
+                    JSONObject extra = new JSONObject();
                     try {
                         extra.put("path", path);
                     } catch (Exception ignored) {
                     }
-                    final JSONObject r = Native.req("pluginInstall", extra);
+                    final JSONObject r = Native.req("pluginInspect", extra);
                     ui(new Runnable() {
                         @Override
                         public void run() {
-                            toast(opt(r, "ok")
-                                    ? "已登记插件 " + optStr(r, "name", "") + "（Android 暂不支持运行）"
-                                    : optStr(r, "err", "插件安装失败"));
-                            showPlugins();
+                            confirmPluginInstall(path, r);
                         }
                     });
                 }
             });
         }
+    }
+
+    /** 安装前确认：名称/版本/作者/权限/扩展点全摊开，同标识已装时提示会覆盖。 */
+    private void confirmPluginInstall(final String path, final JSONObject r) {
+        if (!opt(r, "ok")) {
+            toast(optStr(r, "err", "读不出插件清单"));
+            return;
+        }
+        final boolean exists = r.optBoolean("exists", false);
+        StringBuilder sb = new StringBuilder();
+        sb.append("名称：").append(optStr(r, "name", "-")).append('\n');
+        sb.append("标识：").append(optStr(r, "id", "-")).append('\n');
+        sb.append("版本：").append(optStr(r, "version", "-")).append('\n');
+        sb.append("作者：").append(optStr(r, "author", "-")).append('\n');
+        sb.append("入口：").append(optStr(r, "entry", "-")).append('\n');
+        sb.append("权限：").append(listText(r.optJSONArray("permissions"))).append('\n');
+        sb.append("扩展点：").append(listText(r.optJSONArray("extensionPoints"))).append('\n');
+        sb.append("校验：").append(r.optBoolean("hasSha256", false) ? "清单已带 sha256" : "清单未带 sha256").append('\n');
+        if (exists) {
+            sb.append("\n同标识的插件已安装，确认后会覆盖旧记录。\n");
+        }
+        sb.append('\n').append(optStr(r, "procNote", "Android 上仅可管理清单，扩展点运行需桌面端"));
+        new AlertDialog.Builder(this)
+                .setTitle(exists ? "覆盖安装插件？" : "安装插件？")
+                .setMessage(sb.toString())
+                .setPositiveButton("确认安装", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        doPluginInstall(path, exists);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doPluginInstall(final String path, final boolean overwrite) {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("path", path);
+                    extra.put("overwrite", overwrite);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("pluginInstall", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast(opt(r, "ok")
+                                ? "已登记插件 " + optStr(r, "name", "") + "（仅清单，Android 不运行扩展点）"
+                                : optStr(r, "err", "插件安装失败"));
+                        showPlugins();
+                    }
+                });
+            }
+        });
+    }
+
+    /** 把 JSON 数组拼成「a、b、c」，空数组给「（无）」。 */
+    private String listText(JSONArray arr) {
+        if (arr == null || arr.length() == 0) return "（无）";
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < arr.length(); i++) {
+            if (i > 0) b.append("、");
+            b.append(arr.optString(i, ""));
+        }
+        return b.toString();
     }
 
     /** 内容 Uri 拷到应用缓存目录，得到一条真实路径交给核心层（核心只认路径）。 */
@@ -1108,6 +1324,12 @@ public class MainActivity extends Activity {
                 editPersona();
             }
         }));
+        col.addView(kvRow("人设版本", "查看历史版本 · 可回退", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showPersonaVersions();
+            }
+        }));
         col.addView(kvRow("模式", qaMode() ? "问答模式 · 多会话" : "聊天模式 · 单会话", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1182,12 +1404,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "Sai 1.0.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "Sai 1.2.0", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("关于 Sai")
-                        .setMessage("Sai 1.0.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。")
+                        .setMessage("Sai 1.2.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。")
                         .setPositiveButton("好", null)
                         .show();
             }
@@ -1229,6 +1451,70 @@ public class MainActivity extends Activity {
                         JSONObject r = Native.req("setPersona", extra);
                         toast(opt(r, "ok") ? "已保存为 v" + r.optInt("version", 1) : optStr(r, "err", "保存失败"));
                         markGuide("persona_edit");
+                        refresh();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 人设历史版本（技术设计 9.4）：挑旧版本 → personaRollback 生成新版本，历史一条不删。 */
+    private void showPersonaVersions() {
+        final JSONObject r = Native.req("personaVersions");
+        if (!opt(r, "ok")) {
+            toast(optStr(r, "err", "读取人设版本失败"));
+            return;
+        }
+        JSONArray arr = r.optJSONArray("versions");
+        if (arr == null || arr.length() == 0) {
+            toast("还没有历史版本");
+            return;
+        }
+        final int current = r.optInt("current", 0);
+        final String[] items = new String[arr.length()];
+        final String[] ids = new String[arr.length()];
+        final int[] vers = new int[arr.length()];
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject v = arr.optJSONObject(i);
+            ids[i] = v == null ? "" : optStr(v, "id", "");
+            vers[i] = v == null ? 0 : v.optInt("version", 0);
+            String at = v == null ? "" : optStr(v, "createdAt", "").replace("T", " ").replace("Z", "");
+            boolean cur = v != null && v.optBoolean("current", false);
+            items[i] = "v" + vers[i] + (cur ? "（当前）" : "") + (at.length() == 0 ? "" : " · " + at);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("人设历史版本")
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        if (vers[which] == current) {
+                            toast("这就是当前版本");
+                            return;
+                        }
+                        confirmRollback(ids[which], vers[which]);
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void confirmRollback(final String versionId, final int version) {
+        new AlertDialog.Builder(this)
+                .setTitle("回退到 v" + version + "？")
+                .setMessage("会用该版本内容生成一个新版本；当前版本仍留在历史里，可再回退。")
+                .setPositiveButton("回退", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject extra = new JSONObject();
+                        try {
+                            extra.put("versionId", versionId);
+                            extra.put("version", version);
+                        } catch (Exception ignored) {
+                        }
+                        JSONObject r = Native.req("personaRollback", extra);
+                        toast(opt(r, "ok")
+                                ? ("已回退，现在是 v" + r.optInt("version", version))
+                                : optStr(r, "err", "回退失败"));
                         refresh();
                     }
                 })
@@ -1371,6 +1657,7 @@ public class MainActivity extends Activity {
         toast(qaMode() ? "已切到问答模式" : "已切到聊天模式");
     }
 
+    /** 导出三步：格式 → 范围（技术设计 8.1）→ JSON 再问是否附带头像。 */
     private void chooseExport() {
         final String[] items = new String[]{"JSON（可再导入）", "Markdown（只读）", "纯文本（只读）"};
         new AlertDialog.Builder(this)
@@ -1378,30 +1665,61 @@ public class MainActivity extends Activity {
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
-                        if (which == 0) {
-                            exportJson();
+                        chooseExportRange(which);
+                    }
+                })
+                .show();
+    }
+
+    private void chooseExportRange(final int fmt) {
+        final String[] items = new String[]{"当前会话", "全部会话", "最近 7 天"};
+        final String[] ranges = new String[]{"current", "all", "days7"};
+        new AlertDialog.Builder(this)
+                .setTitle("导出范围")
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        String range = ranges[which];
+                        if (fmt == 0) {
+                            askExportAvatars(range);
                         } else {
-                            exportText(which == 1 ? "md" : "txt");
+                            exportText(fmt == 1 ? "md" : "txt", range);
                         }
                     }
                 })
                 .show();
     }
 
+    private void askExportAvatars(final String range) {
+        final String[] items = new String[]{"不带头像（体积小）", "带头像（base64 内嵌）"};
+        new AlertDialog.Builder(this)
+                .setTitle("是否附带头像")
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        exportJson(range, which == 1);
+                    }
+                })
+                .show();
+    }
+
     /** JSON 导出走 transfer.h（结构与导入端完全对称），落在 exports/，导完可分享出去。 */
-    private void exportJson() {
+    private void exportJson(final String range, final boolean withAvatars) {
         final File dir = new File(getFilesDir(), "exports");
         if (!dir.isDirectory() && !dir.mkdirs()) {
             toast("导出目录创建失败");
             return;
         }
-        final File dst = new File(dir, "chat_record_" + (System.currentTimeMillis() / 1000) + ".json");
+        final File dst = new File(dir, "chat_record_" + (System.currentTimeMillis() / 1000)
+                + "_" + range + ".json");
         work(new Runnable() {
             @Override
             public void run() {
                 JSONObject extra = new JSONObject();
                 try {
                     extra.put("path", dst.getAbsolutePath());
+                    extra.put("range", range);
+                    extra.put("withAvatars", withAvatars);
                 } catch (Exception ignored) {
                 }
                 final JSONObject r = Native.req("exportJson", extra);
@@ -1420,14 +1738,15 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** Markdown / 纯文本导出（只读，走旧的 export 命令）。IO 也在工作线程。 */
-    private void exportText(final String kind) {
+    /** Markdown / 纯文本导出（只读，走 export 命令）。IO 也在工作线程。 */
+    private void exportText(final String kind, final String range) {
         work(new Runnable() {
             @Override
             public void run() {
                 JSONObject extra = new JSONObject();
                 try {
                     extra.put("kind", kind);
+                    extra.put("range", range);
                 } catch (Exception ignored) {
                 }
                 final JSONObject r = Native.req("export", extra);
@@ -2030,9 +2349,10 @@ public class MainActivity extends Activity {
                 if (t == null || !"qa".equals(optStr(t, "mode", "qa"))) continue;
                 shown++;
                 final String id = optStr(t, "id", "");
-                String label = optStr(t, "title", "未命名会话");
-                if (t.optBoolean("pinned", false)) label = "★ " + label;
-                col.addView(kvRow(label, optStr(t, "updatedAt", "").replace("T", " ").replace("Z", ""),
+                final String title = optStr(t, "title", "未命名会话");
+                String label = t.optBoolean("pinned", false) ? "★ " + title : title;
+                /* 长按出菜单：重命名（renameThread，技术设计 9.2）/ 删除（deleteThread）。 */
+                View row = kvRow(label, optStr(t, "updatedAt", "").replace("T", " ").replace("Z", ""),
                         new View.OnClickListener() {
                             @Override
                             public void onClick(View v) {
@@ -2045,7 +2365,15 @@ public class MainActivity extends Activity {
                                 if (!opt(r, "ok")) toast(optStr(r, "err", "打开失败"));
                                 refresh();
                             }
-                        }));
+                        });
+                row.setOnLongClickListener(new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        threadMenu(id, title);
+                        return true;
+                    }
+                });
+                col.addView(row);
             }
         }
         if (shown == 0) {
@@ -2059,6 +2387,61 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(col);
         return scroll;
+    }
+
+    private void threadMenu(final String id, final String title) {
+        final String[] items = new String[]{"重命名会话", "删除会话"};
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        if (which == 0) {
+                            renameThread(id, title);
+                        } else {
+                            deleteThread(id);
+                        }
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 会话重命名：桥命令 renameThread → aic_conv_update_meta（只改 title，模型/人设不动）。 */
+    private void renameThread(final String id, String current) {
+        final EditText e = new EditText(this);
+        e.setText(current);
+        e.setSelection(e.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle("重命名会话")
+                .setView(e)
+                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject extra = new JSONObject();
+                        try {
+                            extra.put("id", id);
+                            extra.put("title", e.getText().toString().trim());
+                        } catch (Exception ignored) {
+                        }
+                        JSONObject r = Native.req("renameThread", extra);
+                        toast(opt(r, "ok") ? "已重命名" : optStr(r, "err", "重命名失败"));
+                        refresh();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void deleteThread(final String id) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("id", id);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("deleteThread", extra);
+        toast(opt(r, "ok") ? "已删除会话" : optStr(r, "err", "删除失败"));
+        refresh();
     }
 
     /* ---------- 头部动作 / 返回键 ---------- */

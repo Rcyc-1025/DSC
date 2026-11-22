@@ -284,6 +284,32 @@ int aic_msg_supersede(aic_db *db, const char *id)
     return rc == AIC_DONE ? AIC_OK : rc;
 }
 
+int aic_msg_restore(aic_db *db, const char *id)
+{
+    if (!db || !id) return AIC_E_INVAL;
+    aic_stmt *st = aic_db_prepare(db,
+        "UPDATE message SET content = COALESCE(original_content, content), "
+        "original_content = NULL, edited_at = NULL WHERE id = ?1;");
+    if (!st) return AIC_E_DB;
+    aic_stmt_bind_text(st, 1, id);
+    int rc = aic_stmt_step(st);
+    aic_stmt_finalize(st);
+    return rc == AIC_DONE ? AIC_OK : rc;
+}
+int aic_msg_last_user(aic_db *db, const char *conv_id, aic_message *out)
+{
+    if (!db || !conv_id || !out) return AIC_E_INVAL;
+    aic_stmt *st = aic_db_prepare(db,
+        "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND role = 'user' "
+        "AND recalled = 0 AND superseded = 0 ORDER BY seq DESC LIMIT 1;");
+    if (!st) return AIC_E_DB;
+    aic_stmt_bind_text(st, 1, conv_id);
+    int rc = aic_stmt_step(st);
+    if (rc == AIC_ROW) read_row(st, out);
+    aic_stmt_finalize(st);
+    return rc == AIC_ROW ? AIC_OK : (rc == AIC_DONE ? AIC_E_NOTFOUND : rc);
+}
+
 int aic_msg_last_assistant(aic_db *db, const char *conv_id, aic_message *out)
 {
     if (!db || !conv_id || !out) return AIC_E_INVAL;
