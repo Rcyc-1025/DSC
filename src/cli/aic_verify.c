@@ -1,4 +1,4 @@
-/* aic_verify.c —— FR-01 ~ FR-24 自动化验收 + 性能基准。 */
+/* aic_verify.c —— FR-01 ~ FR-30 自动化验收 + 性能基准。 */
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -27,11 +27,36 @@
 #include "plugin.h"
 #include "plugin_proc.h"
 #include "perf.h"
+#include "pairing.h"
+#include "sync.h"
+#include "sync_clock.h"
+#include "sync_session.h"
+#include "transport.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
-#define FR_COUNT 24
+#define FR_COUNT 30
 #define FR_NAME_MAX 96
 #define FR_SUM_MAX  200
 #define PATH_MAX_L 512
+
+#ifdef _WIN32
+/* 被连接方的握手要和对端同时进行，验收器里用一个短线程跑它。 */
+typedef struct VerifyHs {
+    aic_session *s;
+    char         code[16];
+    int          rc;
+    char         err[256];
+} VerifyHs;
+
+static DWORD WINAPI verify_hs_thread(LPVOID arg)
+{
+    VerifyHs *h = (VerifyHs *)arg;
+    h->rc = aic_session_handshake_accept(h->s, h->code, 8000, h->err, sizeof(h->err));
+    return 0;
+}
+#endif
 
 typedef struct V {
     FILE *out;
@@ -813,18 +838,26 @@ static void fr13(V *v, const char *wd)
     check(v, rc == AIC_OK, "准备数据库（rc=%d）", rc);
     if (rc != AIC_OK) { fr_end(v); return; }
     aic_setting_del(db, AIC_SET_FIRST_RUN_DONE);
+    aic_setting_del(db, AIC_SET_CRED_HAS_KEY);
     rc = aic_router_create(db, &r);
     check(v, rc == AIC_OK, "创建路由（rc=%d）", rc);
     rc = aic_router_boot(r);
     check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_CONFIG_CHECK, "启动进入配置检查态");
     rc = aic_router_config_check(r);
-    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_FIRST_RUN, "未完成首次配置时进入首次运行");
-    check(v, aic_router_mode(r) == AIC_MODE_CHAT, "未配置默认模式时默认进入聊天模式");
-    rc = aic_router_start_wizard(r);
-    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_WIZARD, "进入新手向导");
-    rc = aic_router_finish_wizard(r);
-    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_CHAT_READY, "向导完成后进入聊天就绪");
+    /* §4.4 / FR-30：首次启动先校验凭证，未配置时停在凭证页，不能直接进模式选择。 */
+    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_CREDENTIAL_SETUP,
+          "未配置凭证时进入凭证配置页（%s）", aic_route_state_name(aic_router_state(r)));
+    rc = aic_router_mode_select(r, AIC_MODE_CHAT);
+    check(v, rc == AIC_E_STATE, "凭证未就绪时不能进入模式选择（rc=%d）", rc);
+    aic_setting_set(db, AIC_SET_CRED_HAS_KEY, "1");
+    rc = aic_router_credential_done(r);
+    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_MODE_SELECT, "凭证就绪后进入模式选择");
+    rc = aic_router_mode_select(r, AIC_MODE_QA);
+    check(v, rc == AIC_OK && aic_router_state(r) == AIC_ST_QA_READY, "选定默认模式后进入问答就绪");
     check(v, aic_setting_get_int(db, AIC_SET_FIRST_RUN_DONE, 0) == 1, "首次运行标记已写库");
+    rc = aic_router_switch_mode(r, AIC_MODE_CHAT);
+    check(v, rc == AIC_OK, "回到聊天模式作为后续切换的起点（rc=%d）", rc);
+    aic_router_finish_switch(r);
 
     for (i = 0; i < 10; i++) {
         rc = aic_router_switch_mode(r, AIC_MODE_QA);
@@ -903,6 +936,7 @@ static void fr15(V *v, const char *wd)
     check(v, rc == AIC_OK, "准备数据库（rc=%d）", rc);
     if (rc != AIC_OK) { fr_end(v); return; }
     aic_setting_set_int(db, AIC_SET_FIRST_RUN_DONE, 1);
+    aic_setting_set(db, AIC_SET_CRED_HAS_KEY, "1");
     aic_setting_set(db, AIC_SET_DEFAULT_MODE, "chat");
     aic_router_create(db, &r);
     aic_router_boot(r);
@@ -1476,6 +1510,552 @@ static void fr24(V *v, const char *wd)
     fr_end(v);
 }
 
+
+/* ---------- FR-25 双端数据同步链路 ---------- */
+static void fr25(V *v, const char *wd)
+{
+    char err[256];
+    char ip[64];
+    aic_transport *tr = NULL;
+    aic_peer peers[4];
+    size_t n = 0;
+    int rc, port;
+
+    (void)wd;
+    fr_begin(v, "FR-25", "双端数据同步链路（局域网直连与发现 / 蓝牙仅接口）");
+    err[0] = '\0';
+    ip[0] = '\0';
+    check(v, aic_transport_available(AIC_CH_LAN) == 1, "局域网传输通道可用");
+    check(v, aic_transport_available(AIC_CH_BLUETOOTH) == 0,
+          "蓝牙通道只保留 TransportAdapter 接口（平台蓝牙未实现）");
+    check(v, strcmp(aic_channel_name(AIC_CH_LAN), "") != 0 &&
+             strcmp(aic_channel_name(AIC_CH_BLUETOOTH), "") != 0, "两条通道都有名称");
+    check(v, AIC_TRANSPORT_MAX_FRAME == (1u << 20), "单帧载荷上限 %u 字节", AIC_TRANSPORT_MAX_FRAME);
+
+    rc = aic_transport_create(AIC_CH_LAN, &tr);
+    check(v, rc == AIC_OK && tr != NULL, "创建传输适配器（rc=%d）", rc);
+    if (!tr) { fr_end(v); return; }
+    port = 46300 + (int)(aic_now_ms() % 300);
+    rc = aic_transport_listen(tr, port, err, sizeof(err));
+    if (rc != AIC_OK) {
+        skip(v, "本机监听不可用（%s），不判定链路失败", err);
+        aic_transport_destroy(tr);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_transport_get_state(tr) == AIC_TRANSPORT_LISTENING, "监听后状态为 LISTENING（端口 %d）", port);
+    rc = aic_transport_local_ip(ip, sizeof(ip));
+    check(v, rc == AIC_OK && ip[0] != '\0', "取本机局域网地址（rc=%d，地址 %s）", rc, ip);
+    rc = aic_transport_discover(port, 300, peers, 4, &n, err, sizeof(err));
+    check(v, rc == AIC_OK || (rc == AIC_E_NOTFOUND && n == 0),
+          "同网发现可运行（rc=%d 找到 %d 台 %s）", rc, (int)n, err);
+    aic_transport_close(tr);
+    check(v, aic_transport_get_state(tr) == AIC_TRANSPORT_CLOSED, "关闭后状态为 CLOSED");
+    aic_transport_destroy(tr);
+    fr_end(v);
+}
+
+/* ---------- FR-26 双向配对码校验 ---------- */
+static void fr26(V *v, const char *wd)
+{
+    aic_db *db1 = NULL, *db2 = NULL;
+    aic_pairing *p1 = NULL, *p2 = NULL;
+    aic_pair_record rec;
+    char p1p[PATH_MAX_L], p2p[PATH_MAX_L];
+    char id1[40], id2[40];
+    char code1[16], code2[16], err[256];
+    long long now;
+    int rc, i;
+
+    fr_begin(v, "FR-26", "双向配对码校验（6 位 / 双向 / 5 分钟 / 错 5 次作废）");
+    err[0] = '\0';
+    memset(&rec, 0, sizeof(rec));
+    code1[0] = code2[0] = '\0';
+    rc = new_db(wd, "fr26a", &db1, p1p, sizeof(p1p));
+    check(v, rc == AIC_OK, "准备本端数据库（rc=%d）", rc);
+    rc = new_db(wd, "fr26b", &db2, p2p, sizeof(p2p));
+    check(v, rc == AIC_OK, "准备对端数据库（rc=%d）", rc);
+    if (!db1 || !db2) {
+        if (db1) aic_db_close(db1);
+        if (db2) aic_db_close(db2);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_device_id(db1, id1, sizeof(id1)) == AIC_OK && aic_uuid_valid(id1),
+          "本端设备标识是 UUID（%s）", id1);
+    check(v, aic_device_id(db2, id2, sizeof(id2)) == AIC_OK && aic_uuid_valid(id2),
+          "对端设备标识是 UUID（%s）", id2);
+    check(v, aic_pairing_create(db1, &p1) == AIC_OK, "创建本端配对管理器");
+    check(v, aic_pairing_create(db2, &p2) == AIC_OK, "创建对端配对管理器");
+    if (!p1 || !p2) {
+        if (p1) aic_pairing_destroy(p1);
+        if (p2) aic_pairing_destroy(p2);
+        aic_db_close(db1);
+        aic_db_close(db2);
+        fr_end(v);
+        return;
+    }
+    now = aic_now_ms();
+    rc = aic_pairing_generate(p1, NULL, now, code1, sizeof(code1), err, sizeof(err));
+    check(v, rc == AIC_OK && aic_pair_code_valid(code1), "本端生成 6 位配对码（%s）", code1);
+    rc = aic_pairing_generate(p2, NULL, now, code2, sizeof(code2), err, sizeof(err));
+    check(v, rc == AIC_OK && aic_pair_code_valid(code2), "对端生成 6 位配对码（%s）", code2);
+    check(v, strcmp(code1, code2) != 0, "两端码值不同（%s / %s）", code1, code2);
+    {
+        int v1 = atoi(code1), v2 = atoi(code2);
+        check(v, v1 >= AIC_PAIR_CODE_MIN && v1 <= AIC_PAIR_CODE_MAX &&
+                 v2 >= AIC_PAIR_CODE_MIN && v2 <= AIC_PAIR_CODE_MAX, "码值落在 100000~999999");
+        check(v, (int)strlen(code1) == AIC_PAIR_CODE_LEN, "码长 %d 位", AIC_PAIR_CODE_LEN);
+    }
+    check(v, aic_pairing_expires_at(p1) == now + AIC_PAIR_CODE_TTL_MS, "有效期 5 分钟（%lld ms）",
+          AIC_PAIR_CODE_TTL_MS);
+    check(v, aic_pairing_state(p1) == AIC_PAIR_CODE_READY, "生成后状态为 CODE_READY（%s）",
+          aic_pair_state_name(aic_pairing_state(p1)));
+
+    /* 错误码只算一次错误，不建立配对。 */
+    rc = aic_pairing_verify(p1, id2, "Android 端", "000000", code1, aic_now_ms(), &rec,
+                            err, sizeof(err));
+    check(v, rc == AIC_E_AUTH, "错误码被拒绝（rc=%d）", rc);
+    check(v, aic_pairing_fails(p1) == 1, "错误计数 1 次（%d）", aic_pairing_fails(p1));
+    check(v, aic_pairing_current(db1, &rec) == AIC_E_NOTFOUND, "配对失败时库里没有配对记录");
+
+    /* 连续 5 次错误作废本端码，需要重新生成。 */
+    for (i = 0; i < AIC_PAIR_MAX_FAILS; i++)
+        aic_pairing_verify(p1, id2, "Android 端", "000001", code1, aic_now_ms(), &rec,
+                           err, sizeof(err));
+    check(v, aic_pairing_state(p1) == AIC_PAIR_FAILED, "累计 %d 次错误后作废（%s）", AIC_PAIR_MAX_FAILS,
+          aic_pair_state_name(aic_pairing_state(p1)));
+    check(v, aic_pairing_code(p1)[0] == '\0', "作废后本端码被清空");
+    check(v, aic_pairing_generate(p1, code2, aic_now_ms(), code1, sizeof(code1), err, sizeof(err)) == AIC_OK &&
+             aic_pair_code_valid(code1), "可重新生成配对码（%s）", code1);
+    check(v, strcmp(code1, code2) != 0, "重新生成时避开对端码值");
+
+    /* 双向都对：本端输入对端码、对端输入本端码。 */
+    memset(&rec, 0, sizeof(rec));
+    rc = aic_pairing_verify(p1, id2, "Android 端", code2, code1, aic_now_ms(), &rec,
+                            err, sizeof(err));
+    check(v, rc == AIC_OK, "双向校验通过并建立配对（rc=%d %s）", rc, err);
+    check(v, aic_pairing_state(p1) == AIC_PAIR_VERIFIED, "本端状态 VERIFIED");
+    check(v, aic_uuid_valid(rec.device_pair_id), "生成 device_pair_id（%s）", rec.device_pair_id);
+    check(v, strncmp(rec.secret_ref, "pair/", 5) == 0, "共享密钥只留引用（%s）", rec.secret_ref);
+    check(v, strcmp(rec.peer_id, id2) == 0, "配对绑定对端设备标识");
+    check(v, rec.realtime == 1, "配对成功后实时同步默认开启");
+    memset(&rec, 0, sizeof(rec));
+    rc = aic_pairing_current(db1, &rec);
+    check(v, rc == AIC_OK && strcmp(rec.peer_id, id2) == 0, "配对关系已落库（rc=%d）", rc);
+    {
+        char key[256];
+        int kr = aic_cred_load(AIC_CRED_SERVICE_SYNC, id2, key, sizeof(key), err, sizeof(err));
+        check(v, kr == AIC_OK && strlen(key) == 64, "共享密钥写入平台安全存储（rc=%d，64 位十六进制）", kr);
+        aic_secure_zero(key, sizeof(key));
+    }
+    rc = aic_pairing_unpair(db1, id2, err, sizeof(err));
+    check(v, rc == AIC_OK, "解除配对（rc=%d）", rc);
+    check(v, aic_pairing_current(db1, &rec) == AIC_E_NOTFOUND, "解除后不再有配对记录");
+    check(v, aic_cred_load(AIC_CRED_SERVICE_SYNC, id2, err, sizeof(err), err, sizeof(err)) != AIC_OK,
+          "解除配对同时删除安全存储里的共享密钥");
+
+    aic_pairing_destroy(p1);
+    aic_pairing_destroy(p2);
+    aic_db_close(db1);
+    aic_db_close(db2);
+    fr_end(v);
+}
+
+/* ---------- FR-27 配对后实时同步 ---------- */
+static void fr27(V *v, const char *wd)
+{
+    aic_db *da = NULL, *db = NULL;
+    aic_session *sa = NULL, *sb = NULL;
+    char pa[PATH_MAX_L], pb[PATH_MAX_L];
+    char ea[256], eb[256], val[64];
+    const char *ca, *cb;
+    int rc, port, loops, got = 0;
+
+    fr_begin(v, "FR-27", "配对后实时同步（事件增量 / 去重 / 冲突 / 链路断开续传）");
+    ea[0] = eb[0] = '\0';
+    val[0] = '\0';
+    rc = new_db(wd, "fr27a", &da, pa, sizeof(pa));
+    check(v, rc == AIC_OK, "准备本端数据库（rc=%d）", rc);
+    rc = new_db(wd, "fr27b", &db, pb, sizeof(pb));
+    check(v, rc == AIC_OK, "准备对端数据库（rc=%d）", rc);
+    if (!da || !db) {
+        if (da) aic_db_close(da);
+        if (db) aic_db_close(db);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_session_create(da, &sa) == AIC_OK, "创建本端同步会话");
+    check(v, aic_session_create(db, &sb) == AIC_OK, "创建对端同步会话");
+    if (!sa || !sb) {
+        if (sa) aic_session_destroy(sa);
+        if (sb) aic_session_destroy(sb);
+        aic_db_close(da);
+        aic_db_close(db);
+        fr_end(v);
+        return;
+    }
+    port = 46600 + (int)(aic_now_ms() % 200);
+    rc = aic_session_host(sa, port, NULL, ea, sizeof(ea));
+    if (rc != AIC_OK) {
+        skip(v, "本机监听不可用（%s），跳过实时同步链路断言", ea);
+        aic_session_destroy(sa);
+        aic_session_destroy(sb);
+        aic_db_close(da);
+        aic_db_close(db);
+        fr_end(v);
+        return;
+    }
+    ca = aic_session_our_code(sa);
+    check(v, aic_pair_code_valid(ca), "被连接方生成本端码（%s）", ca);
+    check(v, aic_session_phase(sa) == AIC_SYNC_PAIRING, "被连接方进入 PAIRING（%s）",
+          aic_sync_state_name(aic_session_phase(sa)));
+    rc = aic_session_connect(sb, "127.0.0.1", port, 4000, ca, eb, sizeof(eb));
+    check(v, rc == AIC_OK, "连接方连到被连接方（rc=%d %s）", rc, eb);
+    cb = aic_session_our_code(sb);
+    check(v, aic_pair_code_valid(cb) && strcmp(cb, ca) != 0, "连接方也生成本端码且与对端不同（%s）", cb);
+    /* 被连接方要先接受连入，链路才进入 CONNECTED（与界面里「开始监听等待连入」一致）。 */
+    rc = aic_session_accept(sa, 4000, ea, sizeof(ea));
+    check(v, rc == AIC_OK, "被连接方接受连入（rc=%d %s）", rc, ea);
+
+#ifdef _WIN32
+    {
+        VerifyHs hs;
+        HANDLE th;
+        memset(&hs, 0, sizeof(hs));
+        hs.s = sa;
+        aic_strlcpy_utf8(hs.code, sizeof(hs.code), cb);
+        th = CreateThread(NULL, 0, verify_hs_thread, &hs, 0, NULL);
+        rc = aic_session_handshake_connect(sb, ca, 8000, eb, sizeof(eb));
+        check(v, rc == AIC_OK, "连接方握手成功（rc=%d %s）", rc, eb);
+        if (th) {
+            WaitForSingleObject(th, 9000);
+            CloseHandle(th);
+        }
+        check(v, hs.rc == AIC_OK, "被连接方握手成功（rc=%d %s phase=%s）", hs.rc, hs.err,
+              aic_sync_state_name(aic_session_phase(sa)));
+    }
+#else
+    skip(v, "非 Windows 平台不跑本地回环握手");
+#endif
+    check(v, aic_session_phase(sa) == AIC_SYNC_SYNCING, "被连接方进入 SYNCING（%s）",
+          aic_sync_state_name(aic_session_phase(sa)));
+    check(v, aic_session_phase(sb) == AIC_SYNC_SYNCING, "连接方进入 SYNCING（%s）",
+          aic_sync_state_name(aic_session_phase(sb)));
+    check(v, aic_session_is_paired(sa) && aic_session_is_paired(sb), "两端都已是配对状态");
+    check(v, aic_sync_realtime_enabled(da) == 1, "配对成功后实时同步默认开启（FR-28）");
+
+    /* 只传增量：发布一条设置事件，经 pump 到对端。 */
+    check(v, aic_setting_set(da, "sync.link", "链路甲") == AIC_OK, "本端写入待同步设置项");
+    rc = aic_session_publish(sa, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.link", ea, sizeof(ea));
+    check(v, rc == AIC_OK, "采集设置快照并入队（rc=%d %s）", rc, ea);
+    for (loops = 0; loops < 8 && !got; loops++) {
+        int s1 = 0, s2 = 0, ap = 0;
+        aic_session_pump(sa, 300, &s1, &ap, ea, sizeof(ea));
+        aic_session_pump(sb, 300, &s2, &ap, eb, sizeof(eb));
+        aic_session_pump(sa, 300, &s1, &ap, ea, sizeof(ea));
+        val[0] = '\0';
+        if (aic_setting_get(db, "sync.link", val, sizeof(val)) == AIC_OK && strcmp(val, "链路甲") == 0)
+            got = 1;
+    }
+    check(v, got, "增量事件经 pump 同步到对端（读到 \"%s\"）", val);
+    check(v, !strcmp(val, "链路甲"), "对端设置项与被同步值一致");
+    /* 对端的 ack 是独立一帧，收发一侧要再 pump 几轮才能把它取回来。 */
+    {
+        int s1 = 0, ap = 0, i;
+        for (i = 0; i < 3; i++) aic_session_pump(sa, 300, &s1, &ap, ea, sizeof(ea));
+    }
+    {
+        int left = 0;
+        aic_sync_outbox_count(da, &left);
+        check(v, left == 0, "已确认的事件离开发件箱（剩 %d 条）", left);
+    }
+
+    /* 暂停只停发送，事件留在队列里。 */
+    aic_sync_set_realtime(da, 0);
+    check(v, aic_sync_realtime_enabled(da) == 0, "可手动暂停实时同步");
+    aic_setting_set(da, "sync.link2", "暂停期");
+    check(v, aic_session_publish(sa, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.link2", ea, sizeof(ea)) == AIC_OK,
+          "暂停期间仍可把事件入队");
+    {
+        int left = 0;
+        aic_sync_outbox_count(da, &left);
+        check(v, left == 1, "暂停期间事件留在发件箱（%d 条）", left);
+        {
+            int s1 = 0, ap = 0;
+            aic_session_pump(sa, 200, &s1, &ap, ea, sizeof(ea));
+            check(v, s1 == 0, "暂停期间不发送新事件（发出 %d 条）", s1);
+        }
+    }
+    aic_sync_set_realtime(da, 1);
+    {
+        int s1 = 0, ap = 0, i, total = 0;
+        for (i = 0; i < 4; i++) {
+            s1 = 0;
+            aic_session_pump(sa, 200, &s1, &ap, ea, sizeof(ea));
+            total += s1;
+        }
+        check(v, total >= 1, "恢复后补发队列里的事件（发出 %d 条）", total);
+    }
+    check(v, aic_session_unpair(sa, ea, sizeof(ea)) == AIC_OK, "解除配对（rc 见上）");
+    check(v, aic_session_phase(sa) == AIC_SYNC_IDLE, "解除后回到 IDLE（%s）",
+          aic_sync_state_name(aic_session_phase(sa)));
+    {
+        char keep[64];
+        keep[0] = '\0';
+        check(v, aic_setting_get(da, "sync.link", keep, sizeof(keep)) == AIC_OK &&
+                 strcmp(keep, "链路甲") == 0, "解除配对后本地数据保留");
+    }
+    aic_session_destroy(sa);
+    aic_session_destroy(sb);
+    aic_db_close(da);
+    aic_db_close(db);
+    fr_end(v);
+}
+
+/* ---------- FR-28 实时同步默认开启 ---------- */
+static void fr28(V *v, const char *wd)
+{
+    aic_db *d1 = NULL, *d2 = NULL;
+    aic_sync *s1 = NULL;
+    char p1p[PATH_MAX_L], p2p[PATH_MAX_L];
+    char eid[40], err[256];
+    int rc, n = 0;
+
+    fr_begin(v, "FR-28", "实时同步默认开启（可暂停 / 排队续传）");
+    err[0] = '\0';
+    eid[0] = '\0';
+    rc = new_db(wd, "fr28a", &d1, p1p, sizeof(p1p));
+    check(v, rc == AIC_OK, "准备数据库 A（rc=%d）", rc);
+    rc = new_db(wd, "fr28b", &d2, p2p, sizeof(p2p));
+    check(v, rc == AIC_OK, "准备数据库 B（rc=%d）", rc);
+    if (!d1 || !d2) {
+        if (d1) aic_db_close(d1);
+        if (d2) aic_db_close(d2);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_sync_realtime_enabled(d1) == 1, "未配置时实时同步默认开启（初始值 1）");
+    check(v, aic_sync_set_realtime(d1, 0) == AIC_OK && aic_sync_realtime_enabled(d1) == 0,
+          "可以手动暂停");
+    check(v, aic_sync_set_realtime(d1, 1) == AIC_OK && aic_sync_realtime_enabled(d1) == 1,
+          "可以恢复开启");
+    check(v, aic_sync_create(d1, &s1) == AIC_OK, "创建同步引擎");
+    if (s1) {
+        check(v, aic_setting_set(d1, "sync.r28", "甲") == AIC_OK, "写入待同步设置项");
+        rc = aic_sync_capture(s1, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.r28", eid, sizeof(eid),
+                              err, sizeof(err));
+        check(v, rc == AIC_OK && aic_uuid_valid(eid), "采集快照生成事件（rc=%d id=%s）", rc, eid);
+        aic_sync_outbox_count(d1, &n);
+        check(v, n == 1, "事件进入发件箱（%d 条）", n);
+        aic_sync_set_realtime(d1, 0);
+        aic_sync_outbox_count(d1, &n);
+        check(v, n == 1, "暂停不丢弃已入队事件（%d 条）", n);
+        check(v, aic_sync_outbox_mark_sent(s1, eid) == AIC_OK, "确认送达后出队");
+        aic_sync_outbox_count(d1, &n);
+        check(v, n == 0, "出队后发件箱为空（%d 条）", n);
+        aic_sync_destroy(s1);
+    }
+    aic_db_close(d1);
+    aic_db_close(d2);
+    fr_end(v);
+}
+
+/* ---------- FR-29 聊天记录跨端时序 ---------- */
+static void fr29(V *v, const char *wd)
+{
+    aic_db *d1 = NULL, *d2 = NULL;
+    aic_conversation c;
+    aic_message m1, m2, m3;
+    aic_message *page = NULL;
+    size_t pn = 0;
+    char p1p[PATH_MAX_L], p2p[PATH_MAX_L];
+    char dev1[40], dev2[40];
+    char sql[512];
+    long long ts0 = 0, ts1 = 0, ts2 = 0, ts_peer = 0;
+    int rc;
+
+    fr_begin(v, "FR-29", "聊天记录跨端时序（逻辑时钟 / 一致排序 / 冲突取大）");
+    memset(&c, 0, sizeof(c));
+    memset(&m1, 0, sizeof(m1));
+    memset(&m2, 0, sizeof(m2));
+    memset(&m3, 0, sizeof(m3));
+    rc = new_db(wd, "fr29a", &d1, p1p, sizeof(p1p));
+    check(v, rc == AIC_OK, "准备本端数据库（rc=%d）", rc);
+    rc = new_db(wd, "fr29b", &d2, p2p, sizeof(p2p));
+    check(v, rc == AIC_OK, "准备对端数据库（rc=%d）", rc);
+    if (!d1 || !d2) {
+        if (d1) aic_db_close(d1);
+        if (d2) aic_db_close(d2);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_device_id(d1, dev1, sizeof(dev1)) == AIC_OK, "本端设备标识（%s）", dev1);
+    check(v, aic_device_id(d2, dev2, sizeof(dev2)) == AIC_OK, "对端设备标识（%s）", dev2);
+    check(v, strcmp(dev1, dev2) != 0, "两端设备标识不同");
+    make_conv(d1, AIC_MODE_CHAT, "跨端时序", &c);
+    check(v, c.id[0] != '\0', "准备聊天会话");
+    rc = aic_msg_append(d1, c.id, AIC_ROLE_USER, "本端第一条", AIC_MODEL_FLASH, &m1);
+    check(v, rc == AIC_OK, "本端写入第一条（rc=%d）", rc);
+    rc = aic_msg_append(d1, c.id, AIC_ROLE_ASSISTANT, "本端第二条", AIC_MODEL_FLASH, &m2);
+    check(v, rc == AIC_OK, "本端写入第二条（rc=%d）", rc);
+    check(v, m2.logical_ts > m1.logical_ts, "本地新增消息逻辑时钟递增（%lld → %lld）",
+          m1.logical_ts, m2.logical_ts);
+    check(v, strcmp(m1.origin_device, dev1) == 0, "消息记录产生端设备标识");
+    check(v, aic_clock_peek(d1, &ts0) == AIC_OK && ts0 >= m2.logical_ts,
+          "逻辑时钟已推进到最新消息（%lld）", ts0);
+
+    /* 对端事件沿用对端逻辑时钟，并把本端最大值抬上去。 */
+    ts_peer = ts0 + 5;
+    check(v, aic_clock_observe(d1, ts_peer) == AIC_OK, "远端事件抬高本地逻辑时钟");
+    check(v, aic_clock_peek(d1, &ts1) == AIC_OK && ts1 >= ts_peer, "本地最大值不低于远端值（%lld）",
+          ts1);
+    check(v, aic_clock_next(d1, &ts2) == AIC_OK && ts2 == ts1 + 1,
+          "本地新增取最大值加一（%lld → %lld）", ts1, ts2);
+    check(v, aic_clock_observe(d1, ts2 - 10) == AIC_OK, "旧事件不会把时钟退回去");
+    {
+        long long back = 0;
+        aic_clock_peek(d1, &back);
+        check(v, back == ts2, "逻辑时钟只增不减（%lld）", back);
+    }
+
+    /* 排序键 (logical_ts, origin_device, seq)：墙钟改成更早也不影响顺序。 */
+    snprintf(sql, sizeof(sql),
+             "UPDATE message SET created_at='2020-01-01T00:00:00.000Z' WHERE id='%s'", m2.id);
+    aic_db_exec_stmt(d1, sql);
+    rc = aic_msg_page_ordered(d1, c.id, 0, "", 0, 50, &page, &pn);
+    check(v, rc == AIC_OK && pn == 2, "按跨端键分页可运行（rc=%d 条数 %d）", rc, (int)pn);
+    if (pn == 2) {
+        check(v, page[pn - 1].logical_ts >= page[0].logical_ts, "分页结果按逻辑时钟升序");
+        check(v, strcmp(page[pn - 1].id, m2.id) == 0, "改墙钟不影响顺序（末条仍是本端第二条）");
+        check(v, page[pn - 1].seq > page[0].seq, "同一设备内按 seq 排序");
+    }
+    if (page) aic_msg_free_array(page, pn);
+
+    /* 两端并发改同一实体：logical_ts 大者胜，相等比 origin_device。 */
+    {
+        aic_sync *sa = NULL, *sb = NULL;
+        aic_sync_event ev;
+        int applied = 0;
+        char err[256];
+        err[0] = '\0';
+        memset(&ev, 0, sizeof(ev));
+        check(v, aic_sync_create(d1, &sa) == AIC_OK, "本端创建同步引擎");
+        check(v, aic_sync_create(d2, &sb) == AIC_OK, "对端创建同步引擎");
+        if (sa && sb) {
+            check(v, aic_setting_set(d1, "sync.r29", "本端值") == AIC_OK, "本端写入设置项");
+            check(v, aic_setting_set(d2, "sync.r29", "对端值") == AIC_OK, "对端写入设置项");
+            rc = aic_sync_capture(sa, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.r29", ev.event_id,
+                                  sizeof(ev.event_id), err, sizeof(err));
+            check(v, rc == AIC_OK, "本端采集事件");
+            /* capture 只回 event_id，完整事件从发件箱取。 */
+            rc = aic_sync_outbox_next(sa, &ev);
+            check(v, rc == AIC_OK && strcmp(ev.entity, "setting") == 0,
+                  "从发件箱取回完整事件（rc=%d entity=%s）", rc, ev.entity);
+            rc = aic_sync_apply_event(sb, &ev, &applied, err, sizeof(err));
+            check(v, rc == AIC_OK && applied == 1, "对端应用事件（rc=%d applied=%d %s）", rc, applied, err);
+            /* 用同一 event_id 再应用一次：按 event_id 去重。 */
+            rc = aic_sync_apply_event(sb, &ev, &applied, err, sizeof(err));
+            check(v, rc == AIC_OK && applied == 0, "重复事件按 event_id 去重（applied=%d）", applied);
+            {
+                char got[64];
+                got[0] = '\0';
+                aic_setting_get(d2, "sync.r29", got, sizeof(got));
+                check(v, strcmp(got, "本端值") == 0, "对端设置项被同步为 \"%s\"", got);
+            }
+            /* 更旧的逻辑时钟来一条：判负、留副本。 */
+            {
+                aic_sync_event old;
+                int before = 0, after = 0;
+                memset(&old, 0, sizeof(old));
+                aic_strlcpy_utf8(old.event_id, sizeof(old.event_id), "00000000-0000-4000-8000-0000000000ff");
+                aic_strlcpy_utf8(old.entity, sizeof(old.entity), "setting");
+                aic_strlcpy_utf8(old.op, sizeof(old.op), "update");
+                aic_strlcpy_utf8(old.entity_id, sizeof(old.entity_id), "sync.r29");
+                old.payload = (char *)"{\"key\":\"sync.r29\",\"value\":\"旧值\"}";
+                old.logical_ts = ev.logical_ts - 1;
+                aic_strlcpy_utf8(old.origin_device, sizeof(old.origin_device), dev2);
+                old.schema_version = AIC_SYNC_SCHEMA_VERSION;
+                aic_sync_conflict_count(d2, &before);
+                rc = aic_sync_apply_event(sb, &old, &applied, err, sizeof(err));
+                aic_sync_conflict_count(d2, &after);
+                check(v, rc == AIC_OK && applied == 0, "更旧的并发修改判负（applied=%d %s）", applied, err);
+                check(v, after == before + 1, "落败方原始实体保存为冲突副本（%d → %d）", before, after);
+                check(v, old.payload[0] == '{', "夹具 payload 未被改写");
+            }
+            aic_sync_destroy(sa);
+            aic_sync_destroy(sb);
+        }
+    }
+    aic_db_close(d1);
+    aic_db_close(d2);
+    fr_end(v);
+}
+
+/* ---------- FR-30 首次启动配置顺序 ---------- */
+static void fr30(V *v, const char *wd)
+{
+    aic_db *db = NULL, *db2 = NULL;
+    aic_router *r = NULL, *r2 = NULL;
+    aic_guide_state gs;
+    char p[PATH_MAX_L], p2[PATH_MAX_L];
+    int rc;
+
+    fr_begin(v, "FR-30", "首次启动配置顺序（凭证 → 默认模式 → 主页）");
+    rc = new_db(wd, "fr30a", &db, p, sizeof(p));
+    check(v, rc == AIC_OK, "准备空数据库（rc=%d）", rc);
+    rc = new_db(wd, "fr30b", &db2, p2, sizeof(p2));
+    check(v, rc == AIC_OK, "准备已配置数据库（rc=%d）", rc);
+    if (!db || !db2) {
+        if (db) aic_db_close(db);
+        if (db2) aic_db_close(db2);
+        fr_end(v);
+        return;
+    }
+    check(v, aic_router_create(db, &r) == AIC_OK, "创建路由状态机");
+    if (r) {
+        check(v, aic_router_boot(r) == AIC_OK, "BOOT 进入 CONFIG_CHECK");
+        check(v, aic_router_config_check(r) == AIC_OK, "配置检查可运行");
+        check(v, aic_router_state(r) == AIC_ST_CREDENTIAL_SETUP,
+              "没有凭证时先到凭证配置页（当前 %s）", aic_route_state_name(aic_router_state(r)));
+        check(v, aic_router_mode_select(r, AIC_MODE_CHAT) == AIC_E_STATE,
+              "凭证未写入前不允许进主页（拒绝进入模式选择）");
+        check(v, aic_router_set_tab(r, AIC_TAB_CHAT) == AIC_E_STATE, "凭证未写入前不允许切三栏");
+        check(v, aic_setting_set(db, AIC_SET_CRED_HAS_KEY, "1") == AIC_OK, "凭证写入安全存储后写标记");
+        check(v, aic_router_credential_done(r) == AIC_OK, "凭证就绪后进入模式选择");
+        check(v, aic_router_state(r) == AIC_ST_MODE_SELECT, "状态为 MODE_SELECT（%s）",
+              aic_route_state_name(aic_router_state(r)));
+        check(v, aic_router_mode_select(r, AIC_MODE_QA) == AIC_OK, "选定默认模式");
+        check(v, aic_router_state(r) == AIC_ST_QA_READY && aic_router_mode(r) == AIC_MODE_QA,
+              "进入所选模式（%s）", aic_route_state_name(aic_router_state(r)));
+        check(v, aic_setting_get_int(db, AIC_SET_FIRST_RUN_DONE, 0) == 1, "首次运行标记已写入");
+        aic_router_destroy(r);
+    }
+    /* 已有凭证且首启完成：按 default_mode 直达。 */
+    check(v, aic_setting_set(db2, AIC_SET_CRED_HAS_KEY, "1") == AIC_OK, "已有凭证");
+    check(v, aic_setting_set_int(db2, AIC_SET_FIRST_RUN_DONE, 1) == AIC_OK, "首启已完成");
+    check(v, aic_setting_set(db2, AIC_SET_DEFAULT_MODE, "chat") == AIC_OK, "默认模式为聊天");
+    check(v, aic_router_create(db2, &r2) == AIC_OK, "再建一个路由状态机");
+    if (r2) {
+        aic_router_boot(r2);
+        aic_router_config_check(r2);
+        check(v, aic_router_state(r2) == AIC_ST_CHAT_READY, "凭证就绪时直达聊天模式（%s）",
+              aic_route_state_name(aic_router_state(r2)));
+        aic_router_destroy(r2);
+    }
+    /* 指南顺序：API Key 第一步，模式介绍第二步（§12.2）。 */
+    gs.completed_count = -1;
+    check(v, aic_guide_step_index("api_key") == 0, "新手指南第一步是 API Key 配置（%d）",
+          aic_guide_step_index("api_key"));
+    check(v, aic_guide_step_index("mode_intro") == 1, "第二步是模式介绍（%d）",
+          aic_guide_step_index("mode_intro"));
+    check(v, AIC_GUIDE_STEP_COUNT == 9, "指南共 %d 步", AIC_GUIDE_STEP_COUNT);
+    check(v, aic_guide_state_get(db, &gs) == AIC_OK && gs.completed_count == 0, "初始状态九步均未完成");
+    aic_db_close(db);
+    aic_db_close(db2);
+    fr_end(v);
+}
+
 /* ---------- 汇总与 Markdown 报告 ---------- */
 static int write_matrix(V *v)
 {
@@ -1524,7 +2104,7 @@ int aic_verify_run(const char *repo_root, const char *work_dir, FILE *out)
     aic_now_iso8601(ts);
     aic_mkdir_p(work_dir);
 
-    fprintf(out, "Sai 自动化验收（FR-01 ~ FR-24）\n");
+    fprintf(out, "Sai 自动化验收（FR-01 ~ FR-30）\n");
     fprintf(out, "仓库：%s\n工作目录：%s\n时间：%s\n", v.repo, work_dir, ts);
     fprintf(out, "=========================================================\n");
 
@@ -1535,7 +2115,9 @@ int aic_verify_run(const char *repo_root, const char *work_dir, FILE *out)
             { "FR-09", fr09 }, { "FR-10", fr10 }, { "FR-11", fr11 }, { "FR-12", fr12 },
             { "FR-13", fr13 }, { "FR-14", fr14 }, { "FR-15", fr15 }, { "FR-16", fr16 },
             { "FR-17", fr17 }, { "FR-18", fr18 }, { "FR-19", fr19 }, { "FR-20", fr20 },
-            { "FR-21", fr21 }, { "FR-22", fr22 }, { "FR-23", fr23 }, { "FR-24", fr24 }
+            { "FR-21", fr21 }, { "FR-22", fr22 }, { "FR-23", fr23 }, { "FR-24", fr24 },
+            { "FR-25", fr25 }, { "FR-26", fr26 }, { "FR-27", fr27 }, { "FR-28", fr28 },
+            { "FR-29", fr29 }, { "FR-30", fr30 }
         };
         const char *only = getenv("AIC_VERIFY_ONLY");
         size_t k;
@@ -1554,7 +2136,7 @@ int aic_verify_run(const char *repo_root, const char *work_dir, FILE *out)
     fprintf(out, "\n断言合计 %d 项，失败 %d 项。\n", v.total, v.fail);
     write_matrix(&v);
     if (v.fail == 0) {
-        fprintf(out, "结论：FR-01 ~ FR-24 全部自动化检查通过。\n");
+        fprintf(out, "结论：FR-01 ~ FR-30 全部自动化检查通过。\n");
     } else {
         fprintf(out, "结论：有 %d 项检查未通过，不能声称验收完成。\n", v.fail);
     }

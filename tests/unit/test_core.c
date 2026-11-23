@@ -32,6 +32,11 @@
 #include "update.h"
 #include "zip.h"
 #include "util.h"
+#include "pairing.h"
+#include "sync.h"
+#include "sync_clock.h"
+#include "sync_session.h"
+#include "transport.h"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -378,13 +383,17 @@ static void test_setting_guide_usage(aic_db *db)
     CHECK_EQ_INT(aic_guide_state_get(db, &gs), AIC_OK, "读取引导状态");
     CHECK_EQ_INT(gs.completed_count, 0, "初始未完成任何步骤");
     CHECK_EQ_INT(gs.next_index, 0, "下一步是第 1 步");
+    const int iapi = aic_guide_step_index("api_key");
+    const int ichat = aic_guide_step_index("first_chat");
+    CHECK_EQ_INT(iapi, 0, "API Key 配置是第一步（§12.2）");
+    CHECK_EQ_INT(ichat, 2, "模式介绍排在 API Key 之后、首次对话之前");
     CHECK_EQ_INT(aic_guide_mark(db, "api_key", 0), AIC_OK, "标记步骤完成");
     CHECK_EQ_INT(aic_guide_mark(db, "first_chat", 1), AIC_OK, "标记步骤跳过");
     CHECK_EQ_INT(aic_guide_state_get(db, &gs), AIC_OK, "再次读取引导状态");
     CHECK_EQ_INT(gs.completed_count, 1, "完成数 1（跳过的步骤不算完成）");
-    CHECK_EQ_INT(gs.completed[1], 1, "已完成步骤有记录");
-    CHECK_EQ_INT(gs.completed[2], 1, "已跳过步骤也计入已处理");
-    CHECK_EQ_INT(gs.skipped[2], 1, "跳过标记记录正确");
+    CHECK_EQ_INT(gs.completed[iapi], 1, "已完成步骤有记录");
+    CHECK_EQ_INT(gs.completed[ichat], 1, "已跳过步骤也计入已处理");
+    CHECK_EQ_INT(gs.skipped[ichat], 1, "跳过标记记录正确");
     CHECK_EQ_INT(aic_guide_mark(db, "不存在的步骤", 0), AIC_E_INVAL, "未知步骤被拒绝");
     CHECK_EQ_INT(aic_guide_reset(db), AIC_OK, "重置引导");
     CHECK_EQ_INT(aic_guide_state_get(db, &gs), AIC_OK, "重置后读取");
@@ -746,9 +755,10 @@ static void test_llm(aic_db *db)
                  "LLM：建会话");
     aic_message m;
     memset(&m, 0, sizeof(m));
-    aic_msg_append(db, conv.id, AIC_ROLE_USER, "第一个问题", AIC_MODEL_PRO, &m);
-    aic_msg_append(db, conv.id, AIC_ROLE_ASSISTANT, "第一个回答", AIC_MODEL_PRO, &m);
-    aic_msg_append(db, conv.id, AIC_ROLE_USER, "第二个问题", AIC_MODEL_PRO, &m);
+    int r1 = aic_msg_append(db, conv.id, AIC_ROLE_USER, "第一个问题", AIC_MODEL_PRO, &m);
+    int r2 = aic_msg_append(db, conv.id, AIC_ROLE_ASSISTANT, "第一个回答", AIC_MODEL_PRO, &m);
+    int r3 = aic_msg_append(db, conv.id, AIC_ROLE_USER, "第二个问题", AIC_MODEL_PRO, &m);
+    CHECK_EQ_INT(r1 + r2 + r3, AIC_OK * 3, "三条上下文消息都写入成功");
 
     sb body;
     sb_init(&body);
@@ -962,28 +972,36 @@ static void test_theme(void)
                  0, "减少动态效果时全部动效归零");
 }
 
-/* ---------- 路由状态机（FR-13/14/15/20/21） ---------- */
+/* ---------- 路由状态机（FR-13/14/15/20/21/30） ---------- */
 static void test_router(aic_db *db)
 {
     aic_setting_del(db, AIC_SET_FIRST_RUN_DONE);
     aic_setting_del(db, AIC_SET_DEFAULT_MODE);
+    aic_setting_del(db, AIC_SET_CRED_HAS_KEY);
 
     aic_router *r = NULL;
     CHECK_EQ_INT(aic_router_create(db, &r), AIC_OK, "创建路由");
     CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "BOOT", "初始为 BOOT");
     CHECK_EQ_INT(aic_router_boot(r), AIC_OK, "启动进入配置检查");
     CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "CONFIG_CHECK", "状态为 CONFIG_CHECK");
-    CHECK_EQ_INT(aic_router_config_check(r), AIC_OK, "首次配置检查");
-    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "FIRST_RUN", "未完成首启进入 FIRST_RUN");
-    CHECK_EQ_INT(aic_router_mode(r), AIC_MODE_CHAT, "首启默认聊天模式");
 
-    CHECK_EQ_INT(aic_router_start_wizard(r), AIC_OK, "进入新手指南");
-    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "WIZARD", "状态为 WIZARD");
-    CHECK_EQ_INT(aic_router_finish_wizard(r), AIC_OK, "完成新手指南");
-    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "CHAT_READY", "向导完成进入聊天模式");
+    /* FR-30：首次启动必须先过凭证配置，凭证未写入安全存储前不进主页。 */
+    CHECK_EQ_INT(aic_router_config_check(r), AIC_OK, "首次配置检查");
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "CREDENTIAL_SETUP",
+                 "无凭证时进入凭证配置页（FR-30）");
+    CHECK_EQ_INT(aic_router_mode_select(r, AIC_MODE_CHAT), AIC_E_STATE,
+                 "凭证未就绪不允许选择模式");
+    CHECK_EQ_INT(aic_router_set_tab(r, AIC_TAB_ME), AIC_E_STATE, "凭证未就绪进不了三栏");
+
+    /* 凭证写入安全存储后（设置标记），放行到模式选择。 */
+    aic_setting_set(db, AIC_SET_CRED_HAS_KEY, "1");
+    CHECK_EQ_INT(aic_router_credential_done(r), AIC_OK, "凭证写入后放行");
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "MODE_SELECT", "进入模式选择");
+    CHECK_EQ_INT(aic_router_mode_select(r, AIC_MODE_CHAT), AIC_OK, "选择聊天模式");
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "CHAT_READY", "选定后进入聊天主页");
     char v[8];
-    CHECK_EQ_STR(aic_setting_get(db, AIC_SET_FIRST_RUN_DONE, v, sizeof(v)) == AIC_OK ? v : "", "1",
-                 "首启标记已写入");
+    CHECK_EQ_STR(aic_setting_get(db, AIC_SET_DEFAULT_MODE, v, sizeof(v)) == AIC_OK ? v : "", "chat",
+                 "默认模式已记录");
 
     CHECK_EQ_INT(aic_router_set_tab(r, AIC_TAB_ME), AIC_OK, "切到「我」");
     CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "CHAT_TAB", "进入三栏状态");
@@ -1034,7 +1052,8 @@ static void test_router(aic_db *db)
     CHECK_EQ_STR(aic_route_state_name(aic_router_state(r)), "QA_THREAD_LIST", "状态为会话列表");
     aic_router_destroy(r);
 
-    /* 已配置的启动路径：默认模式读设置。 */
+    /* 已配置的启动路径：凭证就绪 + 已记录默认模式时直达对应模式。 */
+    aic_setting_set(db, AIC_SET_CRED_HAS_KEY, "1");
     aic_setting_set(db, AIC_SET_FIRST_RUN_DONE, "1");
     aic_setting_set(db, AIC_SET_DEFAULT_MODE, "qa");
     aic_router *r2 = NULL;
@@ -1052,8 +1071,31 @@ static void test_router(aic_db *db)
     aic_router_config_check(r3);
     CHECK_EQ_STR(aic_route_state_name(aic_router_state(r3)), "CHAT_READY", "默认模式配置为聊天");
     aic_router_destroy(r3);
+
+    /* 凭证就绪但还没选过模式：进模式选择而不是直接进主页。 */
+    aic_setting_del(db, AIC_SET_FIRST_RUN_DONE);
+    aic_router *r4 = NULL;
+    aic_router_create(db, &r4);
+    aic_router_boot(r4);
+    aic_router_config_check(r4);
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r4)), "MODE_SELECT",
+                 "凭证就绪但首次进入时先选模式");
+    CHECK_EQ_INT(aic_router_mode_select(r4, AIC_MODE_QA), AIC_OK, "选择问答模式");
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r4)), "QA_READY", "选定问答模式后进入问答");
+    aic_router_destroy(r4);
+
+    /* 上一段已把默认模式记为 qa，再次启动应直达问答。 */
+    aic_router *r5 = NULL;
+    aic_router_create(db, &r5);
+    aic_router_boot(r5);
+    aic_router_config_check(r5);
+    CHECK_EQ_STR(aic_route_state_name(aic_router_state(r5)), "QA_READY", "再次启动直达上次选的模式");
+    CHECK_EQ_INT(aic_router_mode(r5), AIC_MODE_QA, "直达的正是问答模式");
+    aic_router_destroy(r5);
+
     aic_setting_del(db, AIC_SET_FIRST_RUN_DONE);
     aic_setting_del(db, AIC_SET_DEFAULT_MODE);
+    aic_setting_del(db, AIC_SET_CRED_HAS_KEY);
 }
 
 /* ---------- 对话引擎（假传输喂 SSE，不联网） ---------- */
@@ -2243,8 +2285,342 @@ static void test_tdd_extra(aic_db *db)
     aic_conv_delete(db, c2.id);
 }
 
+/* ---------- 双端配对（FR-26）与同步引擎（FR-27/28/29） ---------- */
+static void test_sync(aic_db *db)
+{
+    char err[512];
+    err[0] = '\0';
+
+    /* 逻辑时钟与设备标识（§16.5）。 */
+    long long t0 = -1;
+    CHECK_EQ_INT(aic_clock_peek(db, &t0), AIC_OK, "读取逻辑时钟");
+    long long t1 = -1;
+    CHECK_EQ_INT(aic_clock_next(db, &t1), AIC_OK, "逻辑时钟自增");
+    CHECK_EQ_INT(t1, t0 + 1, "本地新增取本端最大值加一");
+    CHECK_EQ_INT(aic_clock_observe(db, t1 + 100), AIC_OK, "抬高逻辑时钟");
+    long long t2 = -1;
+    aic_clock_peek(db, &t2);
+    CHECK_EQ_INT(t2, t1 + 100, "远端事件到达后本地最大值被抬高");
+    CHECK_EQ_INT(aic_clock_observe(db, t2 - 50), AIC_OK, "旧事件观察");
+    long long t3 = -1;
+    aic_clock_peek(db, &t3);
+    CHECK_EQ_INT(t3, t2, "逻辑时钟只增不减");
+
+    char dev[64], dev2[64];
+    CHECK_EQ_INT(aic_device_id(db, dev, sizeof(dev)), AIC_OK, "读取本机设备标识");
+    CHECK_EQ_INT((int)strlen(dev), 36, "设备标识是 UUID");
+    CHECK_EQ_INT(aic_device_id(db, dev2, sizeof(dev2)), AIC_OK, "再次读取设备标识");
+    CHECK_EQ_STR(dev2, dev, "设备标识稳定不变");
+
+    char dname[64];
+    CHECK_EQ_INT(aic_device_name(db, dname, sizeof(dname)), AIC_OK, "读取设备名");
+    CHECK(strlen(dname) > 0, "设备名非空");
+
+    /* 消息时序：logical_ts 递增 + 排序键 (logical_ts, origin_device, seq)。 */
+    aic_conversation sc;
+    memset(&sc, 0, sizeof(sc));
+    CHECK_EQ_INT(aic_conv_create(db, AIC_MODE_QA, "同步时序会话", NULL, AIC_MODEL_FLASH, &sc),
+                 AIC_OK, "创建时序测试会话");
+    aic_message sm1, sm2;
+    memset(&sm1, 0, sizeof(sm1));
+    memset(&sm2, 0, sizeof(sm2));
+    CHECK_EQ_INT(aic_msg_append(db, sc.id, AIC_ROLE_USER, "时序第一条", AIC_MODEL_FLASH, &sm1),
+                 AIC_OK, "写入第一条消息");
+    CHECK_EQ_INT(aic_msg_append(db, sc.id, AIC_ROLE_ASSISTANT, "时序第二条", AIC_MODEL_FLASH, &sm2),
+                 AIC_OK, "写入第二条消息");
+    CHECK(sm1.logical_ts > 0 && sm2.logical_ts > sm1.logical_ts, "消息逻辑时钟递增");
+    CHECK_EQ_STR(sm1.origin_device, dev, "消息记录产生端设备标识");
+    aic_message *pg = NULL;
+    size_t pgn = 0;
+    CHECK_EQ_INT(aic_msg_page_ordered(db, sc.id, 0, "", 0, 10, &pg, &pgn), AIC_OK,
+                 "按 (逻辑时钟, 设备, seq) 分页");
+    CHECK_EQ_INT((int)pgn, 2, "分页返回两条");
+    if (pgn == 2) CHECK_EQ_STR(pg[1].content, "时序第二条", "升序末条是最新消息");
+    aic_msg_free_array(pg, pgn);
+    aic_msg_free(&sm1);
+    aic_msg_free(&sm2);
+
+    /* 配对码（§16.2）：6 位、两端不同、5 分钟、5 次错误作废。 */
+    char dir[512];
+    snprintf(dir, sizeof(dir), "aic_test_sync_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(dir);
+    char p2[600];
+    aic_path_join(p2, sizeof(p2), dir, "peer.db");
+    aic_db *db2 = NULL;
+    CHECK_EQ_INT(aic_db_open(p2, &db2), AIC_OK, "打开对端数据库");
+    if (db2) aic_db_migrate(db2, p2, NULL, NULL, NULL);
+
+    aic_pairing *pa = NULL, *pb = NULL;
+    CHECK_EQ_INT(aic_pairing_create(db, &pa), AIC_OK, "创建本端配对管理器");
+    if (db2) CHECK_EQ_INT(aic_pairing_create(db2, &pb), AIC_OK, "创建对端配对管理器");
+
+    char code_a[16] = {0}, code_b[16] = {0};
+    char peer_dev[64];
+    peer_dev[0] = '\0';
+    if (db2) aic_device_id(db2, peer_dev, sizeof(peer_dev));
+    long long now = aic_now_ms();
+    CHECK_EQ_INT(aic_pairing_generate(pa, NULL, now, code_a, sizeof(code_a), err, sizeof(err)), AIC_OK,
+                 "生成本端配对码");
+    CHECK_EQ_INT(aic_pair_code_valid(code_a), 1, "配对码是 6 位数字");
+    CHECK_EQ_INT(aic_pairing_state(pa), AIC_PAIR_CODE_READY, "配对码就绪");
+    CHECK_EQ_INT(aic_pairing_expires_at(pa), now + AIC_PAIR_CODE_TTL_MS, "配对码有效期 5 分钟");
+    if (pb)
+        aic_pairing_generate(pb, code_a, aic_now_ms(), code_b, sizeof(code_b), err, sizeof(err));
+    CHECK(strlen(code_b) == 6 && strcmp(code_a, code_b) != 0, "两端配对码不同");
+
+    /* 对端输入了错误的本端码：一次错误即终止，不建立配对。 */
+    aic_pair_record rec;
+    memset(&rec, 0, sizeof(rec));
+    CHECK_EQ_INT(aic_pairing_verify(pa, peer_dev, "对端", code_b, "000000", aic_now_ms(), &rec,
+                                    err, sizeof(err)),
+                 AIC_E_AUTH, "对端输入错误码时配对失败");
+    CHECK_EQ_INT(aic_pairing_fails(pa), 1, "错误计数加一");
+    for (int i = 0; i < 4; i++)
+        aic_pairing_verify(pa, peer_dev, "对端", code_b, "000000", aic_now_ms(), &rec, err, sizeof(err));
+    CHECK_EQ_INT(aic_pairing_state(pa), AIC_PAIR_FAILED, "累计 5 次错误后作废");
+    CHECK_EQ_STR(aic_pairing_code(pa), "", "作废后清掉本端配对码");
+
+    /* 重新生成后双向校验通过。 */
+    CHECK_EQ_INT(aic_pairing_generate(pa, code_b, aic_now_ms(), code_a, sizeof(code_a), err, sizeof(err)),
+                 AIC_OK, "重新生成本端配对码");
+    memset(&rec, 0, sizeof(rec));
+    CHECK_EQ_INT(aic_pairing_verify(pa, peer_dev, "对端", code_b, code_a, aic_now_ms(), &rec,
+                                    err, sizeof(err)),
+                 AIC_OK, "双向校验通过后配对成立");
+    CHECK_EQ_INT((int)strlen(rec.device_pair_id), 36, "生成 device_pair_id");
+    CHECK(strncmp(rec.secret_ref, "pair/", 5) == 0, "共享密钥只保留安全存储引用");
+    CHECK_EQ_INT(aic_sync_realtime_enabled(db), 1, "配对成功后实时同步默认开启（FR-28）");
+    aic_pair_record cur;
+    memset(&cur, 0, sizeof(cur));
+    CHECK_EQ_INT(aic_pairing_current(db, &cur), AIC_OK, "读回配对关系");
+    CHECK_EQ_STR(cur.peer_id, peer_dev, "配对关系绑定对端设备标识");
+
+    /* 同步状态机（§16.3）。 */
+    aic_sync *sy = NULL;
+    CHECK_EQ_INT(aic_sync_create(db, &sy), AIC_OK, "创建同步引擎");
+    CHECK_EQ_STR(aic_sync_state_name(aic_sync_get_state(sy)), "IDLE", "同步初始 IDLE");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_PAIRED, err, sizeof(err)), AIC_E_STATE,
+                 "IDLE 不能直接跳到 PAIRED");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_DISCOVERING, err, sizeof(err)), AIC_OK, "进入发现");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_CONNECTING, err, sizeof(err)), AIC_OK, "进入连接");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_PAIRING, err, sizeof(err)), AIC_OK, "进入配对");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_PAIRED, err, sizeof(err)), AIC_OK, "配对完成");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_SYNCING, err, sizeof(err)), AIC_OK, "进入同步");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_SYNCING, err, sizeof(err)), AIC_OK, "同步态可重复进入");
+    CHECK_EQ_INT(aic_sync_enter(sy, AIC_SYNC_PAIRED, err, sizeof(err)), AIC_OK, "链路断开回到已配对");
+
+    /* 事件生成、序列化与应用（§16.4）。 */
+    CHECK_EQ_INT(aic_setting_set(db, "sync.probe", "甲"), AIC_OK, "写一条可同步设置");
+    char eid[64];
+    CHECK_EQ_INT(aic_sync_capture(sy, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.probe", eid,
+                                  sizeof(eid), err, sizeof(err)),
+                 AIC_OK, "采集设置快照并入队");
+    CHECK_EQ_INT((int)strlen(eid), 36, "事件 id 是 UUID");
+    int cnt = -1;
+    aic_sync_outbox_count(db, &cnt);
+    CHECK_EQ_INT(cnt, 1, "发件箱有一条待发送事件");
+
+    aic_sync_event ev;
+    memset(&ev, 0, sizeof(ev));
+    CHECK_EQ_INT(aic_sync_outbox_next(sy, &ev), AIC_OK, "取出发件箱事件");
+    CHECK_EQ_STR(ev.entity, "setting", "事件实体为 setting");
+    CHECK_EQ_STR(ev.op, "update", "事件操作为 update");
+    CHECK(ev.logical_ts > 0, "事件携带逻辑时钟");
+    CHECK_EQ_STR(ev.origin_device, dev, "事件携带来源设备");
+    sb js;
+    sb_init(&js);
+    CHECK_EQ_INT(aic_sync_event_to_json(&ev, &js), AIC_OK, "事件序列化为 JSON");
+    aic_sync_event ev2;
+    memset(&ev2, 0, sizeof(ev2));
+    CHECK_EQ_INT(aic_sync_event_from_json(sb_cstr(&js), strlen(sb_cstr(&js)), &ev2, err, sizeof(err)),
+                 AIC_OK, "事件 JSON 往返解析");
+    CHECK_EQ_STR(ev2.event_id, ev.event_id, "往返后 event_id 一致");
+    CHECK_EQ_INT(ev2.logical_ts, ev.logical_ts, "往返后逻辑时钟一致");
+    CHECK_EQ_STR(ev2.origin_device, ev.origin_device, "往返后来源设备一致");
+    aic_sync_event_free(&ev2);
+    sb_free(&js);
+
+    char got[32];
+    if (db2) {
+        aic_sync *sy2 = NULL;
+        CHECK_EQ_INT(aic_sync_create(db2, &sy2), AIC_OK, "创建对端同步引擎");
+        int applied = -1;
+        CHECK_EQ_INT(aic_sync_apply_event(sy2, &ev, &applied, err, sizeof(err)), AIC_OK,
+                     "应用远端事件");
+        CHECK_EQ_INT(applied, 1, "首次应用生效");
+        got[0] = '\0';
+        aic_setting_get(db2, "sync.probe", got, sizeof(got));
+        CHECK_EQ_STR(got, "甲", "设置同步到对端");
+        CHECK_EQ_INT(aic_sync_apply_event(sy2, &ev, &applied, err, sizeof(err)), AIC_OK,
+                     "重复应用同一事件");
+        CHECK_EQ_INT(applied, 0, "按 event_id 去重，不重复应用");
+
+        /* 冲突：逻辑时钟更小的并发修改落败，原始实体进冲突副本。 */
+        aic_sync_event ev3;
+        memset(&ev3, 0, sizeof(ev3));
+        aic_uuid4(ev3.event_id);
+        aic_strlcpy_utf8(ev3.entity, sizeof(ev3.entity), "setting");
+        aic_strlcpy_utf8(ev3.op, sizeof(ev3.op), "update");
+        aic_strlcpy_utf8(ev3.entity_id, sizeof(ev3.entity_id), "sync.probe");
+        ev3.payload = aic_strdup("{\"key\":\"sync.probe\",\"value\":\"乙\"}");
+        ev3.logical_ts = ev.logical_ts - 1;
+        aic_strlcpy_utf8(ev3.origin_device, sizeof(ev3.origin_device),
+                         "11111111-1111-4111-8111-111111111111");
+        ev3.schema_version = AIC_SYNC_SCHEMA_VERSION;
+        CHECK_EQ_INT(aic_sync_apply_event(sy2, &ev3, &applied, err, sizeof(err)), AIC_OK,
+                     "应用旧事件");
+        CHECK_EQ_INT(applied, 0, "逻辑时钟更小的并发写落败");
+        int conflicts = -1;
+        CHECK_EQ_INT(aic_sync_conflict_count(db2, &conflicts), AIC_OK, "统计冲突副本");
+        CHECK_EQ_INT(conflicts, 1, "落败方原始实体保存到副本表");
+        got[0] = '\0';
+        aic_setting_get(db2, "sync.probe", got, sizeof(got));
+        CHECK_EQ_STR(got, "甲", "冲突不改写本地已生效的值");
+        sb cj;
+        sb_init(&cj);
+        CHECK_EQ_INT(aic_sync_conflicts_json(db2, &cj), AIC_OK, "导出冲突副本");
+        CHECK(strstr(sb_cstr(&cj), "sync.probe") != NULL, "冲突副本里有该实体");
+        sb_free(&cj);
+        aic_sync_event_free(&ev3);
+        aic_sync_destroy(sy2);
+    }
+
+    CHECK_EQ_INT(aic_sync_outbox_mark_sent(sy, ev.event_id), AIC_OK, "标记事件已送达");
+    aic_sync_outbox_count(db, &cnt);
+    CHECK_EQ_INT(cnt, 0, "送达后发件箱清空");
+    aic_sync_event_free(&ev);
+
+    /* 暂停只停发送；恢复后继续（FR-28）。 */
+    CHECK_EQ_INT(aic_sync_set_realtime(db, 0), AIC_OK, "暂停实时同步");
+    CHECK_EQ_INT(aic_sync_realtime_enabled(db), 0, "暂停状态读回");
+    CHECK_EQ_INT(aic_sync_set_realtime(db, 1), AIC_OK, "恢复实时同步");
+    CHECK_EQ_INT(aic_sync_realtime_enabled(db), 1, "恢复状态读回");
+
+    /* 解除配对：删除配对关系与密钥引用，本地数据保留（§16.6）。 */
+    CHECK_EQ_INT(aic_pairing_unpair(db, peer_dev, err, sizeof(err)), AIC_OK, "解除配对");
+    memset(&cur, 0, sizeof(cur));
+    CHECK_EQ_INT(aic_pairing_current(db, &cur), AIC_E_NOTFOUND, "解除后没有配对关系");
+    got[0] = '\0';
+    aic_setting_get(db, "sync.probe", got, sizeof(got));
+    CHECK_EQ_STR(got, "甲", "解除配对不清本地数据");
+
+    aic_sync_destroy(sy);
+    if (pb) aic_pairing_destroy(pb);
+    aic_pairing_destroy(pa);
+    if (db2) aic_db_close(db2);
+    aic_conv_delete(db, sc.id);
+    aic_setting_del(db, "sync.probe");
+}
+
+/* ---------- 双端链路端到端（本机回环，TCP，§16.1 / §16.3） ---------- */
+typedef struct hs_arg {
+    aic_session *s;
+    char         code[16];
+    int          rc;
+    char         err[256];
+} hs_arg;
+
+#ifdef _WIN32
+static DWORD WINAPI hs_thread(LPVOID p)
+{
+    hs_arg *a = (hs_arg *)p;
+    a->rc = aic_session_handshake_accept(a->s, a->code, 5000, a->err, sizeof(a->err));
+    return 0;
+}
+#endif
+
+static void test_sync_session(void)
+{
+    char dir[512];
+    snprintf(dir, sizeof(dir), "aic_test_link_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(dir);
+    char pa[700], pb[700];
+    aic_path_join(pa, sizeof(pa), dir, "a.db");
+    aic_path_join(pb, sizeof(pb), dir, "b.db");
+    aic_db *dba = NULL, *dbb = NULL;
+    CHECK_EQ_INT(aic_db_open(pa, &dba), AIC_OK, "打开链路测试库 A");
+    CHECK_EQ_INT(aic_db_open(pb, &dbb), AIC_OK, "打开链路测试库 B");
+    if (!dba || !dbb) { if (dba) aic_db_close(dba); if (dbb) aic_db_close(dbb); return; }
+    aic_db_migrate(dba, pa, NULL, NULL, NULL);
+    aic_db_migrate(dbb, pb, NULL, NULL, NULL);
+
+    char err[512];
+    err[0] = '\0';
+    int port = 46100 + (int)(aic_now_ms() % 400);
+
+    aic_session *sa = NULL, *sb = NULL;
+    CHECK_EQ_INT(aic_session_create(dba, &sa), AIC_OK, "创建被连接方会话");
+    CHECK_EQ_INT(aic_session_create(dbb, &sb), AIC_OK, "创建连接方会话");
+    int hosted = aic_session_host(sa, port, NULL, err, sizeof(err));
+    if (hosted != AIC_OK) {
+        printf("SKIP 本机回环监听不可用（%s），跳过链路测试\n", err);
+        aic_session_destroy(sa);
+        aic_session_destroy(sb);
+        aic_db_close(dba);
+        aic_db_close(dbb);
+        return;
+    }
+    const char *code_a = aic_session_our_code(sa);
+    CHECK_EQ_INT(aic_pair_code_valid(code_a), 1, "被连接方有 6 位配对码");
+
+    CHECK_EQ_INT(aic_session_connect(sb, "127.0.0.1", port, 3000, NULL, err, sizeof(err)), AIC_OK,
+                 "连接方直连本机端口");
+    const char *code_b = aic_session_our_code(sb);
+    CHECK_EQ_INT(aic_pair_code_valid(code_b), 1, "连接方也有 6 位配对码");
+    CHECK(strcmp(code_a, code_b) != 0, "两端配对码不同");
+    CHECK_EQ_INT(aic_session_accept(sa, 3000, err, sizeof(err)), AIC_OK, "被连接方接受连入");
+
+    /* 握手需要双向同时进行：被连接方等 hello，连接方发 hello。 */
+    hs_arg hs;
+    memset(&hs, 0, sizeof(hs));
+    hs.s = sa;
+    aic_strlcpy_utf8(hs.code, sizeof(hs.code), code_b);
+    HANDLE th = CreateThread(NULL, 0, hs_thread, &hs, 0, NULL);
+    CHECK(th != NULL, "起握手线程");
+    int rc_b = aic_session_handshake_connect(sb, code_a, 5000, err, sizeof(err));
+    if (th) { WaitForSingleObject(th, 8000); CloseHandle(th); }
+    CHECK_EQ_INT(hs.rc, AIC_OK, "被连接方握手成功");
+    CHECK_EQ_INT(rc_b, AIC_OK, "连接方握手成功");
+    CHECK_EQ_STR(aic_sync_state_name(aic_session_phase(sa)), "SYNCING", "被连接方进入同步态");
+    CHECK_EQ_STR(aic_sync_state_name(aic_session_phase(sb)), "SYNCING", "连接方进入同步态");
+    CHECK_EQ_INT(aic_session_is_paired(sa), 1, "被连接方已配对");
+    CHECK_EQ_INT(aic_session_is_paired(sb), 1, "连接方已配对");
+    CHECK_EQ_INT(aic_sync_realtime_enabled(dba), 1, "配对成功后实时同步默认开启");
+
+    /* 一端发布增量事件，另一端 pump 后落地（§16.4 / §16.6）。 */
+    CHECK_EQ_INT(aic_setting_set(dba, "sync.link", "链路甲"), AIC_OK, "写一条待同步设置");
+    CHECK_EQ_INT(aic_session_publish(sa, AIC_ENT_SETTING, AIC_OP_UPDATE, "sync.link", err, sizeof(err)),
+                 AIC_OK, "发布设置增量事件");
+    int sent = 0, applied = 0, got_it = 0;
+    for (int i = 0; i < 6 && !got_it; i++) {
+        aic_session_pump(sa, 400, &sent, &applied, err, sizeof(err));
+        aic_session_pump(sb, 400, &sent, &applied, err, sizeof(err));
+        aic_session_pump(sa, 400, &sent, &applied, err, sizeof(err));
+        char v[32];
+        v[0] = '\0';
+        if (aic_setting_get(dbb, "sync.link", v, sizeof(v)) == AIC_OK && strcmp(v, "链路甲") == 0)
+            got_it = 1;
+    }
+    CHECK_EQ_INT(got_it, 1, "事件经链路同步到对端");
+
+    /* 链路断开回到已配对、队列保留；解除配对后回到 IDLE。 */
+    aic_session_unpair(sa, err, sizeof(err));
+    CHECK_EQ_STR(aic_sync_state_name(aic_session_phase(sa)), "IDLE", "解除配对回到 IDLE");
+
+    aic_session_destroy(sa);
+    aic_session_destroy(sb);
+    aic_db_close(dba);
+    aic_db_close(dbb);
+    char f1[800], f2[800];
+    aic_path_join(f1, sizeof(f1), dir, "a.db");
+    aic_path_join(f2, sizeof(f2), dir, "b.db");
+    aic_file_remove(f1);
+    aic_file_remove(f2);
+}
+
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     init_bin_dir();
     printf("=== Sai 核心层自测 ===\n");
     test_util();
@@ -2290,7 +2666,9 @@ int main(void)
         test_regenerate(db);
         test_plugin_extra(db);
         test_tdd_extra(db);
+        test_sync(db);
         test_avatar();
+    test_sync_session();
         test_perf(db);
 
         /* 事务回滚验证。 */

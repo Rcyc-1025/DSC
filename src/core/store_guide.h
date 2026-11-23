@@ -11,12 +11,17 @@ extern "C" {
 
 #define AIC_GUIDE_STEP_COUNT 9
 
+/* 步骤顺序按 §12.2：API Key 配置排在第一位（首次启动、进入主页之前），
+ * 模式介绍在凭证就绪后。guide_progress 以 step_id 为键，旧版本已有的完成记录
+ * 不会因为新增步骤或调整顺序而丢失（§12.1）。 */
+
 typedef struct aic_guide_step {
     const char *id;        /* 稳定标识，写入 guide_progress */
     const char *title;     /* 步骤标题 */
     const char *trigger;   /* 触发条件 */
     const char *goal;      /* 目标 */
     const char *done_when; /* 完成条件 */
+    const char *group;     /* 引入该步骤的版本号（§12.1 按版本分组） */
 } aic_guide_step;
 
 typedef struct aic_guide_state {

@@ -34,6 +34,8 @@ typedef struct tr_msg {
     char *original_content;
     char  model_id[64];
     char  created_at[32];
+    long long logical_ts;      /* 跨端时序（§16.5），导出时保留原值 */
+    char  origin_device[40];   /* 消息产生端设备标识 */
 } tr_msg;
 
 typedef struct tr_doc {
@@ -163,6 +165,8 @@ static int collect(aic_db *db, int mode, const aic_export_scope *sc, tr_doc *doc
             tm->original_content = msgs[k].original_content ? aic_strdup(msgs[k].original_content) : NULL;
             aic_strlcpy_utf8(tm->model_id, sizeof(tm->model_id), msgs[k].model_id);
             aic_strlcpy_utf8(tm->created_at, sizeof(tm->created_at), msgs[k].created_at);
+            tm->logical_ts = msgs[k].logical_ts;
+            aic_strlcpy_utf8(tm->origin_device, sizeof(tm->origin_device), msgs[k].origin_device);
         }
         aic_msg_free_array(msgs, n);
         if (sc && sc->scope == 2 && msg_n == kept_before) doc->conv_n--;  /* 区间内没有消息的会话不导出 */
@@ -263,6 +267,8 @@ int aic_export_json_ex(aic_db *db, int mode, const aic_export_scope *sc, sb *out
         else jw_put_null(&w, "original_content");
         jw_put_str(&w, "model_id", m->model_id);
         jw_put_str(&w, "created_at", m->created_at);
+        jw_put_int(&w, "logical_ts", m->logical_ts);
+        jw_put_str(&w, "origin_device", m->origin_device);
         jw_obj_end(&w);
     }
     jw_arr_end(&w);
@@ -467,6 +473,8 @@ static int parse_doc(const char *path, tr_doc *doc, char *err, size_t errlen)
         m->original_content = (orig && orig->type == JV_STR) ? aic_strdup(jv_string(orig)) : NULL;
         aic_strlcpy_utf8(m->model_id, sizeof(m->model_id), jv_get_str(o, "model_id", ""));
         aic_strlcpy_utf8(m->created_at, sizeof(m->created_at), jv_get_str(o, "created_at", ""));
+        m->logical_ts = jv_get_ll(o, "logical_ts", 0);
+        aic_strlcpy_utf8(m->origin_device, sizeof(m->origin_device), jv_get_str(o, "origin_device", ""));
     }
     jv_free(root);
 
@@ -614,7 +622,7 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
         res->msg_overwritten++;
         aic_stmt *st = aic_db_prepare(db,
             "UPDATE message SET role=?2, content=?3, recalled=?4, edited_at=?5, original_content=?6, "
-            "model_id=?7, created_at=?8, superseded=?9 WHERE id=?1;");
+            "model_id=?7, created_at=?8, superseded=?9, logical_ts=?10, origin_device=?11 WHERE id=?1;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, id);
         aic_stmt_bind_text(st, 2, m->role);
@@ -626,6 +634,8 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
         aic_stmt_bind_text(st, 7, m->model_id);
         aic_stmt_bind_text(st, 8, m->created_at);
         aic_stmt_bind_ll(st, 9, m->superseded);
+        aic_stmt_bind_ll(st, 10, m->logical_ts);
+        aic_stmt_bind_text(st, 11, m->origin_device);
         int rc = aic_stmt_step(st);
         aic_stmt_finalize(st);
         return rc == AIC_DONE ? AIC_OK : rc;
@@ -636,8 +646,8 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
     res->msg_added++;
     aic_stmt *st = aic_db_prepare(db,
         "INSERT INTO message (id, conversation_id, seq, role, content, recalled, edited_at, "
-        "original_content, model_id, created_at, superseded) "
-        "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);");
+        "original_content, model_id, created_at, superseded, logical_ts, origin_device) "
+        "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);");
     if (!st) return AIC_E_DB;
     aic_stmt_bind_text(st, 1, id);
     aic_stmt_bind_text(st, 2, m->conversation_id);
@@ -651,6 +661,8 @@ static int import_message(aic_db *db, const tr_msg *m, aic_conflict_policy polic
     aic_stmt_bind_text(st, 9, m->model_id);
     aic_stmt_bind_text(st, 10, m->created_at);
     aic_stmt_bind_ll(st, 11, m->superseded);
+    aic_stmt_bind_ll(st, 12, m->logical_ts);
+    aic_stmt_bind_text(st, 13, m->origin_device);
     int rc = aic_stmt_step(st);
     aic_stmt_finalize(st);
     return rc == AIC_DONE ? AIC_OK : rc;

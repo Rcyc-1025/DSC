@@ -54,6 +54,9 @@ size_t      jv_len(const jv *v);
 const jv   *jv_at(const jv *v, size_t i);
 const char *jv_string(const jv *v);
 double      jv_number(const jv *v);
+
+/* 把整棵 jv 树写回紧凑 JSON 文本（对象键保持解析顺序），用于把 payload 原样转发。 */
+void        jv_serialize(const jv *v, sb *out);
 int         jv_bool(const jv *v);
 
 /* 写入器：按调用顺序自动补逗号与缩进控制。 */

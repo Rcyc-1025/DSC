@@ -1,8 +1,12 @@
 /* router.h —— 路由状态机（FR-13 双模式、FR-15 三栏、页面栈与浮层）。
  *
- * 状态迁移（技术设计 §7.2）：
- *   BOOT -> CONFIG_CHECK -> { CHAT_READY | QA_READY | FIRST_RUN }
- *   FIRST_RUN -> WIZARD -> CHAT_READY
+ * 状态迁移（技术设计 §4.4 / §2.3，FR-30 首次启动顺序）：
+ *   BOOT -> CONFIG_CHECK -> CREDENTIAL_CHECK
+ *   CREDENTIAL_CHECK -> 无凭证 CREDENTIAL_SETUP ｜ 有凭证 MODE_SELECT
+ *   CREDENTIAL_SETUP -> MODE_SELECT       （凭证写入安全存储之后才放行主页）
+ *   MODE_SELECT -> { CHAT_READY | QA_READY }（首次记录 default_mode）
+ *   CREDENTIAL_CHECK -> 已记录 default_mode 时直达 { CHAT_READY | QA_READY }
+ *   保留旧路径 FIRST_RUN -> WIZARD -> CHAT_READY（老版本数据兼容）
  *   CHAT_READY <-> QA_READY      （mode_switch）
  *   CHAT_READY -> CHAT_TAB(我|设置|聊天)
  *   QA_READY   -> QA_THREAD_LIST | QA_THREAD
@@ -29,7 +33,10 @@ typedef enum aic_route_state {
     AIC_ST_QA_READY,
     AIC_ST_CHAT_TAB,
     AIC_ST_QA_LIST,
-    AIC_ST_QA_THREAD
+    AIC_ST_QA_THREAD,
+    AIC_ST_CREDENTIAL_CHECK,   /* 首次启动第一步：检查凭证是否就绪 */
+    AIC_ST_CREDENTIAL_SETUP,   /* 凭证未就绪：必须先配置 API Key */
+    AIC_ST_MODE_SELECT         /* 凭证就绪：选择默认模式 */
 } aic_route_state;
 
 typedef enum aic_tab {
@@ -72,8 +79,14 @@ const char     *aic_overlay_name(aic_overlay_kind k);
 
 /* BOOT -> CONFIG_CHECK：读设置决定首次运行还是进入默认模式。 */
 int aic_router_boot(aic_router *r);
-/* CONFIG_CHECK -> 首次运行 / 聊天就绪 / 问答就绪。 */
+/* CONFIG_CHECK -> CREDENTIAL_CHECK ->（凭证就绪）MODE_SELECT 或直达目标模式。 */
 int aic_router_config_check(aic_router *r);
+/* CREDENTIAL_CHECK：无凭证进 CREDENTIAL_SETUP，有凭证按已记录的默认模式分流。 */
+int aic_router_credential_check(aic_router *r);
+/* CREDENTIAL_SETUP -> MODE_SELECT：凭证已成功写入安全存储后调用。 */
+int aic_router_credential_done(aic_router *r);
+/* MODE_SELECT -> CHAT_READY | QA_READY：记录 default_mode 并放行主页。 */
+int aic_router_mode_select(aic_router *r, aic_mode mode);
 /* FIRST_RUN -> WIZARD，WIZARD -> CHAT_READY。 */
 int aic_router_start_wizard(aic_router *r);
 int aic_router_finish_wizard(aic_router *r);

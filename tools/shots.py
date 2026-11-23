@@ -25,12 +25,14 @@ SCENES = [
     ('04_qa_thread', ['--ready', '--demo', '--qa']),
     ('05_guide', ['--ready', '--demo', '--guide']),
     ('06_ai_info', ['--ready', '--demo', '--overlay', '1']),
-    ('07_wizard', ['--shot-first']),
     ('08_narrow', ['--ready', '--demo', '--size', '900x620']),
     ('09_advanced', ['--ready', '--demo', '--adv']),
     ('10_export', ['--ready', '--demo', '--overlay', '3']),
     ('11_msg_menu', ['--ready', '--demo', '--overlay', '4']),
     ('12_plugins', ['--ready', '--demo', '--overlay', '6']),
+    ('13_credential', ['--cred']),
+    ('14_mode', ['--mode']),
+    ('15_pair', ['--ready', '--demo', '--pair']),
 ]
 
 
@@ -41,10 +43,7 @@ def run(name, args):
     os.makedirs(data_dir, exist_ok=True)
     bmp = os.path.join(OUT, name + '.bmp')
     a = [EXE, '--shot', bmp]
-    if args == ['--shot-first']:
-        a = [EXE, '--shot', bmp]
-    else:
-        a += args
+    a += args
     env = dict(os.environ)
     env['SAI_DATA_DIR'] = data_dir
     p = subprocess.run(a, env=env, capture_output=True, timeout=90)

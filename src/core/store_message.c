@@ -1,12 +1,14 @@
 /* store_message.c */
 #include "store_message.h"
+#include "sync_clock.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MSG_COLS "id, conversation_id, seq, role, content, recalled, IFNULL(edited_at,''), " \
-                 "original_content, IFNULL(model_id,''), created_at, superseded"
+                 "original_content, IFNULL(model_id,''), created_at, superseded, " \
+                 "logical_ts, origin_device"
 
 static void read_row(aic_stmt *st, aic_message *m)
 {
@@ -23,6 +25,8 @@ static void read_row(aic_stmt *st, aic_message *m)
     if ((v = aic_stmt_text(st, 8))) aic_strlcpy_utf8(m->model_id, sizeof(m->model_id), v);
     if ((v = aic_stmt_text(st, 9))) aic_strlcpy_utf8(m->created_at, sizeof(m->created_at), v);
     m->superseded = aic_stmt_int(st, 10);
+    m->logical_ts = aic_stmt_ll(st, 11);
+    if ((v = aic_stmt_text(st, 12))) aic_strlcpy_utf8(m->origin_device, sizeof(m->origin_device), v);
 }
 
 void aic_msg_free(aic_message *m)
@@ -53,6 +57,15 @@ int aic_msg_append(aic_db *db, const char *conv_id, aic_role role, const char *c
     int rc = aic_db_begin(db);
     if (rc != AIC_OK) return rc;
 
+    /* 逻辑时钟与来源设备（技术设计 §16.5）：本地新增取本端最大值加 1，
+     * 与 seq 一起构成跨端排序键 (logical_ts, origin_device, seq)。 */
+    long long lts = 0;
+    rc = aic_clock_next(db, &lts);
+    if (rc != AIC_OK) { aic_db_rollback(db); return rc; }
+    char dev[40];
+    dev[0] = '\0';
+    if (aic_device_id(db, dev, sizeof(dev)) != AIC_OK) dev[0] = '\0';
+
     /* 会话必须存在，并在同一事务内推进 last_seq。 */
     aic_stmt *st = aic_db_prepare(db,
         "UPDATE conversation SET last_seq = last_seq + 1, updated_at = ?2 WHERE id = ?1 RETURNING last_seq;");
@@ -80,10 +93,13 @@ int aic_msg_append(aic_db *db, const char *conv_id, aic_role role, const char *c
     m.content = aic_strdup(content);
     if (model_id && *model_id) aic_strlcpy_utf8(m.model_id, sizeof(m.model_id), model_id);
     aic_strlcpy_utf8(m.created_at, sizeof(m.created_at), now);
+    m.logical_ts = lts;
+    aic_strlcpy_utf8(m.origin_device, sizeof(m.origin_device), dev);
 
     st = aic_db_prepare(db,
         "INSERT INTO message (id, conversation_id, seq, role, content, recalled, edited_at, "
-        "original_content, model_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, ?6, ?7);");
+        "original_content, model_id, created_at, logical_ts, origin_device) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, ?6, ?7, ?8, ?9);");
     if (!st) { aic_msg_free(&m); aic_db_rollback(db); return AIC_E_DB; }
     aic_stmt_bind_text(st, 1, m.id);
     aic_stmt_bind_text(st, 2, m.conversation_id);
@@ -92,6 +108,8 @@ int aic_msg_append(aic_db *db, const char *conv_id, aic_role role, const char *c
     aic_stmt_bind_text(st, 5, m.content);
     aic_stmt_bind_text(st, 6, m.model_id[0] ? m.model_id : NULL);
     aic_stmt_bind_text(st, 7, m.created_at);
+    aic_stmt_bind_ll(st, 8, m.logical_ts);
+    aic_stmt_bind_text(st, 9, m.origin_device);
     rc = aic_stmt_step(st);
     aic_stmt_finalize(st);
     if (rc != AIC_DONE) {
@@ -161,7 +179,7 @@ int aic_msg_page(aic_db *db, const char *conv_id, long long before_seq, int limi
     if (before_seq > 0) {
         st = aic_db_prepare(db,
             "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND seq < ?2 "
-            "AND superseded = 0 ORDER BY seq DESC LIMIT ?3;");
+            "AND superseded = 0 ORDER BY logical_ts DESC, origin_device DESC, seq DESC LIMIT ?3;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, conv_id);
         aic_stmt_bind_ll(st, 2, before_seq);
@@ -169,7 +187,42 @@ int aic_msg_page(aic_db *db, const char *conv_id, long long before_seq, int limi
     } else {
         st = aic_db_prepare(db,
             "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND superseded = 0 "
-            "ORDER BY seq DESC LIMIT ?2;");
+            "ORDER BY logical_ts DESC, origin_device DESC, seq DESC LIMIT ?2;");
+        if (!st) return AIC_E_DB;
+        aic_stmt_bind_text(st, 1, conv_id);
+        aic_stmt_bind_ll(st, 2, limit);
+    }
+    int rc = collect_msgs(st, out, out_n);
+    aic_stmt_finalize(st);
+    if (rc == AIC_OK) reverse_messages(*out, *out_n);
+    return rc;
+}
+
+int aic_msg_page_ordered(aic_db *db, const char *conv_id,
+                          long long before_ts, const char *before_device, long long before_seq,
+                          int limit, aic_message **out, size_t *out_n)
+{
+    if (!db || !conv_id || !out || !out_n) return AIC_E_INVAL;
+    if (limit <= 0) limit = 50;
+    if (limit > 500) limit = 500;
+    const char *dev = before_device ? before_device : "";
+    aic_stmt *st;
+    if (before_ts > 0) {
+        /* 行值比较：严格小于 (before_ts, before_device, before_seq)，跨端顺序一致。 */
+        st = aic_db_prepare(db,
+            "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND superseded = 0 "
+            "AND (logical_ts, origin_device, seq) < (?2, ?3, ?4) "
+            "ORDER BY logical_ts DESC, origin_device DESC, seq DESC LIMIT ?5;");
+        if (!st) return AIC_E_DB;
+        aic_stmt_bind_text(st, 1, conv_id);
+        aic_stmt_bind_ll(st, 2, before_ts);
+        aic_stmt_bind_text(st, 3, dev);
+        aic_stmt_bind_ll(st, 4, before_seq);
+        aic_stmt_bind_ll(st, 5, limit);
+    } else {
+        st = aic_db_prepare(db,
+            "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND superseded = 0 "
+            "ORDER BY logical_ts DESC, origin_device DESC, seq DESC LIMIT ?2;");
         if (!st) return AIC_E_DB;
         aic_stmt_bind_text(st, 1, conv_id);
         aic_stmt_bind_ll(st, 2, limit);
@@ -187,7 +240,7 @@ int aic_msg_context(aic_db *db, const char *conv_id, int limit,
     if (limit <= 0) limit = AIC_CONTEXT_MESSAGES_DEFAULT;
     aic_stmt *st = aic_db_prepare(db,
         "SELECT " MSG_COLS " FROM message WHERE conversation_id = ?1 AND recalled = 0 "
-        "AND superseded = 0 ORDER BY seq DESC LIMIT ?2;");
+        "AND superseded = 0 ORDER BY logical_ts DESC, origin_device DESC, seq DESC LIMIT ?2;");
     if (!st) return AIC_E_DB;
     aic_stmt_bind_text(st, 1, conv_id);
     aic_stmt_bind_ll(st, 2, limit);

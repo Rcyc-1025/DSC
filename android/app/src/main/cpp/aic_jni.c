@@ -37,6 +37,11 @@
 #include "update.h"
 #include "backup.h"
 #include "avatar.h"
+#include "credential.h"
+#include "pairing.h"
+#include "sync.h"
+#include "sync_session.h"
+#include "transport.h"
 
 #define TAG "SaiCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -67,6 +72,12 @@ static int ensure_env(void);
 static const char *current_conv(void);
 static void reply_ok(sb *out);
 static void reply_err(sb *out, const char *msg);
+static void load_key_from_store(void);   /* 安全存储 → 内存（首启与重启都要走） */
+static void session_close(void);         /* 关闭配对/同步会话 */
+static void put_credential(jw *w);
+static void put_sync(jw *w);
+static int cred_has_key(void);
+static int demo_mode(void);
 
 /* 进程内的可变状态：全部只保存在内存里，不落盘。 */
 static char g_key[256];      /* API Key：不进日志、不进导出、不进备份包 */
@@ -108,6 +119,7 @@ static void gen_unlock(void) { pthread_mutex_unlock(&g_lock); }
 /* 关闭整个环境（恢复备份前必须调用：恢复会替换数据库文件）。 */
 static void close_env(void)
 {
+    session_close();
     if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }
     if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
     if (g_db) { aic_db_close(g_db); g_db = NULL; }
@@ -1143,6 +1155,8 @@ static int ensure_env(void)
     /* 设置里选的模型交给引擎作为 override，否则请求里会一直用会话默认模型。 */
     aic_engine_set_model_override(g_eng, selected_model());
     aic_engine_set_endpoint(g_eng, cur_endpoint());
+    /* 重启后把安全存储里的 Key 读回内存（FR-30）：界面与日志都不出现明文。 */
+    load_key_from_store();
     aic_router_boot(g_router);
     aic_router_config_check(g_router);
     return AIC_OK;
@@ -1435,6 +1449,9 @@ static void build_state(sb *out)
     jw_put_str(&w, "tabName", aic_tab_name((aic_tab)tab));
     st = aic_router_state(g_router);
     jw_put_str(&w, "state", aic_route_state_name(st));
+    /* 首启顺序（§2.3 / FR-30）：界面按 routerState 决定先给凭证页还是模式选择页。 */
+    jw_put_str(&w, "routerState", aic_route_state_name(st));
+    jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
     jw_put_bool(&w, "switching", aic_router_is_switching(g_router));
     jw_put_int(&w, "overlay", (long long)aic_router_top_overlay(g_router));
     jw_put_str(&w, "overlayName", aic_overlay_name(aic_router_top_overlay(g_router)));
@@ -1469,10 +1486,15 @@ static void build_state(sb *out)
     put_usage(&w);
     put_models(&w);
     put_plugins(&w);
+    put_credential(&w);
+    put_sync(&w);
     jw_obj_end(&w);
 }
 
 /* ---------- 命令处理 ---------- */
+/* 实体变更后把增量事件交给发件箱（§16.4）；未配对时直接忽略。定义见本文件后部。 */
+static void sync_touch(aic_sync_entity ent, aic_sync_op op, const char *entity_id);
+
 static void reply_ok(sb *out)
 {
     jw w;
@@ -1522,7 +1544,11 @@ static int cmd_send(const char *text, sb *out)
     jw_put_int(&w, "promptTokens", res.prompt_tokens);
     jw_put_int(&w, "completionTokens", res.completion_tokens);
     jw_put_int(&w, "costMicros", res.cost_micros);
+    jw_put_str(&w, "userMsgId", res.user_msg_id);
+    jw_put_str(&w, "assistantMsgId", res.assistant_msg_id);
     jw_obj_end(&w);
+    sync_touch(AIC_ENT_MESSAGE, AIC_OP_CREATE, res.user_msg_id);
+    sync_touch(AIC_ENT_MESSAGE, AIC_OP_CREATE, res.assistant_msg_id);
     aic_engine_result_free(&res);
     return AIC_OK;
 }
@@ -1702,6 +1728,7 @@ static void cmd_persona_rollback(const char *version_id, int version, sb *out)
     jw_put_str(&w, "err", "");
     jw_put_int(&w, "version", upd.current_version);
     jw_obj_end(&w);
+    sync_touch(AIC_ENT_PERSONA, AIC_OP_UPDATE, upd.id);
     aic_persona_free(&upd);
 }
 
@@ -1717,6 +1744,7 @@ static void cmd_rename_thread(const char *id_in, const char *title, sb *out)
     if (!title || !title[0]) { reply_err(out, "标题不能为空"); return; }
     rc = aic_conv_update_meta(g_db, id, title, NULL, NULL);
     if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+    sync_touch(AIC_ENT_CONVERSATION, AIC_OP_UPDATE, id);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -1725,6 +1753,539 @@ static void cmd_rename_thread(const char *id_in, const char *title, sb *out)
     jw_put_str(&w, "id", id);
     jw_put_str(&w, "title", title);
     jw_obj_end(&w);
+}
+
+/* ============================================================================
+ * 首次启动顺序（TDD §2.3 / §4.4 / §12.2，FR-30）与双端配对 + 实时同步
+ * （TDD 第 16 章，FR-25~FR-29）
+ * --------------------------------------------------------------------------
+ * 凭证：明文只出现在内存与系统安全存储；界面、日志、导出、备份都不带 Key。
+ * 配对：同一局域网 UDP 广播发现 + TCP 直连；6 位配对码双向校验（只输一次）；
+ *       同一时刻只与一个设备同步——会话对象只有一个，阻塞调用全部串行化。
+ * 蓝牙：transport 只留接口（aic_transport_available 返回 0），界面如实说明。
+ * ========================================================================== */
+
+static aic_session     *g_sess;
+static pthread_mutex_t  g_sync_mtx = PTHREAD_MUTEX_INITIALIZER;
+static int              g_pair_role;    /* 0 未定 / 1 被连接方（监听）/ 2 连接方 */
+static int              g_cred_avail = -1;
+
+static int cred_has_key(void)
+{
+    char v[8] = { 0 };
+    if (!g_db) return 0;
+    if (aic_setting_get(g_db, AIC_SET_CRED_HAS_KEY, v, sizeof(v)) != AIC_OK) return 0;
+    return strcmp(v, "1") == 0;
+}
+
+/* 演示模式：只设标记、不写凭证、不发网络请求（无 Key 也能看界面与流程）。 */
+static int demo_mode(void)
+{
+    char v[8] = { 0 };
+    if (!g_db) return 0;
+    if (aic_setting_get(g_db, "app.demo_mode", v, sizeof(v)) != AIC_OK) return 0;
+    return strcmp(v, "1") == 0;
+}
+
+/* 安全存储里的 Key 读回内存；顺带补写缺失的「已有凭证」标记（FR-30）。 */
+static void load_key_from_store(void)
+{
+    char buf[256];
+    char err[256] = { 0 };
+    int rc;
+
+    if (!g_db || g_key[0]) return;
+    memset(buf, 0, sizeof(buf));
+    rc = aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, buf, sizeof(buf),
+                       err, sizeof(err));
+    if (rc != AIC_OK || !buf[0]) {
+        aic_secure_zero(buf, sizeof(buf));
+        return;
+    }
+    aic_strlcpy_utf8(g_key, sizeof(g_key), buf);
+    aic_secure_zero(buf, sizeof(buf));
+    if (g_eng) aic_engine_set_api_key(g_eng, g_key);
+    if (!cred_has_key()) aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
+}
+
+static void session_close(void)
+{
+    if (!g_sess) return;
+    pthread_mutex_lock(&g_sync_mtx);
+    aic_session_destroy(g_sess);
+    g_sess = NULL;
+    g_pair_role = 0;
+    pthread_mutex_unlock(&g_sync_mtx);
+}
+
+static int ensure_session(void)
+{
+    int rc = ensure_env();
+    if (rc != AIC_OK) return rc;
+    if (g_sess) return AIC_OK;
+    rc = aic_session_create(g_db, &g_sess);
+    if (rc != AIC_OK) { g_sess = NULL; return rc; }
+    return AIC_OK;
+}
+
+/* 实体变更后把增量事件交给发件箱（§16.4）；未配对或链路未建立时直接忽略。 */
+static void sync_touch(aic_sync_entity ent, aic_sync_op op, const char *entity_id)
+{
+    char err[256];
+    if (!g_sess || !entity_id || !*entity_id) return;
+    pthread_mutex_lock(&g_sync_mtx);
+    if (aic_session_is_paired(g_sess)) {
+        err[0] = '\0';
+        (void)aic_session_publish(g_sess, ent, op, entity_id, err, sizeof(err));
+    }
+    pthread_mutex_unlock(&g_sync_mtx);
+}
+
+/* 凭证/模式变化后路由状态要重算：重建路由并重新走一遍配置检查（FR-30）。 */
+static void reopen_router(void)
+{
+    if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
+    if (!g_db) return;
+    if (aic_router_create(g_db, &g_router) != AIC_OK) { g_router = NULL; return; }
+    aic_router_boot(g_router);
+    aic_router_config_check(g_router);
+}
+
+static const char *sync_phase_cn(aic_sync_state st)
+{
+    switch (st) {
+    case AIC_SYNC_IDLE:        return "未开始";
+    case AIC_SYNC_DISCOVERING: return "正在发现设备";
+    case AIC_SYNC_CONNECTING:  return "正在连接";
+    case AIC_SYNC_PAIRING:     return "等待配对校验";
+    case AIC_SYNC_PAIRED:      return "已配对（链路未同步）";
+    case AIC_SYNC_SYNCING:     return "同步中";
+    default:                   return "未知";
+    }
+}
+
+/* 同步状态一次性给全：界面只读这个对象，不需要自己拼状态。 */
+static void put_sync_fields(jw *w)
+{
+    aic_sync_state ph = AIC_SYNC_IDLE;
+    aic_pair_record rec;
+    int outbox = 0, conflicts = 0, paired = 0;
+    char ip[64] = { 0 };
+    char code[16] = { 0 };
+
+    memset(&rec, 0, sizeof(rec));
+    if (g_sess) ph = aic_session_phase(g_sess);
+    if (g_db) {
+        if (aic_pairing_current(g_db, &rec) == AIC_OK) paired = 1;
+        aic_sync_outbox_count(g_db, &outbox);
+        aic_sync_conflict_count(g_db, &conflicts);
+    }
+    if (g_sess) aic_strlcpy_utf8(code, sizeof(code), aic_session_our_code(g_sess));
+    if (aic_transport_local_ip(ip, sizeof(ip)) != AIC_OK) ip[0] = '\0';
+    jw_put_str(w, "phase", aic_sync_state_name(ph));
+    jw_put_str(w, "phaseName", sync_phase_cn(ph));
+    jw_put_bool(w, "isPaired", paired);
+    jw_put_bool(w, "syncing", ph == AIC_SYNC_SYNCING ? 1 : 0);
+    jw_put_str(w, "ourCode", code);
+    jw_put_str(w, "peerName", rec.peer_name);
+    jw_put_str(w, "peerId", rec.peer_id);
+    jw_put_str(w, "pairedAt", rec.paired_at);
+    jw_put_bool(w, "realtimeEnabled", g_db ? aic_sync_realtime_enabled(g_db) : 0);
+    jw_put_int(w, "outbox", outbox);
+    jw_put_int(w, "conflicts", conflicts);
+    jw_put_str(w, "localIp", ip);
+    jw_put_int(w, "port", AIC_TRANSPORT_DEFAULT_PORT);
+    jw_put_bool(w, "bluetoothAvailable", aic_transport_available(AIC_CH_BLUETOOTH) ? 1 : 0);
+    jw_put_str(w, "transportNote", "蓝牙通道未实现，当前用同一局域网直连");
+    jw_put_int(w, "codeTtlSeconds", AIC_PAIR_CODE_TTL_MS / 1000);
+    jw_put_int(w, "codeMaxFails", AIC_PAIR_MAX_FAILS);
+    jw_put_str(w, "scopeNote", "同步范围：用户资料、人设、会话、消息、提示词版本、设置白名单、插件清单");
+    jw_put_str(w, "excludeNote", "不参与同步：凭证、插件二进制、用量流水、日志、备份包");
+}
+
+static void put_credential(jw *w)
+{
+    if (g_cred_avail < 0) g_cred_avail = aic_cred_available() ? 1 : 0;
+    jw_obj_begin(w, "credential");
+    jw_put_bool(w, "hasKey", cred_has_key());
+    jw_put_bool(w, "inMemory", g_key[0] ? 1 : 0);
+    jw_put_bool(w, "available", g_cred_avail ? 1 : 0);
+    jw_put_bool(w, "demo", demo_mode() ? 1 : 0);
+    jw_put_str(w, "storage", "系统安全存储（界面与日志不出现明文）");
+    jw_obj_end(w);
+}
+
+static void put_sync(jw *w)
+{
+    jw_obj_begin(w, "sync");
+    put_sync_fields(w);
+    jw_obj_end(w);
+}
+
+static void reply_sync(sb *out, const char *note)
+{
+    jw w;
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "note", note ? note : "");
+    put_sync(&w);
+    jw_obj_end(&w);
+}
+
+static void reply_router(sb *out, const char *note)
+{
+    jw w;
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "note", note ? note : "");
+    jw_put_str(&w, "routerState", aic_route_state_name(aic_router_state(g_router)));
+    jw_put_bool(&w, "hasKey", cred_has_key());
+    jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
+    jw_obj_end(&w);
+}
+
+/* ---------- 凭证与默认模式（FR-30） ---------- */
+static void cmd_credential_status(sb *out)
+{
+    aic_route_state st;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    load_key_from_store();
+    st = aic_router_state(g_router);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_bool(&w, "hasKey", cred_has_key());
+    jw_put_bool(&w, "inMemory", g_key[0] ? 1 : 0);
+    jw_put_bool(&w, "credAvailable", aic_cred_available());
+    jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
+    jw_put_str(&w, "routerState", aic_route_state_name(st));
+    jw_put_bool(&w, "needCredential", st == AIC_ST_CREDENTIAL_SETUP ? 1 : 0);
+    jw_put_bool(&w, "needModeSelect", st == AIC_ST_MODE_SELECT ? 1 : 0);
+    jw_put_str(&w, "note", "凭证存在系统安全存储，界面与日志不出现明文");
+    jw_obj_end(&w);
+}
+
+static void cmd_save_credential(const char *key, sb *out)
+{
+    char err[256] = { 0 };
+    aic_route_state st;
+    size_t n;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!key) key = "";
+    n = strlen(key);
+    if (n < 20 || strncmp(key, "sk-", 3) != 0) {
+        reply_err(out, "API Key 格式不正确：应以 sk- 开头且长度不少于 20 个字符");
+        return;
+    }
+    if (!aic_cred_available()) {
+        reply_err(out, "系统安全存储不可用：这台设备无法保存凭证（可先用演示模式）");
+        return;
+    }
+    rc = aic_cred_save(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, key, err, sizeof(err));
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : "写入系统安全存储失败");
+        return;
+    }
+    aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
+    aic_setting_set(g_db, "app.demo_mode", "0");
+    aic_strlcpy_utf8(g_key, sizeof(g_key), key);
+    if (g_eng) aic_engine_set_api_key(g_eng, g_key);
+    aic_guide_mark(g_db, "api_key", 0);
+    st = aic_router_state(g_router);
+    if (st == AIC_ST_CREDENTIAL_SETUP) aic_router_credential_done(g_router);
+    else if (st == AIC_ST_CREDENTIAL_CHECK) aic_router_credential_check(g_router);
+    reply_router(out, "凭证已写入系统安全存储，接下来选择默认模式");
+}
+
+/* 演示模式：系统属性/环境在 Android 上设不了，只能由界面显式调用（界面上要显示「演示模式」）。 */
+static void cmd_demo_mode(sb *out)
+{
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
+    aic_setting_set(g_db, AIC_SET_FIRST_RUN_DONE, "1");
+    aic_setting_set(g_db, "app.demo_mode", "1");
+    aic_setting_set(g_db, AIC_SET_DEFAULT_MODE, "chat");
+    reopen_router();
+    reply_router(out, "已进入演示模式：不写凭证、不发任何网络请求");
+}
+
+static void cmd_mode_select(const char *mode, sb *out)
+{
+    aic_mode target = (mode && strcmp(mode, "qa") == 0) ? AIC_MODE_QA : AIC_MODE_CHAT;
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = aic_router_mode_select(g_router, target);
+    if (rc != AIC_OK) {
+        reply_err(out, "当前不在默认模式选择步骤：请重新进入应用");
+        return;
+    }
+    aic_guide_mark(g_db, "mode_intro", 0);
+    reply_router(out, target == AIC_MODE_QA ? "已进入问答模式" : "已进入聊天模式");
+}
+
+/* ---------- 配对与实时同步（第十六章） ---------- */
+static void cmd_pair_host(int port, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_host(g_sess, port, NULL, err, sizeof(err));
+    if (rc == AIC_OK) g_pair_role = 1;
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    reply_sync(out, "已开始监听：把本端 6 位配对码念给对端，再等待其连入");
+}
+
+static void cmd_pair_discover(int port, int wait_ms, sb *out)
+{
+    aic_peer peers[AIC_TRANSPORT_PEER_MAX];
+    size_t n = 0, i;
+    char err[256] = { 0 };
+    int rc;
+    jw w;
+
+    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
+    if (wait_ms <= 0 || wait_ms > 8000) wait_ms = 1500;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(peers, 0, sizeof(peers));
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_discover(g_sess, port, wait_ms, peers, AIC_TRANSPORT_PEER_MAX, &n,
+                              err, sizeof(err));
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "note", n ? "发现设备，选一台直连" :
+                             "没有发现设备：确认两端在同一 Wi-Fi、且对端已点『开始监听』");
+    jw_arr_begin(&w, "peers");
+    for (i = 0; i < n; i++) {
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "deviceId", peers[i].device_id);
+        jw_put_str(&w, "name", peers[i].name);
+        jw_put_str(&w, "addr", peers[i].addr);
+        jw_put_int(&w, "port", peers[i].port);
+        jw_put_str(&w, "channel", aic_channel_name(peers[i].channel));
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    put_sync(&w);
+    jw_obj_end(&w);
+}
+
+static void cmd_pair_connect(const char *addr, int port, int timeout_ms, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+
+    if (!addr || !addr[0]) { reply_err(out, "请填写对端地址"); return; }
+    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
+    if (timeout_ms <= 0 || timeout_ms > 30000) timeout_ms = 4000;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_connect(g_sess, addr, port, timeout_ms, NULL, err, sizeof(err));
+    if (rc == AIC_OK) g_pair_role = 2;
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    reply_sync(out, "已连上对端：输入对端屏幕上的 6 位码再点『握手』");
+}
+
+/* 被连接方等待连入：切成 250ms 的小片，片间顺手应答发现广播，
+ * 否则对端的『发现同网设备』看不到本端（被连接方同时在监听，不能靠 discover）。 */
+static void cmd_pair_accept(int timeout_ms, sb *out)
+{
+    char err[256] = { 0 };
+    int rc = AIC_E_TIMEOUT;
+    int waited = 0, slice, answered = 0;
+
+    if (timeout_ms <= 0 || timeout_ms > 60000) timeout_ms = 20000;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (aic_session_phase(g_sess) == AIC_SYNC_IDLE) {
+        reply_err(out, "请先点『开始监听等待连入』，再等待对端连入");
+        return;
+    }
+    while (waited < timeout_ms) {
+        slice = timeout_ms - waited;
+        if (slice > 250) slice = 250;
+        pthread_mutex_lock(&g_sync_mtx);
+        rc = aic_session_accept(g_sess, slice, err, sizeof(err));
+        if (rc == AIC_E_TIMEOUT) {
+            char derr[128] = { 0 };
+            answered = 0;
+            aic_session_answer_discovery(g_sess, 100, &answered, derr, sizeof(derr));
+        }
+        pthread_mutex_unlock(&g_sync_mtx);
+        if (rc != AIC_E_TIMEOUT) break;
+        waited += slice;
+    }
+    if (rc == AIC_E_TIMEOUT) {
+        reply_err(out, "等待超时：对端没有连入（确认两端在同一 Wi-Fi、地址与端口正确）");
+        return;
+    }
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    g_pair_role = 1;
+    reply_sync(out, "对端已连入：输入对端屏幕上的 6 位码再点『握手』");
+}
+
+static void cmd_pair_handshake(const char *code, const char *side, int timeout_ms, sb *out)
+{
+    char err[256] = { 0 };
+    int accept_side, rc;
+
+    if (!aic_pair_code_valid(code)) { reply_err(out, "配对码必须是 6 位数字"); return; }
+    if (timeout_ms <= 0 || timeout_ms > 30000) timeout_ms = 8000;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (side && side[0]) accept_side = strcmp(side, "accept") == 0;
+    else accept_side = (g_pair_role == 1);
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = accept_side ? aic_session_handshake_accept(g_sess, code, timeout_ms, err, sizeof(err))
+                     : aic_session_handshake_connect(g_sess, code, timeout_ms, err, sizeof(err));
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    reply_sync(out, "配对成功：实时同步已默认开启");
+}
+
+static void cmd_pair_status(sb *out)
+{
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    reply_sync(out, "");
+}
+
+static void cmd_pair_publish(const char *entity, const char *op, const char *id, sb *out)
+{
+    char err[256] = { 0 };
+    int ent, opr, rc;
+
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    ent = aic_sync_entity_parse(entity);
+    opr = aic_sync_op_parse(op);
+    if (ent < 0) { reply_err(out, "未知的同步实体"); return; }
+    if (opr < 0) { reply_err(out, "未知的同步操作"); return; }
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_publish(g_sess, (aic_sync_entity)ent, (aic_sync_op)opr,
+                             (id && id[0]) ? id : NULL, err, sizeof(err));
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    reply_sync(out, "已放入发件箱：下一轮同步发出");
+}
+
+static void cmd_pair_unpair(sb *out)
+{
+    char err[256] = { 0 };
+    aic_pair_record rec;
+    char peer[40] = { 0 };
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&rec, 0, sizeof(rec));
+    if (aic_pairing_current(g_db, &rec) == AIC_OK) aic_strlcpy_utf8(peer, sizeof(peer), rec.peer_id);
+    if (g_sess) {
+        pthread_mutex_lock(&g_sync_mtx);
+        aic_session_unpair(g_sess, err, sizeof(err));
+        pthread_mutex_unlock(&g_sync_mtx);
+    }
+    if (peer[0]) {
+        /* 会话里已经解除时这里会返回 NOTFOUND，属正常情况。 */
+        rc = aic_pairing_unpair(g_db, peer, err, sizeof(err));
+        if (rc != AIC_OK && rc != AIC_E_NOTFOUND) {
+            reply_err(out, err[0] ? err : aic_strerror(rc));
+            return;
+        }
+    }
+    reply_sync(out, "已解除配对：两端本地数据都保留");
+}
+
+static void cmd_sync_toggle(int enabled, sb *out)
+{
+    int rc;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = aic_sync_set_realtime(g_db, enabled ? 1 : 0);
+    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+    reply_sync(out, enabled ? "实时同步已开启" : "实时同步已暂停：新事件留在发件箱，恢复后补发");
+}
+
+/* 搬运一轮增量：界面每 1.5 秒调一次（只在配对态调）。 */
+static void cmd_sync_pump(int timeout_ms, sb *out)
+{
+    char err[256] = { 0 };
+    int sent = 0, applied = 0, rc;
+    jw w;
+
+    if (timeout_ms < 0 || timeout_ms > 5000) timeout_ms = 30;
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_pump(g_sess, timeout_ms, &sent, &applied, err, sizeof(err));
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, err[0] ? err : aic_strerror(rc));
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "sent", sent);
+    jw_put_int(&w, "applied", applied);
+    put_sync(&w);
+    jw_obj_end(&w);
+}
+
+static void cmd_conflict_list(sb *out)
+{
+    sb items;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    sb_init(&items);
+    if (aic_sync_conflicts_json(g_db, &items) != AIC_OK) sb_reset(&items);
+    if (!sb_cstr(&items)[0]) sb_append(&items, "[]");
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_raw(&w, "items", sb_cstr(&items));
+    put_sync(&w);
+    jw_obj_end(&w);
+    sb_free(&items);
 }
 
 static void handle(const char *req_text, size_t req_len, sb *out)
@@ -1789,6 +2350,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         else {
             aic_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
             aic_router_set_thread(g_router, c.id);
+            sync_touch(AIC_ENT_CONVERSATION, AIC_OP_CREATE, c.id);
             reply_ok(out);
         }
     } else if (strcmp(cmd, "send") == 0) {
@@ -1798,12 +2360,14 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         rc = aic_engine_recall(g_eng, jv_get_str(root, "id", ""),
                                aic_setting_get_int(g_db, AIC_SET_RECALL_WINDOW,
                                                    AIC_RECALL_WINDOW_DEFAULT), err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc)); else reply_ok(out);
+        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
+        else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_RECALL, jv_get_str(root, "id", "")); reply_ok(out); }
     } else if (strcmp(cmd, "edit") == 0) {
         char err[256] = { 0 };
         rc = aic_engine_edit(g_eng, jv_get_str(root, "id", ""), jv_get_str(root, "text", ""),
                              err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc)); else reply_ok(out);
+        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
+        else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, jv_get_str(root, "id", "")); reply_ok(out); }
     } else if (strcmp(cmd, "setProfile") == 0) {
         aic_profile p;
         char err[256] = { 0 };
@@ -1817,7 +2381,8 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         aic_strlcpy_utf8(p.extra_note, sizeof(p.extra_note),
                          jv_get_str(root, "extraNote", p.extra_note));
         rc = aic_profile_set(g_db, &p, err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc)); else reply_ok(out);
+        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
+        else { sync_touch(AIC_ENT_PROFILE, AIC_OP_UPDATE, "1"); reply_ok(out); }
     } else if (strcmp(cmd, "setPersona") == 0) {
         aic_persona per, upd;
         char err[256] = { 0 };
@@ -1840,6 +2405,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
                 jw_put_str(&w, "err", "");
                 jw_put_int(&w, "version", upd.current_version);
                 jw_obj_end(&w);
+                sync_touch(AIC_ENT_PERSONA, AIC_OP_UPDATE, upd.id);
                 aic_persona_free(&upd);
             }
             aic_persona_free(&per);
@@ -1854,17 +2420,20 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         const char *pref = jv_get_str(root, "pref", "day");
         int v = strcmp(pref, "night") == 0 ? 1 : (strcmp(pref, "system") == 0 ? 2 : 0);
         rc = aic_setting_set_int(g_db, AIC_SET_THEME, v);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
+        else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_THEME); reply_ok(out); }
     } else if (strcmp(cmd, "setMotion") == 0) {
         rc = aic_setting_set_int(g_db, AIC_SET_MOTION, jv_get_bool(root, "on", 1) ? 1 : 0);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
+        else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_MOTION); reply_ok(out); }
     } else if (strcmp(cmd, "setModel") == 0) {
         const char *id = jv_get_str(root, "id", AIC_MODEL_FLASH);
         if (!aic_llm_model_find(id)) reply_err(out, "未知模型");
         else {
             rc = aic_setting_set_int(g_db, AIC_SET_MODEL_DEFAULT,
                                      strcmp(id, AIC_MODEL_PRO) == 0 ? 1 : 0);
-            if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+            if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
+            else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_MODEL_DEFAULT); reply_ok(out); }
         }
     } else if (strcmp(cmd, "setKey") == 0) {
         /* Android 侧凭证保存需要系统安全存储（Keystore）；未接入前只在本次进程内使用。 */
@@ -2022,6 +2591,41 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_persona_rollback(jv_get_str(root, "versionId", ""), (int)jv_get_int(root, "version", 0), out);
     } else if (strcmp(cmd, "renameThread") == 0) {
         cmd_rename_thread(jv_get_str(root, "id", ""), jv_get_str(root, "title", ""), out);
+    } else if (strcmp(cmd, "credentialStatus") == 0) {
+        cmd_credential_status(out);
+    } else if (strcmp(cmd, "saveCredential") == 0) {
+        cmd_save_credential(jv_get_str(root, "key", ""), out);
+    } else if (strcmp(cmd, "demoMode") == 0) {
+        cmd_demo_mode(out);
+    } else if (strcmp(cmd, "modeSelect") == 0) {
+        cmd_mode_select(jv_get_str(root, "mode", "chat"), out);
+    } else if (strcmp(cmd, "pairHost") == 0) {
+        cmd_pair_host((int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT), out);
+    } else if (strcmp(cmd, "pairDiscover") == 0) {
+        cmd_pair_discover((int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT),
+                          (int)jv_get_int(root, "waitMs", 1500), out);
+    } else if (strcmp(cmd, "pairConnect") == 0) {
+        cmd_pair_connect(jv_get_str(root, "addr", ""),
+                         (int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT),
+                         (int)jv_get_int(root, "timeoutMs", 4000), out);
+    } else if (strcmp(cmd, "pairAccept") == 0) {
+        cmd_pair_accept((int)jv_get_int(root, "timeoutMs", 20000), out);
+    } else if (strcmp(cmd, "pairHandshake") == 0) {
+        cmd_pair_handshake(jv_get_str(root, "peerCode", ""), jv_get_str(root, "side", ""),
+                           (int)jv_get_int(root, "timeoutMs", 8000), out);
+    } else if (strcmp(cmd, "pairStatus") == 0) {
+        cmd_pair_status(out);
+    } else if (strcmp(cmd, "pairPublish") == 0) {
+        cmd_pair_publish(jv_get_str(root, "entity", ""), jv_get_str(root, "op", ""),
+                         jv_get_str(root, "entityId", ""), out);
+    } else if (strcmp(cmd, "pairUnpair") == 0) {
+        cmd_pair_unpair(out);
+    } else if (strcmp(cmd, "syncToggle") == 0) {
+        cmd_sync_toggle(jv_get_bool(root, "enabled", 1) ? 1 : 0, out);
+    } else if (strcmp(cmd, "syncPump") == 0) {
+        cmd_sync_pump((int)jv_get_int(root, "timeoutMs", 30), out);
+    } else if (strcmp(cmd, "conflictList") == 0) {
+        cmd_conflict_list(out);
     } else {
         reply_err(out, "未知命令");
     }

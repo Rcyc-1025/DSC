@@ -114,6 +114,67 @@ static const migration g_migrations[] = {
     { 2,
       "ALTER TABLE message ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;"
     },
+    /* v3：双端配对与实时同步（第 16 章 FR-25 至 FR-29）。
+     *  - message 增加 logical_ts 与 origin_device：跨端顺序由逻辑时钟决定，墙钟只用于展示；
+     *  - device_pair 记录已配对设备与共享密钥引用（密钥本体在平台安全存储）；
+     *  - sync_cursor 记录对端已处理事件位点；
+     *  - sync_event 是待发送与已接收事件队列，链路断开期间本地继续可写；
+     *  - sync_conflict 保存冲突落败方的原始实体副本，供用户查看。 */
+    { 3,
+      "ALTER TABLE message ADD COLUMN logical_ts INTEGER NOT NULL DEFAULT 0;"
+      "ALTER TABLE message ADD COLUMN origin_device TEXT NOT NULL DEFAULT '';"
+      "CREATE INDEX IF NOT EXISTS idx_message_order ON message(conversation_id, logical_ts, origin_device, seq);"
+      "CREATE TABLE IF NOT EXISTS device_pair ("
+      "  peer_id TEXT PRIMARY KEY,"
+      "  peer_name TEXT NOT NULL DEFAULT '',"
+      "  device_pair_id TEXT NOT NULL DEFAULT '',"
+      "  secret_ref TEXT NOT NULL DEFAULT '',"
+      "  paired_at TEXT NOT NULL,"
+      "  last_logical_ts INTEGER NOT NULL DEFAULT 0,"
+      "  realtime INTEGER NOT NULL DEFAULT 1"
+      ");"
+      "CREATE TABLE IF NOT EXISTS sync_cursor ("
+      "  peer_id TEXT PRIMARY KEY,"
+      "  applied_event_id TEXT NOT NULL DEFAULT '',"
+      "  applied_ts INTEGER NOT NULL DEFAULT 0,"
+      "  last_logical_ts INTEGER NOT NULL DEFAULT 0"
+      ");"
+      "CREATE TABLE IF NOT EXISTS sync_event ("
+      "  event_id TEXT PRIMARY KEY,"
+      "  entity TEXT NOT NULL,"
+      "  op TEXT NOT NULL,"
+      "  entity_id TEXT NOT NULL DEFAULT '',"
+      "  payload TEXT NOT NULL,"
+      "  logical_ts INTEGER NOT NULL DEFAULT 0,"
+      "  origin_device TEXT NOT NULL DEFAULT '',"
+      "  schema_version INTEGER NOT NULL DEFAULT 1,"
+      "  direction TEXT NOT NULL DEFAULT 'out',"
+      "  state TEXT NOT NULL DEFAULT 'pending',"
+      "  created_at INTEGER NOT NULL DEFAULT 0"
+      ");"
+      "CREATE INDEX IF NOT EXISTS idx_sync_event_state ON sync_event(direction, state, created_at);"
+      "CREATE TABLE IF NOT EXISTS sync_conflict ("
+      "  id TEXT PRIMARY KEY,"
+      "  event_id TEXT NOT NULL,"
+      "  entity TEXT NOT NULL,"
+      "  entity_id TEXT NOT NULL,"
+      "  payload TEXT NOT NULL,"
+      "  logical_ts INTEGER NOT NULL DEFAULT 0,"
+      "  origin_device TEXT NOT NULL DEFAULT '',"
+      "  created_at INTEGER NOT NULL"
+      ");"
+    },
+    /* v4：每个实体的最后应用逻辑时钟，冲突按 (logical_ts, origin_device) 比较（§16.6）。
+     * message 自带 logical_ts / origin_device，其它实体没有，统一记在这张表里。 */
+    { 4,
+      "CREATE TABLE IF NOT EXISTS sync_entity_clock ("
+      "  entity TEXT NOT NULL,"
+      "  entity_id TEXT NOT NULL,"
+      "  logical_ts INTEGER NOT NULL DEFAULT 0,"
+      "  origin_device TEXT NOT NULL DEFAULT '',"
+      "  PRIMARY KEY(entity, entity_id)"
+      ");"
+    },
 };
 
 static const int g_migration_count = (int)(sizeof(g_migrations) / sizeof(g_migrations[0]));

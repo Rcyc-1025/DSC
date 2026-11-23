@@ -14,6 +14,8 @@ A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and A
 - Model catalogue: two built-in identifiers plus a `models.json` in the data directory to add or override models and prices
 - Long threads stay responsive: messages load 100 per page, and exports can cover the current thread, everything, or the last seven days, optionally with avatars
 - All four plugin extension points are wired (prompt fragment, panel, request rewrite, tool declarations); the manifest's permissions and entry hash are shown before installing
+- Two-device pairing and live sync: LAN discovery and a direct connection, each side shows a 6-digit code that the other must enter, and after pairing incremental events flow both ways (logical-clock ordering, losing side kept as a copy)
+- First run asks for the API key before the mode choice, and the key goes straight into the OS secure store; a demo mode lets you look around without one
 
 Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs/ADVANCED.md`.
 
@@ -21,9 +23,9 @@ Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs
 
 | Path | Contents |
 | --- | --- |
-| `src/core` | Core layer: mode router, chat engine, message codec, storage, settings, import/export, plugin host, update, backup |
-| `src/platform/win` | Windows adapters: WinHTTP transport, credential store, plugin child process, GDI+ avatar, system notifications, install/rollback |
-| `src/platform/android` | Android adapters (credentials and network live on the Java side; C goes through JNI) |
+| `src/core` | Core layer: mode router, chat engine, message codec, storage, settings, import/export, plugin host, update, backup, two-device pairing and incremental sync |
+| `src/platform/win` | Windows adapters: WinHTTP transport, Winsock LAN transport, credential store, plugin child process, GDI+ avatar, system notifications, install/rollback |
+| `src/platform/android` | Android adapters: BSD socket LAN transport, Keystore-style credentials (network and UI live on the Java side; C goes through JNI) |
 | `src/ui/win` | Windows UI layer (Win32 + GDI, driven by theme tokens; network and import/export run on worker threads) |
 | `src/plugin_runner` | Plugin host process and the public ABI header |
 | `src/installer` | Self-extracting installer and uninstaller (pure C) |
@@ -38,10 +40,10 @@ Each version ships the packages below (produced under `dist\` for a local build)
 
 | File | What it is |
 | --- | --- |
-| `Sai-1.2.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
-| `Sai-1.2.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `Sai-1.2.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `Sai-1.2.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+| `Sai-1.3.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
+| `Sai-1.3.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `Sai-1.3.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `Sai-1.3.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
 
 ## Build
 
@@ -65,10 +67,10 @@ python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.2.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\Sai-1.3.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.2.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.2.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\Sai-1.3.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe (+ .sha256)
 ~~~
 
 The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.

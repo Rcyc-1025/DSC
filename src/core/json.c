@@ -502,3 +502,40 @@ int jv_parse(const char *text, size_t len, jv **out, char *err, size_t errlen)
     *out = v;
     return AIC_OK;
 }
+
+/* ================= 序列化（jv → 文本） ================= */
+static void ser(sb *b, const jv *v)
+{
+    if (!v) { sb_append(b, "null"); return; }
+    switch (v->type) {
+    case JV_NULL: sb_append(b, "null"); break;
+    case JV_BOOL: sb_append(b, v->u.b ? "true" : "false"); break;
+    case JV_NUM:  sb_appendf(b, "%.17g", v->u.num); break;
+    case JV_STR:  jw_escape_into(b, v->u.str ? v->u.str : ""); break;
+    case JV_ARR:
+        sb_appendc(b, '[');
+        for (size_t i = 0; i < v->u.arr.n; i++) {
+            if (i) sb_appendc(b, ',');
+            ser(b, v->u.arr.items[i]);
+        }
+        sb_appendc(b, ']');
+        break;
+    case JV_OBJ:
+        sb_appendc(b, '{');
+        for (size_t i = 0; i < v->u.obj.n; i++) {
+            if (i) sb_appendc(b, ',');
+            jw_escape_into(b, v->u.obj.keys[i] ? v->u.obj.keys[i] : "");
+            sb_appendc(b, ':');
+            ser(b, v->u.obj.vals[i]);
+        }
+        sb_appendc(b, '}');
+        break;
+    default: sb_append(b, "null"); break;
+    }
+}
+
+void jv_serialize(const jv *v, sb *out)
+{
+    if (!out) return;
+    ser(out, v);
+}

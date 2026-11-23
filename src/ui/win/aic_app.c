@@ -23,6 +23,10 @@
 #include "diaglog.h"
 #include "http.h"
 #include "notify.h"
+#include "pairing.h"
+#include "sync.h"
+#include "sync_session.h"
+#include "transport.h"
 #include "credential.h"
 #include "db.h"
 #include "engine.h"
@@ -81,6 +85,11 @@ enum {
     ACT_PERSONA_ROLLBACK_BASE = 2200,
     ACT_COPY_BASE = 2600,
     ACT_SCOPE_CUR, ACT_SCOPE_ALL, ACT_SCOPE_RANGE, ACT_SCOPE_AVATAR,
+    /* 双端配对与实时同步（技术设计第 16 章 FR-25 ~ FR-30） */
+    ACT_ROW_SYNC, ACT_ROW_PAIR,
+    ACT_CRED_KEY_EDIT, ACT_CRED_SAVE, ACT_CRED_DEMO, ACT_MODE_CHAT, ACT_MODE_QA,
+    ACT_PAIR_BACK, ACT_PAIR_ADDR_EDIT, ACT_PAIR_CODE_EDIT, ACT_PAIR_HOST, ACT_PAIR_DISCOVER,
+    ACT_PAIR_CONNECT, ACT_PAIR_HANDSHAKE, ACT_PAIR_TOGGLE, ACT_PAIR_CONFLICTS, ACT_PAIR_UNPAIR,
     ACT_FIELD_BASE = 900
 };
 
@@ -212,6 +221,24 @@ typedef struct App {
     int  ver_num[8];
     char ver_time[8][32];
     char ver_persona[40];
+
+    /* 首次启动的 API Key 配置（FR-30：凭证未写入安全存储前不进入主页） */
+    char cred_key[256];
+    int  cred_focus;
+
+    /* 双端配对与实时同步（第 16 章 FR-25 ~ FR-29） */
+    aic_session *ses;
+    volatile LONG sync_stop;
+    HANDLE        sync_thread;
+    int   page_pair;
+    char  pair_code_in[16];
+    char  pair_addr_in[64];
+    int   pair_focus;          /* 0 无 / 1 对端码 / 2 地址 */
+    aic_peer peers[8];
+    int   peer_n;
+    char  pair_msg[512];
+    volatile LONG pair_busy;
+    int   pair_role;           /* 1=被连接方 3=连接方（重试握手时用） */
 } App;
 
 static App g_app;
@@ -255,6 +282,7 @@ static void DLOG(const char *fmt, ...)
     fflush(g_logf);
 }
 static int  app_open_db(App *a);
+static void app_setup_engine(App *a);
 static void app_load_chat(App *a);
 static void app_reload_threads(App *a);
 static int  app_has_older(App *a, long long before_seq);
@@ -281,6 +309,16 @@ static int  hit_test(int x, int y);
 static void paint(App *a, HDC dc, RECT client);
 static void paint_chat(App *a, HDC dc, RECT content);
 static void paint_advanced(App *a, HDC dc, RECT content);
+static void paint_credential(App *a, HDC dc, RECT client);
+static void paint_mode_select(App *a, HDC dc, RECT client);
+static void paint_pair(App *a, HDC dc, RECT content);
+static void app_cred_save(App *a);
+static void app_cred_demo(App *a);
+static void app_mode_select(App *a, aic_mode m);
+static void app_sync_start(App *a);
+static void app_sync_stop(App *a);
+static void app_pair_start(App *a, int kind);
+static void app_pair_unpair(App *a);
 static void paint_me(App *a, HDC dc, RECT content);
 static void paint_settings(App *a, HDC dc, RECT content);
 static void paint_qa(App *a, HDC dc, RECT content);
@@ -291,6 +329,222 @@ static void on_click(App *a, int x, int y);
 static void on_char(App *a, wchar_t ch);
 static void on_key(App *a, int vk);
 static void on_wheel(App *a, int delta);
+/* ---------- 首次启动顺序（FR-30）与凭证写入 ---------- */
+static void app_cred_save(App *a)
+{
+    char err[256];
+    size_t n = strlen(a->cred_key);
+
+    err[0] = '\0';
+    if (n < 20 || strncmp(a->cred_key, "sk-", 3) != 0) {
+        app_status(a, "API Key 格式不正确：应以 sk- 开头且长度不少于 20 个字符");
+        return;
+    }
+    if (aic_cred_save(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, a->cred_key,
+                      err, sizeof(err)) != AIC_OK) {
+        app_status(a, "写入系统安全存储失败：%s", err[0] ? err : "未知错误");
+        return;
+    }
+    aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
+    aic_guide_mark(a->db, "api_key", 0);
+    app_setup_engine(a);
+    aic_secure_zero(a->cred_key, sizeof(a->cred_key));
+    a->cred_focus = 0;
+    aic_router_credential_done(a->router);
+    app_status(a, "凭证已写入系统安全存储，接下来选择默认模式");
+    app_invalidate(a);
+}
+
+static void app_cred_demo(App *a)
+{
+    /* 演示旁路：不写任何凭证，只放行首启顺序，界面与设置页都会提示演示模式。 */
+    a->offline_demo = 1;
+    aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
+    app_setup_engine(a);
+    a->cred_focus = 0;
+    aic_router_credential_done(a->router);
+    app_status(a, "已进入演示模式：不写凭证、不发任何网络请求");
+    app_invalidate(a);
+}
+
+static void app_mode_select(App *a, aic_mode m)
+{
+    if (aic_router_mode_select(a->router, m) != AIC_OK) {
+        app_status(a, "进入主页失败，请重试");
+        return;
+    }
+    aic_guide_mark(a->db, "mode_intro", 0);
+    app_reload_threads(a);
+    app_load_chat(a);
+    app_status(a, m == AIC_MODE_CHAT ? "已进入聊天模式" : "已进入问答模式");
+    app_invalidate(a);
+}
+
+/* ---------- 双端同步：后台搬运与配对动作（§4.2 工作线程 + 消息队列） ---------- */
+#define WM_APP_SYNC (WM_APP + 16)
+#define WM_APP_PAIR (WM_APP + 17)
+
+static DWORD WINAPI sync_worker(LPVOID lp)
+{
+    App *a = (App *)lp;
+    while (!InterlockedCompareExchange(&a->sync_stop, 1, 1)) {
+        if (a->ses && aic_session_is_paired(a->ses)) {
+            int sent = 0, applied = 0;
+            char err[256];
+            err[0] = '\0';
+            if (aic_session_pump(a->ses, 400, &sent, &applied, err, sizeof(err)) == AIC_OK) {
+                if (sent || applied)
+                    PostMessageA(a->hwnd, WM_APP_SYNC, (WPARAM)sent, (LPARAM)applied);
+            } else {
+                Sleep(600);
+            }
+        } else {
+            Sleep(400);
+        }
+    }
+    return 0;
+}
+
+static void app_sync_start(App *a)
+{
+    if (!a->ses && aic_session_create(a->db, &a->ses) != AIC_OK) {
+        a->ses = NULL;
+        return;
+    }
+    if (!a->sync_thread) {
+        a->sync_stop = 0;
+        a->sync_thread = CreateThread(NULL, 0, sync_worker, a, 0, NULL);
+    }
+}
+
+static void app_sync_stop(App *a)
+{
+    if (a->sync_thread) {
+        InterlockedExchange(&a->sync_stop, 1);
+        WaitForSingleObject(a->sync_thread, 3000);
+        CloseHandle(a->sync_thread);
+        a->sync_thread = NULL;
+    }
+}
+
+struct PairJob {
+    App *a;
+    int  kind;      /* 1 监听等待连入 / 2 发现同网设备 / 3 直连该地址 / 4 重试握手 */
+    char addr[64];
+    char code[16];
+};
+
+static DWORD WINAPI pair_worker(LPVOID lp)
+{
+    struct PairJob *j = (struct PairJob *)lp;
+    App *a = j->a;
+    char err[256];
+    int rc = AIC_OK;
+
+    err[0] = '\0';
+    if (j->kind == 1) {
+        rc = aic_session_host(a->ses, AIC_TRANSPORT_DEFAULT_PORT, NULL, err, sizeof(err));
+        if (rc == AIC_OK) rc = aic_session_accept(a->ses, 60000, err, sizeof(err));
+        if (rc == AIC_OK) {
+            a->pair_role = 1;
+            rc = aic_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
+        }
+    } else if (j->kind == 2) {
+        aic_peer found[8];
+        size_t n = 0;
+        rc = aic_session_discover(a->ses, AIC_TRANSPORT_DEFAULT_PORT, 1500, found, 8, &n, err, sizeof(err));
+        if (rc == AIC_OK) {
+            int i;
+            a->peer_n = (int)(n > 8 ? 8 : n);
+            for (i = 0; i < a->peer_n; i++) a->peers[i] = found[i];
+        }
+    } else if (j->kind == 3) {
+        rc = aic_session_connect(a->ses, j->addr, AIC_TRANSPORT_DEFAULT_PORT, 4000, NULL,
+                                 err, sizeof(err));
+        if (rc == AIC_OK) {
+            a->pair_role = 3;
+            rc = aic_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
+        }
+    } else {
+        if (a->pair_role == 1) rc = aic_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
+        else rc = aic_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
+    }
+
+    if (rc == AIC_OK) {
+        if (j->kind == 2) snprintf(a->pair_msg, sizeof(a->pair_msg), "发现 %d 台设备，点一行填入地址后再连接", a->peer_n);
+        else snprintf(a->pair_msg, sizeof(a->pair_msg), "配对成功：已建立同步链路，实时同步默认开启");
+    } else {
+        snprintf(a->pair_msg, sizeof(a->pair_msg), "%s", err[0] ? err : aic_strerror(rc));
+    }
+    aic_xfree(j);
+    PostMessageA(a->hwnd, WM_APP_PAIR, (WPARAM)rc, 0);
+    return 0;
+}
+
+static void app_pair_start(App *a, int kind)
+{
+    struct PairJob *j;
+
+    if (!a->ses) app_sync_start(a);
+    if (!a->ses) { app_status(a, "同步会话初始化失败"); return; }
+    if (InterlockedCompareExchange(&a->pair_busy, 1, 0) != 0) {
+        app_status(a, "上一次配对动作还没结束，请稍候");
+        return;
+    }
+    if (kind != 2 && !aic_pair_code_valid(a->pair_code_in)) {
+        InterlockedExchange(&a->pair_busy, 0);
+        app_status(a, "请先填对端界面显示的 6 位配对码");
+        return;
+    }
+    if (kind == 3 && !a->pair_addr_in[0]) {
+        InterlockedExchange(&a->pair_busy, 0);
+        app_status(a, "请先填对端的局域网地址，或先点「发现同网设备」");
+        return;
+    }
+    j = (struct PairJob *)aic_xcalloc(1, sizeof(*j));
+    if (!j) { InterlockedExchange(&a->pair_busy, 0); return; }
+    j->a = a;
+    j->kind = kind;
+    aic_strlcpy_utf8(j->addr, sizeof(j->addr), a->pair_addr_in);
+    aic_strlcpy_utf8(j->code, sizeof(j->code), a->pair_code_in);
+    a->pair_msg[0] = '\0';
+    if (!CreateThread(NULL, 0, pair_worker, j, 0, NULL)) {
+        aic_xfree(j);
+        InterlockedExchange(&a->pair_busy, 0);
+        app_status(a, "起配对线程失败");
+        return;
+    }
+    if (kind == 1) app_status(a, "正在监听 %d 端口，等待对端连入（最长 60 秒）", AIC_TRANSPORT_DEFAULT_PORT);
+    else if (kind == 2) app_status(a, "正在广播发现同网设备…");
+    else if (kind == 3) app_status(a, "正在连接对端…");
+    else app_status(a, "正在重试握手…");
+    app_invalidate(a);
+}
+
+static void app_pair_unpair(App *a)
+{
+    char err[256];
+    aic_pair_record rec;
+
+    err[0] = '\0';
+    if (aic_pairing_current(a->db, &rec) != AIC_OK) {
+        app_status(a, "当前没有配对关系");
+        return;
+    }
+    if (a->ses && aic_session_unpair(a->ses, err, sizeof(err)) == AIC_OK) {
+        a->pair_msg[0] = '\0';
+        app_status(a, "已解除配对：共享密钥已删除，两端本地数据保留");
+        app_invalidate(a);
+        return;
+    }
+    if (aic_pairing_unpair(a->db, rec.peer_id, err, sizeof(err)) == AIC_OK) {
+        app_status(a, "已解除配对：共享密钥已删除，两端本地数据保留");
+    } else {
+        app_status(a, "解除配对失败：%s", err[0] ? err : aic_strerror(AIC_E_STATE));
+    }
+    app_invalidate(a);
+}
+
 static void do_action(App *a, int act);static void app_copy_message(App *a);
 static void app_copy_block(App *a, int act);
 static void app_undo(App *a);
@@ -420,6 +674,30 @@ static void app_toast(App *a, const char *fmt, ...)
     app_invalidate(a);
 }
 
+
+/* ---------- 同步入队（§16.4：实体变更后把增量事件交给发件箱） ---------- */
+/* 只有已配对才入队；未配对或链路断开时事件留在发件箱，恢复后按 event_id 续传。 */
+static void app_publish(App *a, aic_sync_entity entity, aic_sync_op op, const char *entity_id)
+{
+    char err[256];
+    int rc;
+
+    if (!a || !a->db || !a->ses || !entity_id || !*entity_id) return;
+    if (!aic_session_is_paired(a->ses)) return;
+    err[0] = '\0';
+    rc = aic_session_publish(a->ses, entity, op, entity_id, err, sizeof(err));
+    if (rc == AIC_OK) {
+        app_invalidate(a);
+    } else if (rc != AIC_E_DISABLED) {
+        DLOG("publish %s/%s %s 失败：%d %s", aic_sync_entity_name(entity),
+             aic_sync_op_name(op), entity_id, rc, err);
+    }
+}
+
+static void app_publish_setting(App *a, const char *key)
+{
+    app_publish(a, AIC_ENT_SETTING, AIC_OP_UPDATE, key);
+}
 /* ---------- 数据目录 / 数据库 / 引擎 ---------- */
 static void demo_reply_preview(App *a, char *out, size_t cap)
 {
@@ -676,7 +954,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "1.2.0"
+#define APP_VERSION    "1.3.0"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -1387,6 +1665,7 @@ static void paint_settings(App *a, HDC dc, RECT content)
     int has_key = 0;
 
     if (a->page_advanced) { paint_advanced(a, dc, content); return; }
+    if (a->page_pair) { paint_pair(a, dc, content); return; }
 
     aic_guide_state_get(a->db, &gs);
     memset(&per, 0, sizeof(per));
@@ -1400,7 +1679,7 @@ static void paint_settings(App *a, HDC dc, RECT content)
     y.right -= PAD + 8;
     {
         /* 13 行设置项 + 标题 + 底部说明：滚动范围收敛到真实内容高度，避免滚过底。 */
-        int needed = 52 + 14 * ROW_H + 12 + 80;
+        int needed = 52 + 16 * ROW_H + 12 + 80;
         int avail = (int)(content.bottom - content.top);
         int maxs = needed - avail;
         if (maxs < 0) maxs = 0;
@@ -1428,6 +1707,18 @@ static void paint_settings(App *a, HDC dc, RECT content)
     draw_row(a, dc, &y, "余额与用量", "查看本地账本", ACT_ROW_BALANCE);
     draw_row(a, dc, &y, "记录导出", "JSON / Markdown / 纯文本", ACT_ROW_EXPORT);
     draw_row(a, dc, &y, "记录导入", "校验后按冲突策略写入", ACT_ROW_IMPORT);
+
+    /* 第 16 章：实时同步与配对管理（§7.2 设置项的两行）。 */
+    draw_row(a, dc, &y, "实时同步",
+             aic_sync_realtime_enabled(a->db) ? "已开启" : "已暂停", ACT_ROW_SYNC);
+    {
+        aic_pair_record rec;
+        if (aic_pairing_current(a->db, &rec) == AIC_OK)
+            snprintf(v, sizeof(v), "已配对：%s", rec.peer_name[0] ? rec.peer_name : rec.peer_id);
+        else
+            aic_strlcpy_utf8(v, sizeof(v), "未配对，生成配对码");
+        draw_row(a, dc, &y, "配对管理", v, ACT_ROW_PAIR);
+    }
 
     {
         int enabled_n = 0;
@@ -1807,6 +2098,18 @@ static void paint(App *a, HDC dc, RECT client)
     }
     hit_clear();
 
+    /* FR-30：首次启动先走 API Key 配置，再选默认模式，之后才出现三栏主界面。 */
+    if (aic_router_state(a->router) == AIC_ST_CREDENTIAL_CHECK ||
+        aic_router_state(a->router) == AIC_ST_CREDENTIAL_SETUP) {
+        paint_credential(a, dc, client);
+        paint_overlay(a, dc, client);
+        return;
+    }
+    if (aic_router_state(a->router) == AIC_ST_MODE_SELECT) {
+        paint_mode_select(a, dc, client);
+        paint_overlay(a, dc, client);
+        return;
+    }
     if (aic_router_state(a->router) == AIC_ST_FIRST_RUN ||
         aic_router_state(a->router) == AIC_ST_WIZARD) {
         RECT t = {client.left + 40, client.top + 80, client.right - 40, client.top + 130};
@@ -2056,6 +2359,9 @@ static void app_on_done(App *a, ResultMsg *rm)
         app_status(a, "已收到回复：输入 %lld / 输出 %lld tokens",
                    (long long)rm->res.prompt_tokens, (long long)rm->res.completion_tokens);
         aic_guide_mark(a->db, "first_chat", 0);
+        /* 新消息是本端产生的实体变更，交给发件箱（§16.4 / FR-27）。 */
+        app_publish(a, AIC_ENT_MESSAGE, AIC_OP_CREATE, rm->res.user_msg_id);
+        app_publish(a, AIC_ENT_MESSAGE, AIC_OP_CREATE, rm->res.assistant_msg_id);
     } else if (rm->rc == AIC_E_TIMEOUT || rm->rc == AIC_E_BUSY) {
         app_status(a, "生成已停止");
         app_load_chat(a);
@@ -2630,6 +2936,7 @@ static void app_plugin_toggle(App *a, size_t idx)
         app_status(a, "切换插件状态失败：%s", err[0] ? err : aic_strerror(rc));
         return;
     }
+    app_publish(a, AIC_ENT_PLUGIN, AIC_OP_UPDATE, a->plugs[idx].id);
     app_plugin_panel(a);
     app_status(a, "已切换插件「%s」", a->plugs[idx].name);
 }
@@ -2726,6 +3033,8 @@ static void app_plugin_import_confirm(App *a)
         return;
     }
     aic_guide_mark(a->db, "plugin_import", 0);
+    /* 只同步清单，插件二进制不参与同步（§16.4）。 */
+    app_publish(a, AIC_ENT_PLUGIN, AIC_OP_CREATE, plg.id);
     app_status(a, "插件「%s」已安装（默认未启用）", plg.name);
     app_toast(a, "插件已安装，可在设置里启用");
     aic_plugin_free(&plg);
@@ -3017,6 +3326,7 @@ static void app_new_thread(App *a)
     app_load_chat(a);
     app_reload_threads(a);
     app_status(a, "已新建问答会话「%s」", conv.title);
+    app_publish(a, AIC_ENT_CONVERSATION, AIC_OP_CREATE, conv.id);
 }
 
 static void app_save_form(App *a)
@@ -3037,6 +3347,7 @@ static void app_save_form(App *a)
             aic_strlcpy_utf8(a->persona_name, sizeof(a->persona_name), out.name);
             app_status(a, "人设已保存（版本 v%d）", out.current_version);
             aic_guide_mark(a->db, "persona_edit", 0);
+            app_publish(a, AIC_ENT_PERSONA, AIC_OP_UPDATE, out.id);
             aic_persona_free(&out);
         }
         aic_persona_free(&cur);
@@ -3074,6 +3385,7 @@ static void app_save_form(App *a)
         if (rc == AIC_OK) {
             app_status(a, "个人信息已保存");
             aic_guide_mark(a->db, "profile_fill", 0);
+            app_publish(a, AIC_ENT_PROFILE, AIC_OP_UPDATE, "1");
         }
         break;
     }
@@ -3082,6 +3394,7 @@ static void app_save_form(App *a)
         if (rc == AIC_OK) {
             aic_strlcpy_utf8(a->conv_title, sizeof(a->conv_title), a->fields[0].buf);
             app_status(a, "会话已重命名为「%s」", a->conv_title);
+            app_publish(a, AIC_ENT_CONVERSATION, AIC_OP_UPDATE, a->conv_id);
         }
         break;
     }
@@ -3100,6 +3413,7 @@ static void app_save_form(App *a)
         if (rc == AIC_OK) {
             app_load_chat(a);
             app_status(a, "消息已修改（首次修改会保留原文）");
+            app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
         }
         break;
     }
@@ -3120,6 +3434,61 @@ static void app_save_form(App *a)
 static void do_action(App *a, int act)
 {
     aic_motion mo = aic_motion_default();
+
+    /* 首次启动顺序（FR-30）与双端配对（第 16 章）。 */
+    if (act == ACT_CRED_KEY_EDIT) { a->cred_focus = 1; app_invalidate(a); return; }
+    if (act == ACT_CRED_SAVE)     { app_cred_save(a); return; }
+    if (act == ACT_CRED_DEMO)     { app_cred_demo(a); return; }
+    if (act == ACT_MODE_CHAT)     { app_mode_select(a, AIC_MODE_CHAT); return; }
+    if (act == ACT_MODE_QA)       { app_mode_select(a, AIC_MODE_QA); return; }
+    if (act == ACT_ROW_SYNC) {
+        int on = aic_sync_realtime_enabled(a->db) ? 0 : 1;
+        aic_sync_set_realtime(a->db, on);
+        app_status(a, on ? "实时同步已开启（配对成功后默认开启）"
+                         : "实时同步已暂停：只停新事件发送，已入队事件会保留");
+        app_invalidate(a);
+        return;
+    }
+    if (act == ACT_ROW_PAIR) { a->page_pair = 1; a->scroll[1] = 0; app_sync_start(a); app_invalidate(a); return; }
+    if (act == ACT_PAIR_BACK) { a->page_pair = 0; a->scroll[1] = 0; app_invalidate(a); return; }
+    if (act == ACT_PAIR_CODE_EDIT) { a->pair_focus = 1; a->cred_focus = 0; app_invalidate(a); return; }
+    if (act == ACT_PAIR_ADDR_EDIT) { a->pair_focus = 2; a->cred_focus = 0; app_invalidate(a); return; }
+    if (act == ACT_PAIR_HOST)      { app_pair_start(a, 1); return; }
+    if (act == ACT_PAIR_DISCOVER)  { app_pair_start(a, 2); return; }
+    if (act == ACT_PAIR_CONNECT)   { app_pair_start(a, 3); return; }
+    if (act == ACT_PAIR_HANDSHAKE) { app_pair_start(a, 4); return; }
+    if (act == ACT_PAIR_TOGGLE) {
+        int on = aic_sync_realtime_enabled(a->db) ? 0 : 1;
+        aic_sync_set_realtime(a->db, on);
+        app_status(a, on ? "已恢复实时同步" : "已暂停实时同步，事件留在本地队列");
+        app_invalidate(a);
+        return;
+    }
+    if (act == ACT_PAIR_CONFLICTS) {
+        sb cs;
+        sb_init(&cs);
+        if (aic_sync_conflicts_json(a->db, &cs) != AIC_OK || !sb_cstr(&cs)[0])
+            aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
+                             "目前没有冲突副本。并发修改按逻辑时钟取较大者，落败方原始实体留副本。");
+        else
+            aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text), sb_cstr(&cs));
+        sb_free(&cs);
+        app_set_overlay(a, AIC_OV_CONFIRM, "冲突副本");
+        a->confirm_action = 0;
+        app_invalidate(a);
+        return;
+    }
+    if (act == ACT_PAIR_UNPAIR) { app_pair_unpair(a); return; }
+    if (act >= ACT_PAIR_DISCOVER + 100 && act < ACT_PAIR_DISCOVER + 108) {
+        int i = act - (ACT_PAIR_DISCOVER + 100);
+        if (i >= 0 && i < a->peer_n) {
+            aic_strlcpy_utf8(a->pair_addr_in, sizeof(a->pair_addr_in), a->peers[i].addr);
+            a->pair_focus = 2;
+            app_status(a, "已填入 %s:%d，再点「连到该地址并配对」", a->peers[i].addr, a->peers[i].port);
+        }
+        app_invalidate(a);
+        return;
+    }
 
     if (act >= ACT_GUIDE_ITEM_BASE && act < ACT_GUIDE_ITEM_BASE + AIC_GUIDE_STEP_COUNT) {
         const aic_guide_step *steps = aic_guide_steps();
@@ -3259,6 +3628,7 @@ static void do_action(App *a, int act)
         else if (cur[0] == '1') next = "2";
         else next = "0";
         aic_setting_set(a->db, AIC_SET_THEME, next);
+        app_publish_setting(a, AIC_SET_THEME);
         app_status(a, "配色切换为：%s",
                    next[0] == '0' ? "日光" : (next[0] == '1' ? "夜间" : "跟随系统"));
         break;
@@ -3344,6 +3714,7 @@ static void do_action(App *a, int act)
     case ACT_MODEL_PRO:
         aic_setting_set(a->db, AIC_SET_MODEL_DEFAULT,
                         act == ACT_MODEL_PRO ? AIC_MODEL_PRO : AIC_MODEL_FLASH);
+        app_publish_setting(a, AIC_SET_MODEL_DEFAULT);
         app_setup_engine(a);
         app_close_overlay(a);
         break;
@@ -3538,8 +3909,11 @@ static void app_undo(App *a)
     else if (a->undo_kind == 2) rc = aic_msg_restore(a->db, a->undo_msg);
     else rc = AIC_E_STATE;
     if (rc == AIC_OK) {
+        int undo_kind = a->undo_kind;   /* 下面会清零，先留住语义 */
         app_load_chat(a);
-        app_status(a, a->undo_kind == 1 ? "已恢复撤回的消息" : "已恢复修改前的内容");
+        app_status(a, undo_kind == 1 ? "已恢复撤回的消息" : "已恢复修改前的内容");
+        app_publish(a, AIC_ENT_MESSAGE, undo_kind == 1 ? AIC_OP_UPDATE : AIC_OP_EDIT,
+                    a->undo_msg);
         a->undo_msg[0] = 0;
         a->undo_kind = 0;
         a->undo_until = 0;
@@ -3666,7 +4040,18 @@ static const AdvSec g_adv[] = {
       " 再按冲突策略（按 id 去重 / 覆盖同名 / 保留双方）写入，任何一步失败整体回滚。"
       " Windows 与 Android 的会话数据格式完全一致，两端导出的 JSON 可以互导。"
       " 备份包与导出包互不兼容：备份包含数据库、插件数据与头像，不含凭证明文。" },
-    { "六、故障排查",
+    { "六、双端配对与实时同步",
+      "同一局域网直连：一端点「开始监听等待连入」生成本端 6 位配对码，另一端点「发现同网设备」"
+      "（UDP 广播探测）或直接填地址连接，然后两端各自输入对方显示的码点「完成配对」。"
+      " 配对码只在内存保存、有效期 5 分钟，任一端输错即终止本次配对、累计 5 次错误作废重生成；"
+      "配对完成前不交换任何业务实体。配对成功后实时同步默认开启（可在设置里暂停），"
+      "暂停只停新事件发送，已入队事件在恢复后按 event_id 顺序补发。"
+      " 同步范围：用户资料、人设、会话、消息、提示词版本、设置白名单与插件清单；"
+      "凭证、插件二进制包、用量流水原始记录、日志与备份包不参与同步。"
+      " 消息顺序由逻辑时钟决定（不用墙钟），两端按逻辑时钟、来源设备与序号排序得一致序列。"
+      " 同一实体两端并发修改取逻辑时钟较大者，相等比设备标识字典序，落败方原始实体留副本。"
+      " 同一时刻只与一个已配对设备保持同步态；蓝牙通道只留接口未实现，当前用同一局域网直连。" },
+    { "七、故障排查",
       "没有回复：先看「设置 - API Key」是否已配置，再看底部状态栏的错误提示；网络类错误会按指数退避重试。"
       " 插件不生效：在插件面板确认是否已启用；崩溃或超时的插件会被自动禁用并在设置里记录原因。"
       " 解析失败与网络异常会把原始响应写进数据目录下的 logs/，日志里的敏感串会被脱敏。" },
@@ -3732,6 +4117,261 @@ static void paint_advanced(App *a, HDC dc, RECT content)
     }
 }
 
+/* ---------- 首次启动：API Key 配置（FR-30 / §2.3 / §4.4） ---------- */
+/* 单行输入框的显示：空且未聚焦时画提示语，聚焦时补一个光标；masked 用于凭证。 */
+static void draw_field(App *a, HDC dc, RECT box, const char *text, int focus, int masked,
+                       const char *hint)
+{
+    char vis[512];
+    size_t n = strlen(text ? text : "");
+
+    fill_round(dc, box, 8, tok(a, AIC_TOK_CARD_BG));
+    stroke_round(dc, box, 8, focus ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_DIVIDER), 1);
+    if (n == 0) {
+        aic_strlcpy_utf8(vis, sizeof(vis), focus ? "|" : hint);
+    } else if (masked) {
+        size_t i, cap = sizeof(vis);
+        for (i = 0; i < n && i + 2 < cap; i++) vis[i] = '*';
+        if (focus && i + 2 < cap) vis[i++] = '|';
+        vis[i] = 0;
+    } else {
+        aic_strlcpy_utf8(vis, sizeof(vis), text);
+        if (focus) {
+            size_t l = strlen(vis);
+            if (l + 2 < sizeof(vis)) { vis[l] = '|'; vis[l + 1] = 0; }
+        }
+    }
+    draw_text(dc, a->font_ui, vis, (RECT){box.left + 12, box.top, box.right - 12, box.bottom},
+              (n || focus) ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+}
+
+static void paint_credential(App *a, HDC dc, RECT client)
+{
+    RECT t = {client.left + 40, client.top + 66, client.right - 40, client.top + 112};
+    RECT d = {client.left + 40, client.top + 116, client.right - 60, client.top + 216};
+    RECT lbl = {client.left + 40, client.top + 232, client.right - 40, client.top + 256};
+    RECT box = {client.left + 40, client.top + 258, client.right - 40, client.top + 298};
+    RECT b1 = {client.left + 40, client.top + 316, client.left + 190, client.top + 356};
+    RECT b2 = {client.left + 206, client.top + 316, client.left + 346, client.top + 356};
+
+    draw_text(dc, a->font_title, "配置 DeepSeek API Key", t, tok(a, AIC_TOK_TEXT),
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_text(dc, a->font_ui,
+              "首次启动必须先填写 API Key。凭证只写入系统安全存储（Windows 凭据管理器），"
+              "界面与日志不出现明文，导出包与备份包也不含凭证；凭证就绪后才进入主页选择默认模式。"
+              " 没有 Key 时可以先用「演示模式」看界面，演示不会发出任何网络请求。",
+              d, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    draw_text(dc, a->font_small, "API Key（形如 sk-...）", lbl,
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_field(a, dc, box, a->cred_key, a->cred_focus, 1, "点这里输入");
+    reg(box, ACT_CRED_KEY_EDIT);
+    draw_pill(a, dc, b1, "校验并继续", ACT_CRED_SAVE, 1);
+    draw_pill(a, dc, b2, "演示模式", ACT_CRED_DEMO, 0);
+}
+
+/* ---------- 首次启动：默认模式选择（FR-30） ---------- */
+static void paint_mode_select(App *a, HDC dc, RECT client)
+{
+    RECT t = {client.left + 40, client.top + 66, client.right - 40, client.top + 112};
+    RECT d = {client.left + 40, client.top + 116, client.right - 60, client.top + 176};
+    RECT c1 = {client.left + 40, client.top + 200, client.left + 400, client.top + 358};
+    RECT c2 = {client.left + 420, client.top + 200, client.left + 780, client.top + 358};
+    RECT b1 = {client.left + 60, client.top + 306, client.left + 250, client.top + 346};
+    RECT b2 = {client.left + 440, client.top + 306, client.left + 630, client.top + 346};
+
+    draw_text(dc, a->font_title, "选择默认模式", t, tok(a, AIC_TOK_TEXT),
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_text(dc, a->font_ui,
+              "两种模式共用凭证、模型、人设、插件与用户资料，会话记录按模式隔离；"
+              "同一时刻只有一个模式活动，之后可以在左下角随时切换，各自保留滚动位置与草稿。",
+              d, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+
+    fill_round(dc, c1, 12, tok(a, AIC_TOK_CARD_BG));
+    stroke_round(dc, c1, 12, tok(a, AIC_TOK_DIVIDER), 1);
+    draw_text(dc, a->font_bold, "聊天模式", (RECT){c1.left + 20, c1.top + 16, c1.right - 20, c1.top + 48},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_text(dc, a->font_small,
+              "单对话、QQ 风格的三栏界面，适合长期陪伴。默认进入「聊天」栏。",
+              (RECT){c1.left + 20, c1.top + 52, c1.right - 20, c1.top + 118},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    draw_pill(a, dc, b1, "用聊天模式", ACT_MODE_CHAT, 1);
+
+    fill_round(dc, c2, 12, tok(a, AIC_TOK_CARD_BG));
+    stroke_round(dc, c2, 12, tok(a, AIC_TOK_DIVIDER), 1);
+    draw_text(dc, a->font_bold, "问答模式", (RECT){c2.left + 20, c2.top + 16, c2.right - 20, c2.top + 48},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_text(dc, a->font_small,
+              "多会话列表、置顶与搜索，参照 DeepSeek 网页版的工作方式，适合查资料与写代码。",
+              (RECT){c2.left + 20, c2.top + 52, c2.right - 20, c2.top + 118},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    draw_pill(a, dc, b2, "用问答模式", ACT_MODE_QA, 1);
+}
+
+/* ---------- 配对管理页（第 16 章 FR-25 / FR-26 / FR-27 / FR-28） ---------- */
+static const char *pair_phase_cn(aic_sync_state st)
+{
+    switch (st) {
+    case AIC_SYNC_DISCOVERING: return "发现中";
+    case AIC_SYNC_CONNECTING:  return "连接中";
+    case AIC_SYNC_PAIRING:     return "待配对（正在等对端输入配对码）";
+    case AIC_SYNC_PAIRED:      return "已配对（链路已断开，事件留在本地队列）";
+    case AIC_SYNC_SYNCING:     return "同步中";
+    default:                   return "空闲";
+    }
+}
+
+static void paint_pair(App *a, HDC dc, RECT content)
+{
+    RECT y = content;
+    char v[320];
+    const char *code = a->ses ? aic_session_our_code(a->ses) : "";
+    aic_sync_state ph = a->ses ? aic_session_phase(a->ses) : AIC_SYNC_IDLE;
+    int paired = a->ses ? aic_session_is_paired(a->ses) : 0;
+    aic_pair_record rec;
+    int have_rec = (aic_pairing_current(a->db, &rec) == AIC_OK);
+    int conflicts = 0;
+    int outbox = 0;
+    int realtime = aic_sync_realtime_enabled(a->db);
+
+    aic_sync_conflict_count(a->db, &conflicts);
+    aic_sync_outbox_count(a->db, &outbox);
+
+    y.left += PAD + 8;
+    y.right -= PAD + 8;
+    {
+        int needed = 700 + a->peer_n * 44;
+        int avail = (int)(content.bottom - content.top);
+        int maxs = needed - avail;
+        if (maxs < 0) maxs = 0;
+        if (a->scroll[1] > maxs) a->scroll[1] = maxs;
+        if (a->scroll[1] < 0) a->scroll[1] = 0;
+    }
+    y.top += 8 - a->scroll[1];
+
+    draw_text(dc, a->font_title, "配对管理", (RECT){y.left, y.top, y.right - 140, y.top + 44},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42}, "返回设置", ACT_PAIR_BACK, 0);
+    y.top += 52;
+
+    /* 本端配对码 */
+    {
+        RECT card = {y.left, y.top, y.right, y.top + 108};
+        fill_round(dc, card, 12, tok(a, AIC_TOK_CARD_BG));
+        stroke_round(dc, card, 12, tok(a, AIC_TOK_DIVIDER), 1);
+        draw_text(dc, a->font_small, "本端配对码（有效期 5 分钟，出错 5 次作废）",
+                  (RECT){card.left + 20, card.top + 10, card.right - 20, card.top + 34},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        if (code && *code)
+            draw_text(dc, a->font_title, code,
+                      (RECT){card.left + 20, card.top + 34, card.right - 20, card.top + 78},
+                      tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        else
+            draw_text(dc, a->font_bold, "尚未生成：点下面的「开始监听等待连入」或「连到该地址并配对」",
+                      (RECT){card.left + 20, card.top + 34, card.right - 20, card.top + 78},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        snprintf(v, sizeof(v), "状态：%s%s%s", pair_phase_cn(ph), paired ? " · 已与 " : "",
+                 paired && have_rec ? rec.peer_name : "");
+        draw_text(dc, a->font_small, v,
+                  (RECT){card.left + 20, card.top + 80, card.right - 20, card.top + 104},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y.top += 120;
+    }
+
+    draw_text(dc, a->font_small,
+              "两端各自生成 6 位码：连接方输入的码必须等于被连接方生成的值，被连接方输入同理，"
+              "两边都填对才配对成立；任一端输错即终止本次配对，配对完成前不交换任何业务实体。"
+              " 配对成功后实时同步默认开启；同一时刻只与一个已配对设备驻留。",
+              (RECT){y.left, y.top, y.right, y.top + 64},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    y.top += 72;
+
+    /* 对端码输入 + 握手 */
+    draw_text(dc, a->font_small, "对端显示的 6 位配对码",
+              (RECT){y.left, y.top, y.right, y.top + 22},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 24;
+    {
+        RECT box = {y.left, y.top, y.left + 200, y.top + 38};
+        RECT b = {y.left + 216, y.top, y.left + 400, y.top + 38};
+        draw_field(a, dc, box, a->pair_code_in, a->pair_focus == 1, 0, "例如 123456");
+        reg(box, ACT_PAIR_CODE_EDIT);
+        draw_pill(a, dc, b, "完成配对", ACT_PAIR_HANDSHAKE, 1);
+        y.top += 48;
+    }
+
+    /* 地址输入 + 连接 */
+    draw_text(dc, a->font_small, "对端局域网地址（也可以直接点下面发现的设备）",
+              (RECT){y.left, y.top, y.right, y.top + 22},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 24;
+    {
+        RECT box = {y.left, y.top, y.left + 260, y.top + 38};
+        RECT b1 = {y.left + 276, y.top, y.left + 500, y.top + 38};
+        draw_field(a, dc, box, a->pair_addr_in, a->pair_focus == 2, 0, "例如 192.168.1.8");
+        reg(box, ACT_PAIR_ADDR_EDIT);
+        draw_pill(a, dc, b1, "连到该地址并配对", ACT_PAIR_CONNECT, 1);
+        y.top += 48;
+    }
+
+    /* 两个入口：监听与发现 */
+    {
+        RECT b1 = {y.left, y.top, y.left + 220, y.top + 38};
+        RECT b2 = {y.left + 236, y.top, y.left + 440, y.top + 38};
+        draw_pill(a, dc, b1, "开始监听等待连入", ACT_PAIR_HOST, 0);
+        draw_pill(a, dc, b2, "发现同网设备", ACT_PAIR_DISCOVER, 0);
+        y.top += 50;
+    }
+
+    if (a->peer_n > 0) {
+        draw_text(dc, a->font_small, "发现的设备（点一行填入地址）",
+                  (RECT){y.left, y.top, y.right, y.top + 22},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y.top += 24;
+        for (int i = 0; i < a->peer_n && i < (int)(sizeof(a->peers) / sizeof(a->peers[0])); i++) {
+            RECT row = {y.left, y.top, y.right, y.top + 36};
+            fill_round(dc, row, 8, tok(a, AIC_TOK_CARD_BG));
+            snprintf(v, sizeof(v), "%s · %s:%d", a->peers[i].name, a->peers[i].addr, a->peers[i].port);
+            draw_text(dc, a->font_ui, v, (RECT){row.left + 12, row.top, row.right - 12, row.bottom},
+                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            reg(row, ACT_PAIR_DISCOVER + 100 + i);
+            y.top += 44;
+        }
+    }
+
+    /* 同步开关与冲突 */
+    {
+        RECT b1 = {y.left, y.top, y.left + 200, y.top + 38};
+        RECT b2 = {y.left + 216, y.top, y.left + 420, y.top + 38};
+        draw_pill(a, dc, b1, realtime ? "暂停实时同步" : "恢复实时同步", ACT_PAIR_TOGGLE, 0);
+        snprintf(v, sizeof(v), "查看冲突（%d）", conflicts);
+        draw_pill(a, dc, b2, v, ACT_PAIR_CONFLICTS, 0);
+        y.top += 44;
+    }
+    snprintf(v, sizeof(v), "待发送事件 %d 条 · 同步范围：用户资料 / 人设 / 会话 / 消息 / 提示词版本 / 设置白名单 / 插件清单",
+             outbox);
+    draw_text(dc, a->font_small, v, (RECT){y.left, y.top, y.right, y.top + 22},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+
+    if (have_rec) {
+        RECT b = {y.left, y.top, y.left + 160, y.top + 38};
+        draw_pill(a, dc, b, "解除配对", ACT_PAIR_UNPAIR, 0);
+        y.top += 46;
+    }
+
+    if (a->pair_msg[0]) {
+        draw_text(dc, a->font_small, a->pair_msg,
+                  (RECT){y.left, y.top, y.right, y.top + 60},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+        y.top += 66;
+    }
+    draw_text(dc, a->font_small,
+              "蓝牙通道当前只留传输接口、未实现平台蓝牙；跨网络或防火墙阻断时请改用导出导入迁移记录。",
+              (RECT){y.left, y.top, y.right, y.top + 40},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+}
+
 /* ---------- 输入事件 ---------- */
 static void on_click(App *a, int x, int y)
 {
@@ -3752,6 +4392,20 @@ static void on_click(App *a, int x, int y)
 static void on_char(App *a, wchar_t ch)
 {
     if (ch < 32) return;
+    if (a->cred_focus) {
+        edit_append(a->cred_key, sizeof(a->cred_key), &ch, 1);
+        app_invalidate(a);
+        return;
+    }
+    if (a->page_pair && a->pair_focus) {
+        if (a->pair_focus == 1) {
+            if (ch >= '0' && ch <= '9') edit_append(a->pair_code_in, sizeof(a->pair_code_in), &ch, 1);
+        } else {
+            edit_append(a->pair_addr_in, sizeof(a->pair_addr_in), &ch, 1);
+        }
+        app_invalidate(a);
+        return;
+    }
     if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
         Field *fl = &a->fields[a->field_focus];
         edit_append(fl->buf, sizeof(fl->buf), &ch, 1);
@@ -3806,6 +4460,27 @@ static void app_paste(App *a)
 static void on_key(App *a, int vk)
 {
     int ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+
+    if (a->cred_focus) {
+        if (vk == VK_BACK) edit_backspace(a->cred_key, sizeof(a->cred_key));
+        else if (vk == VK_RETURN) { app_cred_save(a); return; }
+        else if (vk == VK_ESCAPE) a->cred_focus = 0;
+        app_invalidate(a);
+        return;
+    }
+    if (a->page_pair && a->pair_focus) {
+        if (vk == VK_BACK) {
+            if (a->pair_focus == 1) edit_backspace(a->pair_code_in, sizeof(a->pair_code_in));
+            else edit_backspace(a->pair_addr_in, sizeof(a->pair_addr_in));
+        } else if (vk == VK_RETURN) {
+            app_pair_start(a, 4);
+            return;
+        } else if (vk == VK_ESCAPE) {
+            a->pair_focus = 0;
+        }
+        app_invalidate(a);
+        return;
+    }
 
     if (ctrl && (vk == 'V' || vk == 'v')) {
         app_paste(a);
@@ -3966,6 +4641,16 @@ static void app_init(App *a)
     if (aic_router_create(a->db, &a->router) != AIC_OK) { DLOG("[diag] router fail"); return; }
     aic_router_boot(a->router);
     aic_router_config_check(a->router);
+    if (a->offline_demo) {
+        /* 演示模式：不写凭证，只放行「凭证 → 模式选择」的顺序，便于离线看界面。 */
+        aic_route_state st = aic_router_state(a->router);
+        if (st == AIC_ST_CREDENTIAL_CHECK || st == AIC_ST_CREDENTIAL_SETUP || st == AIC_ST_MODE_SELECT) {
+            aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
+            aic_setting_set_int(a->db, AIC_SET_FIRST_RUN_DONE, 1);
+            aic_setting_set(a->db, AIC_SET_DEFAULT_MODE, "chat");
+            aic_router_config_check(a->router);
+        }
+    }
     if (aic_router_state(a->router) == AIC_ST_FIRST_RUN) aic_router_start_wizard(a->router);
     DLOG("[diag] router state=%s", aic_route_state_name(aic_router_state(a->router)));
 
@@ -3997,6 +4682,9 @@ static void app_init(App *a)
     a->scroll[2] = 0;
     a->caret_tick = aic_now_ms();
 
+    /* 第 16 章：同步搬运线程（网络与数据库读取不占用界面线程）。 */
+    app_sync_start(a);
+
     /* §14.1：启动时检查一次（可在设置里关闭），之后按周期检查。 */
     if (aic_setting_get_int(a->db, AIC_SET_UPDATE_AUTO, 1)) {
         long long last = (long long)aic_setting_get_int(a->db, "update.last_check_ms", 0);
@@ -4015,6 +4703,9 @@ static void app_shutdown(App *a)
     a->thread_n = 0;
     if (a->eng) aic_engine_destroy(a->eng);
     a->eng = NULL;
+    app_sync_stop(a);
+    if (a->ses) aic_session_destroy(a->ses);
+    a->ses = NULL;
     if (a->router) aic_router_destroy(a->router);
     a->router = NULL;
     if (a->db) aic_db_close(a->db);
@@ -4097,16 +4788,41 @@ static int  g_shot_qa = 0;
 static int  g_shot_guide = 0;
 static int  g_shot_adv = 0;
 static int  g_shot_ready = 0;
+static int  g_shot_cred = 0;
+static int  g_shot_mode = 0;
+static int  g_shot_pair = 0;
 static int  g_shot_w = 1120;
 static int  g_shot_h = 760;
 
 static void shot_prepare(App *a)
 {
-    if (g_shot_ready && aic_router_state(a->router) == AIC_ST_WIZARD) {
-        aic_router_finish_wizard(a->router);
-        app_setup_engine(a);
-        app_reload_threads(a);
-        app_load_chat(a);
+    if (g_shot_cred) {
+        /* 截图：把启动流程退回到「还没填凭证」的首次启动状态（只动标记，不删数据）。 */
+        aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "0");
+        aic_router_boot(a->router);
+        aic_router_config_check(a->router);
+        return;
+    }
+    if (g_shot_mode) {
+        /* 截图：凭证就绪但还没选默认模式。 */
+        aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
+        aic_setting_set_int(a->db, AIC_SET_FIRST_RUN_DONE, 0);
+        aic_router_boot(a->router);
+        aic_router_config_check(a->router);
+        return;
+    }
+    if (g_shot_ready) {
+        aic_route_state st = aic_router_state(a->router);
+        if (st == AIC_ST_WIZARD) {
+            aic_router_finish_wizard(a->router);
+            app_setup_engine(a);
+            app_reload_threads(a);
+            app_load_chat(a);
+        } else if (st == AIC_ST_CREDENTIAL_CHECK || st == AIC_ST_CREDENTIAL_SETUP) {
+            aic_router_credential_done(a->router);
+            st = aic_router_state(a->router);
+        }
+        if (st == AIC_ST_MODE_SELECT) aic_router_mode_select(a->router, AIC_MODE_CHAT);
     }
     if (g_shot_qa) {
         aic_conversation *arr = NULL;
@@ -4145,6 +4861,12 @@ static void shot_prepare(App *a)
     }
     if (g_shot_tab >= 0) aic_router_set_tab(a->router, g_shot_tab);
     if (g_shot_adv) { aic_router_set_tab(a->router, AIC_TAB_SETTINGS); a->page_advanced = 1; a->scroll[1] = 0; }
+    if (g_shot_pair) {
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_pair = 1;
+        a->scroll[1] = 0;
+        app_sync_start(a);
+    }
     if (g_shot_guide) app_guide(a);
     if (g_shot_overlay >= 0 && !g_shot_guide) {
         if (g_shot_overlay == 0) app_msg_open(a, -1);
@@ -4251,6 +4973,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_DONE:
         app_on_done(a, (ResultMsg *)lp);
         return 0;
+    case WM_APP_SYNC:
+        /* 增量事件搬运完成：对端事件可能改了本地会话，重新载一次。 */
+        app_load_chat(a);
+        app_status(a, "同步：发送 %d 条、接收 %d 条", (int)wp, (int)lp);
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    case WM_APP_PAIR:
+        InterlockedExchange(&a->pair_busy, 0);
+        a->pair_focus = 0;
+        if ((int)wp == AIC_OK && a->ses && aic_session_is_paired(a->ses)) {
+            app_load_chat(a);
+            app_reload_threads(a);
+        }
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
     case WM_LBUTTONDOWN:
         SetFocus(hwnd);
         on_click(a, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -4298,6 +5035,9 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
                 else if (!strcmp(opt, "--guide")) g_shot_guide = 1;
                 else if (!strcmp(opt, "--adv")) { g_shot_adv = 1; g_shot_ready = 1; }
                 else if (!strcmp(opt, "--ready")) g_shot_ready = 1;
+                else if (!strcmp(opt, "--cred")) g_shot_cred = 1;
+                else if (!strcmp(opt, "--mode")) g_shot_mode = 1;
+                else if (!strcmp(opt, "--pair")) { g_shot_pair = 1; g_shot_ready = 1; }
                 else if (!strcmp(opt, "--shot") && i + 1 < argc) {
                     i++;
                     w_to_u8(argv[i], g_shot_path, (int)sizeof(g_shot_path));

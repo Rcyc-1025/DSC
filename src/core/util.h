@@ -48,6 +48,10 @@ void    aic_ms_to_iso8601(int64_t ms, char buf[32]);
 int64_t aic_iso8601_to_ms(const char *s);
 int     aic_parse_iso8601(const char *s, int64_t *out_ms);
 
+/* ---------- 随机源 ---------- */
+/* 平台随机数（Windows RtlGenRandom / POSIX /dev/urandom），用于配对码与共享密钥。 */
+int aic_random_bytes(void *buf, size_t n);
+
 /* ---------- UUID ---------- */
 void aic_uuid4(char out[37]);
 int  aic_uuid_valid(const char *s);

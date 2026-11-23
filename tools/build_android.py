@@ -45,8 +45,13 @@ def main():
 
     # 1. 核心层 + JNI 桥 -> libaic.so（arm64-v8a）
     srcs = sorted(glob.glob(os.path.join(ROOT, 'src', 'core', '*.c')))
+    # 平台层（transport_android.c 提供 aic_transport_*，是配对/同步的底座）与
+    # Android 的凭证实现（credential_android.c 走 Keystore）。共享库允许未解析符号，
+    # 漏掉它们编译不会报错、运行到 dlopen 才失败，所以这里必须显式列上。
+    srcs += sorted(glob.glob(os.path.join(ROOT, 'src', 'platform', 'android', '*.c')))
     srcs += [os.path.join(ROOT, 'third_party', 'sqlite', 'sqlite3.c'),
-             os.path.join(APP, 'cpp', 'aic_jni.c')]
+             os.path.join(APP, 'cpp', 'aic_jni.c'),
+             os.path.join(APP, 'cpp', 'credential_android.c')]
     objs = []
     for i, s in enumerate(srcs):
         o = os.path.join(OUT, 'obj', '%02d_%s.o' % (i, os.path.splitext(os.path.basename(s))[0]))
@@ -89,7 +94,7 @@ def main():
     manifest = os.path.join(APP, 'AndroidManifest.xml')
     run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
          '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '3', '--version-name', '1.2.0',
+         '--target-sdk-version', '34', '--version-code', '4', '--version-name', '1.3.0',
          '--auto-add-overlay', flat_zip])
 
     # 5. 塞入 classes.dex 与 lib/arm64-v8a/libaic.so

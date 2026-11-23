@@ -244,6 +244,7 @@ int aic_llm_retry_delay(const aic_llm_retry_policy *p, aic_llm_err e, int attemp
 aic_llm_request_opts aic_llm_request_defaults(void)
 {
     aic_llm_request_opts o;
+    memset(&o, 0, sizeof(o));   /* 指针字段必须清零：last_user_text / tools_json 未用即 NULL */
     o.stream = 1;
     o.temperature = 0.7;
     o.max_tokens = 0;

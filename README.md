@@ -12,6 +12,8 @@
 - 模型可选：内置 Flash / Pro 两个标识，数据目录放一份 `models.json` 就能追加或覆盖模型与单价
 - 长会话不卡：消息按 100 条一页加载，导出可选当前会话 / 全部会话 / 近 7 天，并可连同头像一起导出
 - 插件四个扩展点全部接通（提示词片段、面板、请求改写、工具声明），装前摊开权限与哈希再确认
+- 双端配对与实时同步：局域网发现直连，两端各出 6 位码双向校验配对，配对后增量事件实时互传（逻辑时钟排序、冲突留副本）
+- 首次启动就是「先填 API Key 再选模式」，凭证只进系统安全存储；不想填可点演示模式先看界面
 
 需求与技术设计见 `docs/DESIGN.md`，进阶用法见 `docs/ADVANCED.md`。English: [README.en.md](README.en.md)。
 
@@ -19,9 +21,9 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| `src/core` | 核心层：模式路由、对话引擎、消息编解码、存储、配置、导入导出、插件宿主、更新、备份 |
-| `src/platform/win` | Windows 适配层：WinHTTP 传输、系统凭据管理、插件子进程、GDI+ 头像、系统通知、安装与回滚 |
-| `src/platform/android` | Android 适配层（凭据与网络由 Java 侧承担，C 侧走 JNI） |
+| `src/core` | 核心层：模式路由、对话引擎、消息编解码、存储、配置、导入导出、插件宿主、更新、备份、双端配对与增量同步 |
+| `src/platform/win` | Windows 适配层：WinHTTP 传输、Winsock 局域网传输、系统凭据管理、插件子进程、GDI+ 头像、系统通知、安装与回滚 |
+| `src/platform/android` | Android 适配层：BSD socket 局域网传输、Keystore 语义凭据（网络与界面由 Java 侧承担，C 侧走 JNI） |
 | `src/ui/win` | Windows 界面层（Win32 + GDI，主题令牌驱动，网络与导入导出跑工作线程） |
 | `src/plugin_runner` | 插件子进程宿主与公开 ABI 头 |
 | `src/cli` | 命令行工具（诊断与基准） |
@@ -36,10 +38,10 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `Sai-1.2.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
-| `Sai-1.2.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `Sai-1.2.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `Sai-1.2.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
+| `Sai-1.3.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
+| `Sai-1.3.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `Sai-1.3.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `Sai-1.3.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 
 每个包都附同名 `.sha256`。
 
@@ -65,10 +67,10 @@ python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.2.0-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\Sai-1.3.0-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.2.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.2.0-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\Sai-1.3.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `Sai.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。

@@ -312,6 +312,30 @@ int64_t aic_iso8601_to_ms(const char *s)
     return ms;
 }
 
+/* ================= 随机源 ================= */
+int aic_random_bytes(void *buf, size_t n)
+{
+    if (!buf || n == 0) return AIC_E_INVAL;
+#ifdef _WIN32
+    /* advapi32 导出的 SystemFunction036（即 RtlGenRandom），无需额外链接 bcrypt。 */
+    typedef unsigned char(__stdcall *rtl_gen_random_fn)(void *, unsigned long);
+    static rtl_gen_random_fn fn = NULL;
+    if (!fn) {
+        HMODULE h = LoadLibraryA("advapi32.dll");
+        if (h) fn = (rtl_gen_random_fn)(void *)GetProcAddress(h, "SystemFunction036");
+    }
+    if (fn && fn(buf, (unsigned long)n)) return AIC_OK;
+    return AIC_E_IO;
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) return AIC_E_IO;
+    size_t got = fread(buf, 1, n, f);
+    fclose(f);
+    if (got != n) return AIC_E_IO;
+    return AIC_OK;
+#endif
+}
+
 /* ================= UUID ================= */
 static uint64_t g_uuid_counter = 0;
 

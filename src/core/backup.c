@@ -62,7 +62,7 @@ static void walk(ent_list *l, const char *dir, const char *name_prefix)
                 aic_path_join(full, sizeof(full), dir, name);
                 snprintf(rel, sizeof(rel), "%s/%s", name_prefix, name);
                 if (aic_is_dir(full)) {
-                    char sub[256];
+                    char sub[512];
                     snprintf(sub, sizeof(sub), "%s", rel);
                     walk(l, full, sub);
                 } else {
@@ -107,9 +107,36 @@ int aic_backup_create(const char *root, const char *db_path, const char *app_ver
     aic_db_close(db);
     if (rc != AIC_OK) return rc;
 
+    /* §16.6：同步结果不写入备份包。这里复制一份库、清掉与对端同步相关的表，
+     * 备份包里只保留本端实体（配对关系、同步游标、事件队列与冲突副本都不进包）。 */
+    char tmp_db[1200];
+    snprintf(tmp_db, sizeof(tmp_db), "%s.dbtmp", out_zip);
+    aic_file_remove(tmp_db);
+    rc = aic_file_copy(db_path, tmp_db);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "复制数据库用于备份失败");
+        return rc;
+    }
+    aic_db *tmpd = NULL;
+    rc = aic_db_open(tmp_db, &tmpd);
+    if (rc == AIC_OK) {
+        rc = aic_db_exec(tmpd,
+            "DELETE FROM sync_event;"
+            "DELETE FROM sync_cursor;"
+            "DELETE FROM sync_conflict;"
+            "DELETE FROM sync_entity_clock;"
+            "DELETE FROM device_pair;");
+        aic_db_close(tmpd);
+    }
+    if (rc != AIC_OK) {
+        aic_file_remove(tmp_db);
+        if (err && errlen) snprintf(err, errlen, "清理备份包内的同步数据失败");
+        return rc;
+    }
+
     ent_list l;
     memset(&l, 0, sizeof(l));
-    el_push(&l, "db/sai.db", db_path);
+    el_push(&l, "db/sai.db", tmp_db);
     char avatars[1024], plugins[1024];
     aic_path_join(avatars, sizeof(avatars), root, "avatars");
     aic_path_join(plugins, sizeof(plugins), root, "plugins");
@@ -178,6 +205,7 @@ int aic_backup_create(const char *root, const char *db_path, const char *app_ver
     }
     sb_free(&mb);
     el_free(&l);
+    aic_file_remove(tmp_db);
     return rc;
 }
 
@@ -327,7 +355,7 @@ int aic_backup_restore(const char *zip_path, const char *root, char *err, size_t
     aic_path_join(db_dir, sizeof(db_dir), root, "db");
     aic_mkdir_p(db_dir);
     aic_file_remove(dst_db);
-    char wal[1024];
+    char wal[1200];
     snprintf(wal, sizeof(wal), "%s-wal", dst_db);
     aic_file_remove(wal);
     snprintf(wal, sizeof(wal), "%s-shm", dst_db);

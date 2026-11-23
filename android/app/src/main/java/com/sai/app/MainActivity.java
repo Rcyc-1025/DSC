@@ -104,6 +104,28 @@ public class MainActivity extends Activity {
     /** 翻页后要重新对齐的消息 id：重建列表时滚回它，免得用户被甩回列表顶部。 */
     private String anchorMsgId = null;
 
+    /* ---------- 首启顺序与双端同步（TDD §2.3 / 第 16 章） ---------- */
+    /** 同步增量搬运的定时器：配对态下每 1.5 秒调一次 syncPump（工作线程里跑，回主线程刷新）。 */
+    private android.os.Handler uiHandler;
+    private final Runnable syncPumpTask = new Runnable() {
+        @Override
+        public void run() {
+            pumpOnce();
+            if (pairDialog != null && pairDialog.isShowing()) pairRefresh();
+            if (uiHandler != null) uiHandler.postDelayed(this, 1500);
+        }
+    };
+
+    /** 配对页（弹窗）里要随状态刷新的控件。 */
+    /** 一次只允许一个 syncPump 在飞（阻塞命令占用会话锁时，定时器不会堆出一串线程）。 */
+    private boolean pumpInFlight;
+    private AlertDialog pairDialog;
+    private TextView pairCodeView;
+    private TextView pairStateView;
+    private TextView pairPeerView;
+    private TextView pairLogView;
+    private EditText pairPeerInput;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -123,12 +145,16 @@ public class MainActivity extends Activity {
         Notifier.ensureChannel(this);
         requestNotifyPermission();
         refresh();
+        /* 配对状态变化与增量搬运都靠这个定时器推进（界面在后台时仍然只做一次检查）。 */
+        uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        uiHandler.postDelayed(syncPumpTask, 1500);
     }
 
     @Override
     protected void onDestroy() {
         /* 退出前中断还没结束的流，避免工作线程继续往已销毁的界面回写。 */
         if (streaming) Net.stop();
+        if (uiHandler != null) uiHandler.removeCallbacks(syncPumpTask);
         Native.shutdown();
         super.onDestroy();
     }
@@ -324,6 +350,26 @@ public class MainActivity extends Activity {
         subtitleView.setTextColor(cSub);
         styleButton(headerAction, cPrimary, Color.WHITE);
         nav.setBackgroundColor(cCard);
+
+        /* 首启顺序（TDD §2.3 / §4.4 / FR-30）：没有凭证必须先配 API Key，
+         * 配完选默认模式，选完才进主界面。主界面与底栏在这个阶段都不给。 */
+        String rs = routerState();
+        if ("CREDENTIAL_SETUP".equals(rs) || "CREDENTIAL_CHECK".equals(rs)) {
+            header.setVisibility(View.GONE);
+            nav.setVisibility(View.GONE);
+            content.removeAllViews();
+            content.addView(credentialView());
+            return;
+        }
+        if ("MODE_SELECT".equals(rs)) {
+            header.setVisibility(View.GONE);
+            nav.setVisibility(View.GONE);
+            content.removeAllViews();
+            content.addView(modeSelectView());
+            return;
+        }
+        header.setVisibility(View.VISIBLE);
+
         int tab = st.optInt("tab", TAB_CHAT);
         styleNav(navMe, tab == TAB_ME);
         styleNav(navSettings, tab == TAB_SETTINGS);
@@ -337,12 +383,12 @@ public class MainActivity extends Activity {
             String conv = st.optJSONObject("conv") == null ? "" : optStr(st.optJSONObject("conv"), "id", "");
             if (conv.isEmpty()) {
                 titleView.setText("问答会话");
-                subtitleView.setText("多会话 · 可置顶 · 可搜索");
+                subtitleView.setText("多会话 · 可置顶 · 可搜索" + demoTag());
                 content.addView(threadListView());
             } else {
                 JSONObject convObj = st.optJSONObject("conv");
                 titleView.setText(optStr(convObj, "title", "对话"));
-                subtitleView.setText("问答模式 · 多会话");
+                subtitleView.setText("问答模式 · 多会话" + demoTag());
                 content.addView(chatView());
             }
         } else {
@@ -350,16 +396,16 @@ public class MainActivity extends Activity {
             headerAction.setVisibility(View.VISIBLE);
             if (tab == TAB_ME) {
                 titleView.setText("我");
-                subtitleView.setText("资料、人设与新手引导");
+                subtitleView.setText("资料、人设与新手引导" + demoTag());
                 content.addView(meView());
             } else if (tab == TAB_SETTINGS) {
                 titleView.setText("设置");
-                subtitleView.setText("提示词、配色、模型、数据与插件");
+                subtitleView.setText("提示词、配色、模型、数据与插件" + demoTag());
                 content.addView(settingsView());
             } else {
                 JSONObject conv = st.optJSONObject("conv");
                 titleView.setText("聊天");
-                subtitleView.setText("单会话 · 人设 " + personaName() + " · 模型 " + modelName());
+                subtitleView.setText("单会话 · 人设 " + personaName() + " · 模型 " + modelName() + demoTag());
                 content.addView(chatView());
                 if (conv != null && optStr(conv, "id", "").isEmpty()) {
                     toast("聊天会话创建失败");
@@ -1348,7 +1394,10 @@ public class MainActivity extends Activity {
                 chooseModel();
             }
         }));
-        col.addView(kvRow("API Key", opt(st, "hasKey") ? "已配置（本次运行）" : "未配置", new View.OnClickListener() {
+        JSONObject cred = st.optJSONObject("credential");
+        boolean demoRun = cred != null && cred.optBoolean("demo", false);
+        String keyValue = opt(st, "hasKey") ? (demoRun ? "演示模式（未配置）" : "已配置（系统安全存储）") : "未配置";
+        col.addView(kvRow("API Key", keyValue, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 editKey();
@@ -1392,6 +1441,26 @@ public class MainActivity extends Activity {
                 showGuide();
             }
         }));
+        JSONObject sync = st.optJSONObject("sync");
+        boolean rtOn = sync == null || sync.optBoolean("realtimeEnabled", true);
+        col.addView(kvRow("实时同步", rtOn ? "已开启" : "已暂停", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleRealtime();
+            }
+        }));
+        col.addView(kvRow("配对管理", syncValue(st.optJSONObject("sync")), new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showPairing();
+            }
+        }));
+        col.addView(kvRow("进阶指南", "含「双端配对与实时同步」一节", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showAdvanced();
+            }
+        }));
         col.addView(kvRow("数据管理", "备份 / 恢复 / 清理", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1404,24 +1473,689 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "Sai 1.2.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "Sai 1.3.0", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("关于 Sai")
-                        .setMessage("Sai 1.2.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。")
+                        .setMessage("Sai 1.3.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n本版新增：首次启动先配凭证（系统安全存储）、双端配对与实时同步。")
                         .setPositiveButton("好", null)
                         .show();
             }
         }));
 
         TextView foot = new TextView(this);
-        foot.setText("凭证存放：Android 端接入系统安全存储后才会持久化；当前仅在本次运行内使用，界面与日志不出现明文。");
+        foot.setText("凭证存放：API Key 写入系统安全存储（AndroidKeyStore 保护），界面与日志不出现明文，导出包与备份包都不含凭证。");
         foot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         foot.setTextColor(cSub);
         foot.setPadding(dp(8), dp(16), dp(8), dp(16));
         col.addView(foot);
         return col;
+    }
+
+    /* ---------- 首启顺序：凭证 → 模式 → 主界面（TDD §2.3 / §4.4 / §12.2 / FR-30） ---------- */
+
+    private String routerState() {
+        return optStr(st, "routerState", optStr(st, "state", ""));
+    }
+
+    /** 首启还没走完：这个阶段没有主界面可退，返回键只能问退出。 */
+    private boolean gated() {
+        String s = routerState();
+        return "CREDENTIAL_SETUP".equals(s) || "CREDENTIAL_CHECK".equals(s) || "MODE_SELECT".equals(s);
+    }
+
+    private String demoTag() {
+        return st.optBoolean("demo", false) ? " · 演示模式" : "";
+    }
+
+    private void confirmExit() {
+        new AlertDialog.Builder(this)
+                .setTitle("退出 Sai？")
+                .setMessage("会话记录保存在本地，不会丢失。")
+                .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        finish();
+                    }
+                })
+                .setNegativeButton("留下", null)
+                .show();
+    }
+
+    /** 首启第一屏：必须先配 API Key（或显式进演示模式）。 */
+    private View credentialView() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(24), dp(28), dp(24), dp(24));
+
+        TextView h = new TextView(this);
+        h.setText("首次使用：配置 API Key");
+        h.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        h.setTypeface(Typeface.DEFAULT_BOLD);
+        h.setTextColor(cText);
+        col.addView(h);
+
+        TextView d = new TextView(this);
+        d.setText("Sai 直接调用 DeepSeek，不经第三方服务器，所以要先填你自己的 API Key。\n"
+                + "凭证存在系统安全存储，界面与日志不出现明文；导出包与备份包都不含凭证。\n"
+                + "Key 以 sk- 开头、长度不少于 20 个字符。");
+        d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        d.setTextColor(cSub);
+        d.setPadding(0, dp(12), 0, dp(14));
+        col.addView(d);
+
+        final EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        e.setHint("sk-…");
+        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        e.setTextColor(cText);
+        col.addView(e);
+
+        Button save = new Button(this);
+        save.setText("保存并继续");
+        save.setAllCaps(false);
+        save.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        styleButton(save, cPrimary, Color.WHITE);
+        save.setPadding(0, dp(12), 0, dp(12));
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("key", e.getText().toString().trim());
+                } catch (Exception ignored) {
+                }
+                JSONObject r = Native.req("saveCredential", extra);
+                e.setText("");
+                toast(opt(r, "ok") ? optStr(r, "note", "凭证已写入系统安全存储，接下来选择默认模式")
+                        : optStr(r, "err", "保存失败"));
+                refresh();
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(18);
+        col.addView(save, lp);
+
+        Button demo = new Button(this);
+        demo.setText("演示模式（不写凭证、不发网络请求）");
+        demo.setAllCaps(false);
+        demo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        styleButton(demo, cCard, cPrimary);
+        demo.setPadding(0, dp(10), 0, dp(10));
+        demo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                JSONObject r = Native.req("demoMode");
+                toast(opt(r, "ok") ? "已进入演示模式" : optStr(r, "err", "进入失败"));
+                refresh();
+            }
+        });
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp2.topMargin = dp(8);
+        col.addView(demo, lp2);
+
+        TextView note = new TextView(this);
+        note.setText("演示模式只用于看界面与流程：不写凭证、不发任何网络请求，界面上会一直显示「演示模式」字样；"
+                + "要真正对话请回来保存 Key。");
+        note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        note.setTextColor(cSub);
+        note.setPadding(0, dp(12), 0, 0);
+        col.addView(note);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col);
+        return sv;
+    }
+
+    /** 首启第二屏：选默认模式（聊天模式 / 问答模式），选完才进主界面。 */
+    private View modeSelectView() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(24), dp(28), dp(24), dp(24));
+
+        TextView h = new TextView(this);
+        h.setText("选择默认模式");
+        h.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        h.setTypeface(Typeface.DEFAULT_BOLD);
+        h.setTextColor(cText);
+        col.addView(h);
+
+        TextView d = new TextView(this);
+        d.setText("随时可以在设置里切换，这里只决定首次进来停在哪一栏。");
+        d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        d.setTextColor(cSub);
+        d.setPadding(0, dp(10), 0, dp(18));
+        col.addView(d);
+
+        Button chat = new Button(this);
+        chat.setText("聊天模式\n单会话 · 一个人设 · 直接聊");
+        chat.setAllCaps(false);
+        chat.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        chat.setPadding(0, dp(20), 0, dp(20));
+        styleButton(chat, cPrimary, Color.WHITE);
+        chat.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                selectMode("chat");
+            }
+        });
+        col.addView(chat, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button qa = new Button(this);
+        qa.setText("问答模式\n多会话 · 可置顶 · 可搜索");
+        qa.setAllCaps(false);
+        qa.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        qa.setPadding(0, dp(20), 0, dp(20));
+        styleButton(qa, cCard, cPrimary);
+        qa.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                selectMode("qa");
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(12);
+        col.addView(qa, lp);
+
+        TextView note = new TextView(this);
+        note.setText("模式只影响界面组织方式，人设、会话与凭证是同一份数据。");
+        note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        note.setTextColor(cSub);
+        note.setPadding(0, dp(14), 0, 0);
+        col.addView(note);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col);
+        return sv;
+    }
+
+    private void selectMode(final String mode) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("mode", mode);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("modeSelect", extra);
+        toast(opt(r, "ok") ? optStr(r, "note", "已进入") : optStr(r, "err", "进入失败，请重试"));
+        refresh();
+    }
+
+    /* ---------- 实时同步：界面每 1.5 秒搬一次增量（配对态才调） ---------- */
+
+    private void pumpOnce() {
+        JSONObject sync = st.optJSONObject("sync");
+        if (sync == null || !sync.optBoolean("syncing", false)) return;
+        if (pumpInFlight) return;
+        pumpInFlight = true;
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("syncPump");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        pumpInFlight = false;
+                        if (opt(r, "ok")) {
+                            if (r.optInt("sent", 0) > 0 || r.optInt("applied", 0) > 0) refresh();
+                        } else {
+                            /* 链路断了（对端退出 / 切网）会落到这里，刷新让状态回落成「已配对」。 */
+                            refresh();
+                        }
+                        if (pairLogView != null && r.optInt("sent", 0) + r.optInt("applied", 0) > 0) {
+                            pairLog("本轮已发 " + r.optInt("sent", 0) + " 条、收到 " + r.optInt("applied", 0) + " 条");
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private void toggleRealtime() {
+        JSONObject sync = st.optJSONObject("sync");
+        final boolean next = !(sync == null || sync.optBoolean("realtimeEnabled", true));
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("enabled", next);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("syncToggle", extra);
+        toast(opt(r, "ok") ? (next ? "实时同步已开启" : "实时同步已暂停：改动先记在本地，恢复后继续搬运")
+                : optStr(r, "err", "切换失败"));
+        refresh();
+        if (pairDialog != null && pairDialog.isShowing()) pairRefresh();
+    }
+
+    /** 设置页「配对管理」这一行显示的摘要。 */
+    private String syncValue(JSONObject sync) {
+        if (sync == null) return "未开始";
+        String phase = optStr(sync, "phaseName", "未开始");
+        String peer = optStr(sync, "peerName", "");
+        if (!peer.isEmpty()) return phase + " · " + peer;
+        String code = optStr(sync, "ourCode", "");
+        return code.isEmpty() ? phase : phase + " · 本端码 " + code;
+    }
+
+    /* ---------- 配对页 ---------- */
+
+    private Button pairButton(String text, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        b.setPadding(0, dp(8), 0, dp(8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(6);
+        b.setLayoutParams(lp);
+        b.setOnClickListener(l);
+        return b;
+    }
+
+    private void pairLog(String msg) {
+        if (pairLogView != null) pairLogView.setText(msg);
+    }
+
+    private void showPairing() {
+        if (pairDialog != null && pairDialog.isShowing()) {
+            pairRefresh();
+            return;
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(20), dp(10), dp(20), dp(6));
+
+        pairCodeView = new TextView(this);
+        pairCodeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 36);
+        pairCodeView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        pairCodeView.setTextColor(cPrimary);
+        pairCodeView.setGravity(Gravity.CENTER);
+        pairCodeView.setText("------");
+        col.addView(pairCodeView);
+
+        pairStateView = new TextView(this);
+        pairStateView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        pairStateView.setTextColor(cText);
+        pairStateView.setGravity(Gravity.CENTER);
+        pairStateView.setPadding(0, dp(6), 0, dp(2));
+        col.addView(pairStateView);
+
+        pairPeerView = new TextView(this);
+        pairPeerView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        pairPeerView.setTextColor(cSub);
+        pairPeerView.setGravity(Gravity.CENTER);
+        pairPeerView.setPadding(0, 0, 0, dp(10));
+        col.addView(pairPeerView);
+
+        pairPeerInput = new EditText(this);
+        pairPeerInput.setHint("输入对端显示的 6 位配对码");
+        pairPeerInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        pairPeerInput.setFilters(new android.text.InputFilter[]{
+                new android.text.InputFilter.LengthFilter(6)});
+        pairPeerInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        pairPeerInput.setTextColor(cText);
+        col.addView(pairPeerInput);
+
+        col.addView(pairButton("开始监听等待连入", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairHosting();
+            }
+        }));
+        col.addView(pairButton("继续等待连入（20 秒）", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                waitIncoming();
+            }
+        }));
+        col.addView(pairButton("发现同网设备（UDP 广播）", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairDiscovering();
+            }
+        }));
+        col.addView(pairButton("直连地址", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairDirect();
+            }
+        }));
+        col.addView(pairButton("握手校验", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairHandshakeNow();
+            }
+        }));
+        col.addView(pairButton("暂停 / 恢复实时同步", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleRealtime();
+            }
+        }));
+        col.addView(pairButton("查看冲突", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairConflicts();
+            }
+        }));
+        col.addView(pairButton("解除配对", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairUnpairConfirm();
+            }
+        }));
+
+        TextView note = new TextView(this);
+        note.setText("说明：\n"
+                + "· 6 位配对码有效期 5 分钟；输入错误累计 5 次本条码作废，需要重新生成。\n"
+                + "· 两侧各有一个码，连通后只用输一次对端的码（双向校验）。\n"
+                + "· 配对成功后实时同步默认开启；同一时刻只与一个设备同步。\n"
+                + "· 蓝牙通道未实现，当前用同一局域网直连（同一 Wi-Fi，默认端口 45871）。");
+        note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        note.setTextColor(cSub);
+        note.setPadding(0, dp(14), 0, dp(4));
+        col.addView(note);
+
+        pairLogView = new TextView(this);
+        pairLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        pairLogView.setTextColor(cSub);
+        pairLogView.setPadding(0, dp(8), 0, dp(4));
+        col.addView(pairLogView);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col);
+        pairDialog = new AlertDialog.Builder(this)
+                .setTitle("配对与同步")
+                .setView(sv)
+                .setNegativeButton("关闭", null)
+                .create();
+        pairDialog.show();
+        pairRefresh();
+    }
+
+    /** 拉一次 pairStatus 刷新配对页上的码与状态（主线程，只读很快）。 */
+    private void pairRefresh() {
+        JSONObject r = Native.req("pairStatus");
+        JSONObject sync = r.optJSONObject("sync");
+        if (sync == null) sync = st.optJSONObject("sync");
+        if (pairCodeView != null) {
+            String code = optStr(sync, "ourCode", "");
+            pairCodeView.setText(code.isEmpty() ? "------" : code);
+        }
+        if (pairStateView != null) {
+            String phase = optStr(sync, "phaseName", "未开始");
+            String extra = " · 待发 " + (sync == null ? 0 : sync.optInt("outbox", 0))
+                    + " · 冲突 " + (sync == null ? 0 : sync.optInt("conflicts", 0));
+            if (sync != null && !sync.optBoolean("realtimeEnabled", true)) extra += " · 实时同步已暂停";
+            pairStateView.setText("当前状态：" + phase + extra);
+        }
+        if (pairPeerView != null) {
+            String peer = optStr(sync, "peerName", "");
+            String pid = optStr(sync, "peerId", "");
+            String ip = sync == null ? "" : optStr(sync, "localIp", "");
+            int port = sync == null ? 45871 : sync.optInt("port", 45871);
+            String line = peer.isEmpty() ? "尚未配对（下面任选一种连法）"
+                    : "已配对设备：" + peer + (pid.isEmpty() ? "" : " · " + pid.substring(0, Math.min(8, pid.length())) + "…");
+            if (!ip.isEmpty()) line += "\n本机地址：" + ip + ":" + port + "（把地址或配对码给对方）";
+            pairPeerView.setText(line);
+        }
+    }
+
+    private void pairHosting() {
+        pairLog("正在开始监听（局域网端口 45871）并生成本端配对码…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("pairHost");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            pairLog(optStr(r, "err", "开始监听失败"));
+                            pairRefresh();
+                            return;
+                        }
+                        pairRefresh();
+                        pairLog("已开始监听，把上方配对码念给对方；现在等待对端连入（最多 20 秒，期间也回应『发现同网设备』的广播）…");
+                        waitIncoming();
+                    }
+                });
+            }
+        });
+    }
+
+    /** 被连接方：阻塞等待对端连入（工作线程里跑），期间 C 层会顺带回应 UDP 发现探测。 */
+    private void waitIncoming() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("pairAccept");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        pairLog(opt(r, "ok") ? "对端已连入：输入对端屏幕上的 6 位码，再点『握手校验』"
+                                : optStr(r, "err", "等待超时：对端没有连入，可以点『继续等待连入』再等一轮"));
+                        pairRefresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private void pairDiscovering() {
+        pairLog("正在用 UDP 广播查找同一局域网的另一端（约 1.5 秒）…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("pairDiscover");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            pairLog(optStr(r, "err", "发现失败"));
+                            return;
+                        }
+                        final JSONArray peers = r.optJSONArray("peers");
+                        if (peers == null || peers.length() == 0) {
+                            pairLog("没有发现设备：" + optStr(r, "note", "确认两端在同一 Wi-Fi，且对端已点『开始监听等待连入』"));
+                            return;
+                        }
+                        String[] labels = new String[peers.length()];
+                        for (int i = 0; i < peers.length(); i++) {
+                            JSONObject p = peers.optJSONObject(i);
+                            labels[i] = optStr(p, "name", "对端") + " · " + optStr(p, "addr", "?")
+                                    + ":" + p.optInt("port", 45871);
+                        }
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("发现 " + peers.length() + " 台设备")
+                                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                                    @Override
+                                    public void onClick(android.content.DialogInterface d, int which) {
+                                        JSONObject p = peers.optJSONObject(which);
+                                        pairConnectTo(optStr(p, "addr", ""), p.optInt("port", 45871));
+                                    }
+                                })
+                                .setNegativeButton("取消", null)
+                                .show();
+                        pairRefresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private void pairDirect() {
+        final EditText e = new EditText(this);
+        e.setHint("192.168.1.20:45871");
+        e.setInputType(InputType.TYPE_CLASS_TEXT);
+        new AlertDialog.Builder(this)
+                .setTitle("直连地址")
+                .setMessage("填对端配对页上显示的「本机地址」（同一局域网）。")
+                .setView(e)
+                .setPositiveButton("连接", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        String text = e.getText().toString().trim();
+                        int c = text.lastIndexOf(':');
+                        String host = c > 0 ? text.substring(0, c) : text;
+                        int port = 45871;
+                        if (c > 0) {
+                            try {
+                                port = Integer.parseInt(text.substring(c + 1));
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        pairConnectTo(host, port);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void pairConnectTo(final String host, final int port) {
+        if (host == null || host.isEmpty()) {
+            toast("地址为空");
+            return;
+        }
+        pairLog("正在连接 " + host + ":" + port + " …");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("addr", host);
+                    extra.put("port", port);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("pairConnect", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        pairLog(opt(r, "ok") ? "已连上，输入对端配对码后点『握手校验』" : optStr(r, "err", "连接失败"));
+                        pairRefresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private void pairHandshakeNow() {
+        final String code = pairPeerInput == null ? "" : pairPeerInput.getText().toString().trim();
+        if (code.length() != 6) {
+            pairLog("先输入对端显示的 6 位配对码");
+            return;
+        }
+        pairLog("正在做双向校验…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("peerCode", code);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("pairHandshake", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (opt(r, "ok")) {
+                            if (pairPeerInput != null) pairPeerInput.setText("");
+                            markGuide("record_transfer");
+                            toast("配对成功，实时同步已开启");
+                            pairLog("配对成功：" + optStr(r, "note", "现在是 SYNcing"));
+                            refresh();
+                            pairRefresh();
+                        } else {
+                            pairLog(optStr(r, "err", "握手失败"));
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private void pairConflicts() {
+        JSONObject r = Native.req("conflictList");
+        JSONArray items = r.optJSONArray("items");
+        StringBuilder b = new StringBuilder();
+        if (items == null || items.length() == 0) {
+            b.append("没有冲突记录。");
+        } else {
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject it = items.optJSONObject(i);
+                b.append(i + 1).append(". ").append(optStr(it, "entity", "?")).append(" / ")
+                        .append(optStr(it, "entity_id", "?")).append("\n   逻辑时钟 ")
+                        .append(it.optLong("logical_ts", 0)).append(" · 落败方 ")
+                        .append(optStr(it, "origin_device", "?")).append("\n   ")
+                        .append(optStr(it, "created_at", "")).append("\n");
+            }
+            b.append("\n规则：按逻辑时钟取大者，相等时比设备标识字典序；落败方内容作为副本保留，不直接丢。");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("同步冲突（最多列最近 100 条）")
+                .setMessage(b.toString())
+                .setPositiveButton("好", null)
+                .show();
+    }
+
+    private void pairUnpairConfirm() {
+        new AlertDialog.Builder(this)
+                .setTitle("解除配对？")
+                .setMessage("解除后断开链路并停止实时同步；两端本地数据都保留，重新配对可以继续。")
+                .setPositiveButton("解除", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        work(new Runnable() {
+                            @Override
+                            public void run() {
+                                final JSONObject r = Native.req("pairUnpair");
+                                ui(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        toast(opt(r, "ok") ? "已解除配对" : optStr(r, "err", "解除失败"));
+                                        pairLog("已解除配对");
+                                        refresh();
+                                        pairRefresh();
+                                    }
+                                });
+                            }
+                        });
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /* ---------- 进阶指南 ---------- */
+
+    private void showAdvanced() {
+        String text = "一、首次启动的顺序\n"
+                + "· 没有凭证时先停在 API Key 页：凭证写入系统安全存储，界面与日志不出现明文。\n"
+                + "· 保存成功后选默认模式（聊天模式 / 问答模式），选完才进主界面。\n"
+                + "· 已经有 Key 的机器直接进主界面，不再问一遍。\n\n"
+                + "二、双端配对与实时同步\n"
+                + "· 两台设备在同一局域网（同一 Wi-Fi）时可以直接连：一端点「开始监听等待连入」，另一端用「发现同网设备」的 UDP 广播自动找到它，或者用「直连地址」填对方的地址。\n"
+                + "· 6 位配对码做双向校验，两侧各显示一个码，只用输一次对端的码；码的有效期 5 分钟，输错累计 5 次作废，需要重新生成。\n"
+                + "· 配对成功后实时同步默认开启；同一时刻只与一个设备同步。\n"
+                + "· 同步范围：用户资料、人设、会话、消息、提示词版本、设置白名单项、插件清单。\n"
+                + "· 不参与同步：凭证（API Key）、插件二进制、用量流水、日志、备份包——它们只留在本机。\n"
+                + "· 冲突按逻辑时钟取大者；时钟相等时比设备标识的字典序，落败方的内容作为副本保留，不会直接丢。\n"
+                + "· 蓝牙通道目前只留了接口、没有实现：界面上如实写明「蓝牙通道未实现，当前用同一局域网直连」。\n\n"
+                + "三、数据与凭证\n"
+                + "· 记录导出支持 JSON / Markdown / 纯文本，导出包与备份包都不含凭证。\n"
+                + "· 备份是整包 zip，恢复前会先做完整性校验。\n\n"
+                + "四、插件与更新\n"
+                + "· 插件清单在安装时校验，覆盖安装需要二次确认。\n"
+                + "· 更新只检查清单并提示，安装包由你确认后才下载执行。";
+        new AlertDialog.Builder(this)
+                .setTitle("进阶指南")
+                .setMessage(text)
+                .setPositiveButton("好", null)
+                .show();
     }
 
     private void editPersona() {
@@ -1580,7 +2314,7 @@ public class MainActivity extends Activity {
         e.setHint("sk-…");
         new AlertDialog.Builder(this)
                 .setTitle("DeepSeek API Key")
-                .setMessage("Key 只保存在内存与系统安全存储里，界面和日志不出现明文。")
+                .setMessage("Key 写入系统安全存储（界面与日志不出现明文，导出包与备份包都不含凭证）。")
                 .setView(e)
                 .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1590,10 +2324,10 @@ public class MainActivity extends Activity {
                             extra.put("key", e.getText().toString().trim());
                         } catch (Exception ignored) {
                         }
-                        JSONObject r = Native.req("setKey", extra);
+                        JSONObject r = Native.req("saveCredential", extra);
                         if (opt(r, "ok")) {
                             markGuide("api_key");
-                            toast("Key 已记录（本次运行）");
+                            toast("凭证已写入系统安全存储");
                         } else {
                             toast(optStr(r, "err", "保存失败"));
                         }
@@ -2458,20 +3192,15 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (gated()) {
+            /* 首启阶段还没有主界面可退：只问要不要退出。 */
+            confirmExit();
+            return;
+        }
         JSONObject r = Native.req("back");
         int action = r.optInt("action", 3);
         if (action == 3) {
-            new AlertDialog.Builder(this)
-                    .setTitle("退出 Sai？")
-                    .setMessage("会话记录保存在本地，不会丢失。")
-                    .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(android.content.DialogInterface d, int which) {
-                            finish();
-                        }
-                    })
-                    .setNegativeButton("留下", null)
-                    .show();
+            confirmExit();
             return;
         }
         refresh();

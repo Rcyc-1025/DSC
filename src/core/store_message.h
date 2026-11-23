@@ -23,6 +23,8 @@ typedef struct aic_message {
     char     *original_content;   /* 撤回/首次修改前的原文，可为 NULL */
     char      model_id[64];
     char      created_at[32];
+    long long logical_ts;         /* 逻辑时钟值，跨端排序主键（§16.5） */
+    char      origin_device[40];  /* 消息产生端设备标识 */
 } aic_message;
 
 /* 追加消息，自动分配 seq 并更新会话的 last_seq/updated_at。 */
@@ -32,6 +34,11 @@ int aic_msg_get(aic_db *db, const char *id, aic_message *out);
 /* 分页：before_seq<=0 表示取最新一页；返回按 seq 升序排列的一页。 */
 int aic_msg_page(aic_db *db, const char *conv_id, long long before_seq, int limit,
                  aic_message **out, size_t *out_n);
+/* 跨端分页：按 (logical_ts, origin_device, seq) 排序。
+ * before_ts<=0 表示取最后一页；否则取严格小于该三元组的更早一页，结果升序返回。 */
+int aic_msg_page_ordered(aic_db *db, const char *conv_id,
+                         long long before_ts, const char *before_device, long long before_seq,
+                         int limit, aic_message **out, size_t *out_n);
 /* 取最近 limit 条未撤回消息（上下文），升序返回。 */
 int aic_msg_context(aic_db *db, const char *conv_id, int limit,
                     aic_message **out, size_t *out_n);
