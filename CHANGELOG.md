@@ -4,7 +4,30 @@
 
 ## [未发布]
 
-（下一版在这里累积；发布时改成本版号与日期，并新建空的 [未发布] 段。）
+### 新增
+
+- **蓝牙 RFCOMM 通道（FR-25 的传输面补全，§16.1）**：Windows 用 `AF_BTH` 的 `BTHPROTO_RFCOMM` 直连、按地址尾部的
+  通道号拨号，已配对设备列表走 `BluetoothFindFirstDevice` 枚举；Android 新增 `BtBridge`（`listenUsingRfcommWithServiceRecord`
+  / `createRfcommSocketToServiceRecord`，失败再反射 `createRfcommSocket(int)` 用通道 1 重试），字节流经 JNI
+  `btAttach/btFeed/btDrain/btDetach/btPeersSet` 交给 C 侧的环形缓冲；两条通道共用同一套帧格式、配对流程与状态机。
+  桌面配对页新增「通道：局域网 / 通道：蓝牙 RFCOMM」切换与「蓝牙：等待对端连入」「蓝牙：列出已配对设备」。
+- **Android 余额改走真实账户接口（FR-11）**：新增 `BalanceQuery`（`HttpURLConnection` GET `/user/balance`，Bearer 头），
+  返回体交回 C 侧 `aic_llm_balance_parse` 解析；失败保留上次结果并标注「上次结果，本次查询未成功」；低于阈值发系统通知。
+  C 侧新增 `balance` / `balanceApply` / `balanceFailed` 三个桥命令。
+- **Android 插件独立进程（FR-05 / §10.1）**：新增 `PluginHostService`（`android:process=":plugin"`）与 `PluginWorker`
+  （`am broadcast` 拉起的一次性 `:plugincall` 进程），`PluginEngine` 用 `DexClassLoader` 加载插件 dex、反射调用
+  `SaiPlugin.aic_plugin_call(String)`；超时 5 秒即 `destroy` 子进程，插件崩溃不影响主程序。C 侧新增 `pluginPointList` 与
+  三段式 `pluginCallPoint`（问清单 → 独立进程执行 → 回灌汇总），界面「插件」里可直接调 `ui.panel` 扩展点面板。
+- **Android 示例插件源码**：`plugins/sample_android`（`plugin.json` + `SaiPlugin.java` + 打包说明）。
+- **两端签名通道闭环**：`scripts/sign_release.ps1` 支持 `-Pfx`/`-Thumbprint` 并验签（缺 signtool 退出 2、缺证书退出 3、
+  无产物退出 4）；新增 `tools/sign_android.py`（`SAI_ANDROID_KEYSTORE/STOREPASS/KEYPASS/ALIAS`，缺项退出 3，
+  产出 v2+v3 并当场 `apksigner verify --print-certs`）。仓库不签发证书。
+
+### 变更
+
+- Windows 与 Android 的「已知限制」条目改写：蓝牙从「只留接口」变为「两端已实现、未做收发实测」；
+  Android 插件从「仅可管理清单」变为「独立进程运行」；余额从「仅本地账本」变为「真实账户接口 + 本地账本并列」。
+- `docs/RELEASE.md` 的第 7 步（签名）重写为两端的具体命令与退出码。
 
 ## [1.3.0] - 2026-11-22
 

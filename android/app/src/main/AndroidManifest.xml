@@ -13,6 +13,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 更新安装：只用于把校验通过的安装包交给系统安装器 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 蓝牙 RFCOMM 同步通道（技术设计 16.1）：Android 12 起需要 CONNECT 运行时权限 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
         android:label="@string/app_name"
@@ -29,6 +35,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 插件宿主：单独进程 :plugin，插件调用再一次 fork 出一次性进程（技术设计 10.1） -->
+        <service
+            android:name=".PluginHostService"
+            android:exported="false"
+            android:process=":plugin" />
+
+        <!-- 插件进程入口：由 PluginHostService 用 am broadcast 拉起，落在 :plugin 的派生进程里 -->
+        <receiver
+            android:name=".PluginWorker$Receiver"
+            android:exported="false"
+            android:process=":plugincall" />
 
         <!-- 私有目录文件的只读共享（导出记录分享、安装包交给系统安装器） -->
         <provider

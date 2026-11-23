@@ -911,6 +911,9 @@ static int unpack_plugin_zip(const char *zip, char *work, size_t workcap,
 }
 
 /* pluginInstall：用户已确认后才调用；overwrite=1 表示覆盖同名已安装插件（技术设计 10.2）。 */
+static void cmd_plugin_point_list(const char *point, sb *out);
+static void cmd_plugin_call_point(const char *point, const char *op, const char *results_json,
+                                  long long count_hint, const char *note, sb *out);
 static void cmd_plugin_install(const char *zip, int allow_overwrite, sb *out)
 {
     char err[256] = { 0 };
@@ -943,9 +946,98 @@ static void cmd_plugin_install(const char *zip, int allow_overwrite, sb *out)
     jw_put_str(&w, "author", pl.author);
     jw_put_bool(&w, "enabled", pl.enabled);
     jw_put_bool(&w, "overwriteAllowed", allow_overwrite ? 1 : 0);
-    jw_put_str(&w, "note", "Android 上仅可管理清单，扩展点运行需桌面端；安装后默认禁用");
+    jw_put_str(&w, "note", "插件在独立进程里运行；安装后默认禁用，启用后才参与扩展点");
     jw_obj_end(&w);
     aic_plugin_free(&pl);
+}
+
+/* pluginPointList：列出声明了该扩展点的启用插件（Java 侧据此前去独立进程里执行）。 */
+static void cmd_plugin_point_list(const char *point, sb *out)
+{
+    aic_plugin *list = NULL;
+    size_t n = 0, i;
+    jw w;
+
+    if (!point || !point[0]) point = "ui.panel";
+    sb_reset(out);
+    if (aic_plugin_list(g_db, -1, &list, &n) != AIC_OK) {
+        reply_err(out, "读取插件清单失败");
+        return;
+    }
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "point", point);
+    jw_arr_begin(&w, "items");
+    for (i = 0; i < n; i++) {
+        if (!list[i].enabled || !strstr(list[i].extension_points, point)) continue;
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", list[i].id);
+        jw_put_str(&w, "name", list[i].name);
+        jw_put_str(&w, "version", list[i].version);
+        jw_put_str(&w, "entry", list[i].entry);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+    if (list) aic_plugin_free_array(list, n);
+}
+
+/* pluginCallPoint：把某个扩展点交给全部启用插件执行。
+ * Android 没有子进程宿主可执行文件，所以先由 pluginPointList 拿到插件清单，
+ * 再由 Java 侧 PluginHostService 在 :plugin 进程的一次性子进程里执行，结果回灌这里汇总。 */
+static void cmd_plugin_call_point(const char *point, const char *op, const char *results_json,
+                                  long long count_hint, const char *note, sb *out)
+{
+    jw w;
+    const jv *arr = NULL;
+    jv *root = NULL;
+    int i, n = 0;
+
+    if (!point || !point[0]) point = "ui.panel";
+    if (!op || !op[0]) op = "describe";
+    sb_reset(out);
+    if (results_json && results_json[0]) {
+        if (jv_parse(results_json, strlen(results_json), &root, NULL, 0) == AIC_OK) {
+            arr = (root->type == JV_ARR) ? root : NULL;
+            if (arr) n = (int)jv_len(arr);
+        }
+    }
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "point", point);
+    jw_put_str(&w, "op", op);
+    jw_put_int(&w, "count", arr ? n : (count_hint > 0 ? count_hint : 0));
+    jw_arr_begin(&w, "results");
+    if (arr) {
+        for (i = 0; i < n; i++) {
+            const jv *one = jv_at(arr, (size_t)i);
+            jw w2;
+            const char *pid, *res, *err;
+            int ok;
+            pid = jv_get_str(one, "plugin", "");
+            ok = jv_get_bool(one, "ok", 0);
+            res = jv_get_str(one, "result", "");
+            err = jv_get_str(one, "error", "");
+            /* 把 Java 侧的结果对象原样重写一遍，避免把内部字段漏出去。 */
+            jw_obj_begin(&w, NULL);
+            jw_put_str(&w, "plugin", pid);
+            jw_put_bool(&w, "ok", ok ? 1 : 0);
+            if (ok) jw_put_str(&w, "result", res);
+            else jw_put_str(&w, "error", err);
+            jw_obj_end(&w);
+            (void)w2;
+        }
+    }
+    jw_arr_end(&w);
+    jw_put_str(&w, "note", note && note[0] ? note
+                 : (arr && n > 0 ? "插件在独立进程里运行，超时或崩溃只终止该进程"
+                                 : "没有插件声明该扩展点时 count 为 0，界面不显示空面板"));
+    jw_obj_end(&w);
+    if (root) jv_free(root);
 }
 
 /* 清单里的权限/扩展点是逗号分隔串，界面按条目展示，这里拆成 JSON 数组。 */
@@ -1461,8 +1553,10 @@ static void build_state(sb *out)
     /* 界面要用的运行时事实：系统深色、是否正在生成、插件能否运行、更新与备份状态。 */
     jw_put_bool(&w, "systemNight", g_system_night ? 1 : 0);
     jw_put_bool(&w, "streaming", g_gen.active ? 1 : 0);
-    jw_put_bool(&w, "pluginProcAvailable", 0);
-    jw_put_str(&w, "pluginProcNote", "Android 上仅可管理清单，扩展点运行需桌面端");
+    /* 插件在独立进程里运行：Java 侧 PluginService 单独进程 + PluginWorker 再 fork 一次，
+     * 崩溃/超时只终止那个进程，主程序继续（技术设计 10.1）。 */
+    jw_put_bool(&w, "pluginProcAvailable", 1);
+    jw_put_str(&w, "pluginProcNote", "插件在独立进程里运行，超时或崩溃只终止该进程；数据目录与核心目录分离");
     jw_put_bool(&w, "hasBackup", g_backup_ok ? 1 : 0);
     jw_put_int(&w, "balanceAlertCents", aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
     jw_put_int(&w, "updateAuto", aic_setting_get_int(g_db, AIC_SET_UPDATE_AUTO, 1));
@@ -2268,6 +2362,285 @@ static void cmd_sync_pump(int timeout_ms, sb *out)
     jw_obj_end(&w);
 }
 
+/* ---------- 余额与用量（FR-11 / §9.4） ----------
+ * Android 上没有 WinHTTP：账户接口由 Java 的 HttpURLConnection 拉取（与更新清单同一条路），
+ * C 侧负责算出请求地址、解析返回体、把账户余额与本地账本并列展示。三次调用：
+ *   balance         -> 回 url / hasKey / 上次结果，由 Java 真正发请求
+ *   balanceApply    -> Java 带回 (status, body)，这里解析
+ *   balanceFailed   -> 连请求都没发出去（无网络/超时） */
+static void balance_endpoint(char *out, size_t cap)
+{
+    char url[AIC_LLM_URL_MAX];
+    const char *slash;
+
+    aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
+    aic_setting_get(g_db, AIC_SET_CRED_ENDPOINT, url, sizeof(url));
+    if (!url[0]) aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
+    slash = strstr(url, "/chat/");
+    if (slash) {
+        size_t base = (size_t)(slash - url);
+        if (base + 14 >= cap) base = cap > 14 ? cap - 14 : 0;
+        memcpy(out, url, base);
+        aic_strlcpy_utf8(out + base, cap - base, "/user/balance");
+    } else {
+        aic_strlcpy_utf8(out, cap, "https://api.deepseek.com/user/balance");
+    }
+}
+
+static void put_balance(jw *w, const aic_llm_balance *bal, long long local_used, const char *note)
+{
+    char avail[32], pend[32], local[32], when[32];
+
+    aic_llm_format_micros(bal->available_micros, avail, sizeof(avail));
+    aic_llm_format_micros(bal->pending_micros, pend, sizeof(pend));
+    aic_llm_format_micros(local_used, local, sizeof(local));
+    aic_ms_to_iso8601(aic_now_ms(), when);
+    jw_put_bool(w, "valid", bal->valid ? 1 : 0);
+    jw_put_bool(w, "stale", bal->stale ? 1 : 0);
+    jw_put_str(w, "available", avail);
+    jw_put_str(w, "pending", pend);
+    jw_put_str(w, "localUsed", local);
+    jw_put_bool(w, "belowAlert", bal->below_alert ? 1 : 0);
+    jw_put_str(w, "source", bal->source[0] ? bal->source : "本地账本");
+    jw_put_str(w, "queriedAt", when);
+    jw_put_str(w, "note", note ? note : "");
+}
+
+static void cmd_balance_info(sb *out)
+{
+    aic_usage_summary sum;
+    aic_llm_balance bal;
+    char url[AIC_LLM_URL_MAX];
+    int has_key;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&sum, 0, sizeof(sum));
+    memset(&bal, 0, sizeof(bal));
+    aic_usage_summary_get(g_db, 0, &sum);
+    balance_endpoint(url, sizeof(url));
+    has_key = aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY,
+                            g_key, sizeof(g_key), NULL, 0) == AIC_OK && g_key[0] != 0;
+    aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "url", url);
+    jw_put_bool(&w, "hasKey", has_key ? 1 : 0);
+    /* 凭证随这一次调用交给界面，只在余额请求的请求头里出现，不落日志、不进状态。 */
+    jw_put_str(&w, "apiKey", has_key ? g_key : "");
+    put_balance(&w, &bal, sum.cost_micros,
+                has_key ? "正在向账户接口查询" : "尚未配置 API Key：只能看本地账本");
+    jw_obj_end(&w);
+}
+
+static void cmd_balance_apply(const char *body, int status, sb *out)
+{
+    aic_usage_summary sum;
+    aic_llm_balance bal;
+    char err[256] = { 0 };
+    char note[320];
+    int rc, threshold;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&sum, 0, sizeof(sum));
+    memset(&bal, 0, sizeof(bal));
+    aic_usage_summary_get(g_db, 0, &sum);
+    threshold = aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0);
+
+    if (status && status != 200) {
+        aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+        bal.below_alert = aic_llm_balance_below(&bal, threshold);
+        snprintf(note, sizeof(note), "查询失败（HTTP %d：%s），展示上次结果",
+                 status, aic_llm_err_text(aic_llm_classify_http(status)));
+    } else {
+        rc = aic_llm_balance_parse(body ? body : "", body ? strlen(body) : 0, &bal, err, sizeof(err));
+        if (rc != AIC_OK) {
+            aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+            snprintf(note, sizeof(note), "返回体无法解析（%s），展示本地账本与上次结果",
+                     err[0] ? err : aic_strerror(rc));
+        } else {
+            bal.valid = 1;
+            bal.stale = 0;
+            bal.queried_ms = aic_now_ms();
+            aic_strlcpy_utf8(bal.source, sizeof(bal.source), "账户接口");
+            bal.below_alert = aic_llm_balance_below(&bal, threshold);
+            if (bal.below_alert)
+                snprintf(note, sizeof(note), "余额已低于提醒阈值（%.2f 元），请注意",
+                         (double)threshold / 1000000.0);
+            else
+                snprintf(note, sizeof(note), "账户可用余额与本地账本并列展示");
+        }
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    put_balance(&w, &bal, sum.cost_micros, note);
+    jw_obj_end(&w);
+}
+
+static void cmd_balance_failed(const char *reason, int status, sb *out)
+{
+    aic_usage_summary sum;
+    aic_llm_balance bal;
+    char note[320];
+    jw w;
+
+    (void)status;
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&sum, 0, sizeof(sum));
+    memset(&bal, 0, sizeof(bal));
+    aic_usage_summary_get(g_db, 0, &sum);
+    aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+    bal.below_alert = aic_llm_balance_below(&bal, aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
+    snprintf(note, sizeof(note), "查询失败（%s），展示上次结果",
+             (reason && reason[0]) ? reason : "网络不可用");
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    put_balance(&w, &bal, sum.cost_micros, note);
+    jw_obj_end(&w);
+}
+
+/* ---------- Android 蓝牙通道（第十六章 §16.1） ----------
+ * Java 侧用 BluetoothServerSocket / BluetoothSocket 建链：
+ *   btAttachListen <fd>    ---- 监听套接字的 fd（仅用于记账与提示）
+ *   btAttachIncoming <fd>  ---- accept 得到的 fd：C 侧随即认为链路已建立
+ *   btAttachFd <fd>        ---- 客户端连上后的 fd
+ *   btFeed <base64>        ---- 把 Java 读到的字节流交给 C 侧环形缓冲
+ *   btDrain                ---- 取出 C 侧待发的字节（base64），Java 负责写进 socket
+ *   btPeersSet <JSON 数组> ---- Java 把已配对设备清单交进来，供「列出已配对设备」显示
+ *   btDetach               ---- 断开/关闭时清空状态
+ * C 侧不直接持有 Java 的 socket：Android 的 BluetoothSocket 也没有可跨语言使用的句柄，
+ * 因此帧仍然由 C 生成与解析，只把字节的搬运交给 Java。 */
+static void cmd_bt_attach(const char *kind, int fd, sb *out)
+{
+    int rc;
+
+    if (fd < 0) { reply_err(out, "需要有效的文件描述符"); return; }
+    char err[256] = { 0 };
+    if (strcmp(kind, "listen") == 0) rc = aic_bt_attach_listen_fd(fd, err, sizeof(err));
+    else if (strcmp(kind, "incoming") == 0) rc = aic_bt_attach_incoming_fd(fd, err, sizeof(err));
+    else rc = aic_bt_attach_fd(fd, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : aic_strerror(rc)); return; }
+    reply_sync(out, strcmp(kind, "incoming") == 0 ? "蓝牙链路已建立（被连接方），可以配对了"
+                                      : "蓝牙套接字已登记");
+}
+
+static void cmd_bt_feed(const char *b64, sb *out)
+{
+    unsigned char *data = NULL;
+    size_t len = 0, room;
+    int rc;
+
+    if (!b64 || !b64[0]) { reply_err(out, "没有可写入的字节"); return; }
+    rc = aic_base64_decode(b64, strlen(b64), &data, &len);
+    if (rc != AIC_OK) { reply_err(out, "字节流解码失败"); return; }
+    if (aic_bt_attached() == 0) { aic_xfree(data); reply_err(out, "蓝牙链路未建立"); return; }
+    room = aic_bt_feed(data, len);
+    aic_xfree(data);
+    sb_reset(out);
+    {
+        jw w;
+        jw_init(&w, out, 0);
+        jw_obj_begin(&w, NULL);
+        jw_put_bool(&w, "ok", 1);
+        jw_put_str(&w, "err", "");
+        jw_put_int(&w, "accepted", (int)len);
+        jw_put_int(&w, "room", (int)room);
+        jw_obj_end(&w);
+    }
+}
+
+static void cmd_bt_drain(sb *out)
+{
+    unsigned char buf[16384];
+    size_t n = 0, cap = sizeof(buf);
+    sb text;
+    jw w;
+
+    aic_bt_drain(buf, cap, &n);
+    sb_init(&text);
+    if (n > 0) aic_base64_encode(buf, n, &text);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "bytes", (int)n);
+    jw_put_str(&w, "data", sb_cstr(&text));
+    jw_put_int(&w, "pending", (int)aic_bt_pending_out());
+    jw_obj_end(&w);
+    sb_free(&text);
+}
+
+static void cmd_bt_peers_set(const char *json, sb *out)
+{
+    jv *root = NULL;
+    char perr[128] = { 0 };
+    aic_peer list[AIC_TRANSPORT_PEER_MAX];
+    size_t n = 0, i, cnt;
+
+    if (!json || !json[0]) { reply_err(out, "缺少设备清单"); return; }
+    if (jv_parse(json, strlen(json), &root, perr, sizeof(perr)) != AIC_OK) {
+        reply_err(out, "设备清单不是合法 JSON");
+        return;
+    }
+    memset(list, 0, sizeof(list));
+    cnt = (size_t)jv_len(root);
+    for (i = 0; i < cnt && n < AIC_TRANSPORT_PEER_MAX; i++) {
+        const jv *it = jv_at(root, (int)i);
+        aic_strlcpy_utf8(list[n].addr, sizeof(list[n].addr), jv_get_str(it, "addr", ""));
+        aic_strlcpy_utf8(list[n].name, sizeof(list[n].name), jv_get_str(it, "name", ""));
+        aic_strlcpy_utf8(list[n].device_id, sizeof(list[n].device_id), jv_get_str(it, "addr", ""));
+        list[n].port = (int)jv_get_int(it, "port", AIC_BT_CHANNEL_MIN);
+        list[n].channel = AIC_CH_BLUETOOTH;
+        if (list[n].addr[0]) n++;
+    }
+    jv_free(root);
+    aic_bt_peers_set(list, n);
+    sb_reset(out);
+    {
+        jw w;
+        jw_init(&w, out, 0);
+        jw_obj_begin(&w, NULL);
+        jw_put_bool(&w, "ok", 1);
+        jw_put_str(&w, "err", "");
+        jw_put_int(&w, "count", (int)n);
+        jw_obj_end(&w);
+    }
+}
+
+static void cmd_bt_detach(sb *out)
+{
+    aic_bt_detach();
+    reply_sync(out, "蓝牙链路已清理");
+}
+
+/* 当前同步通道：0=局域网 1=蓝牙；-1 表示由实现自动挑选。 */
+static void cmd_sync_channel(int channel, sb *out)
+{
+    int rc;
+
+    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    pthread_mutex_lock(&g_sync_mtx);
+    rc = aic_session_use_channel(g_sess, channel);
+    pthread_mutex_unlock(&g_sync_mtx);
+    if (rc != AIC_OK) {
+        reply_err(out, "链路已经建立，先解除配对或等当前连接结束后再换通道");
+        return;
+    }
+    reply_sync(out, channel == AIC_CH_BLUETOOTH ? "同步通道：蓝牙 RFCOMM"
+                                    : (channel == AIC_CH_LAN ? "同步通道：局域网" : "同步通道：自动"));
+}
+
 static void cmd_conflict_list(sb *out)
 {
     sb items;
@@ -2483,28 +2856,11 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         rc = aic_conv_set_pinned(g_db, jv_get_str(root, "id", ""), jv_get_bool(root, "pinned", 1));
         if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "balance") == 0) {
-        aic_usage_summary sum;
-        aic_llm_balance bal;
-        char money[32], used[32];
-        jw w;
-        memset(&sum, 0, sizeof(sum));
-        memset(&bal, 0, sizeof(bal));
-        aic_usage_summary_get(g_db, 0, &sum);
-        aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
-        aic_llm_format_micros(sum.cost_micros, used, sizeof(used));
-        bal.local_used_micros = sum.cost_micros;
-        aic_llm_format_micros(bal.local_used_micros, money, sizeof(money));
-        sb_reset(out);
-        jw_init(&w, out, 0);
-        jw_obj_begin(&w, NULL);
-        jw_put_bool(&w, "ok", 1);
-        jw_put_str(&w, "err", "");
-        jw_put_bool(&w, "valid", 0);
-        jw_put_bool(&w, "stale", 1);
-        jw_put_str(&w, "available", "未查询");
-        jw_put_str(&w, "localUsed", money);
-        jw_put_str(&w, "note", "Android 端未接入账户余额接口，当前仅展示本地账本");
-        jw_obj_end(&w);
+        cmd_balance_info(out);
+    } else if (strcmp(cmd, "balanceApply") == 0) {
+        cmd_balance_apply(jv_get_str(root, "body", ""), (int)jv_get_int(root, "status", 0), out);
+    } else if (strcmp(cmd, "balanceFailed") == 0) {
+        cmd_balance_failed(jv_get_str(root, "err", ""), (int)jv_get_int(root, "status", 0), out);
     } else if (strcmp(cmd, "bench") == 0) {
         jw w;
         int i;
@@ -2574,6 +2930,21 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_plugin_inspect(jv_get_str(root, "path", ""), out);
     } else if (strcmp(cmd, "pluginInstall") == 0) {
         cmd_plugin_install(jv_get_str(root, "path", ""), jv_get_int(root, "overwrite", 0) ? 1 : 0, out);
+    } else if (strcmp(cmd, "pluginPointList") == 0) {
+        cmd_plugin_point_list(jv_get_str(root, "point", "ui.panel"), out);
+    } else if (strcmp(cmd, "pluginCallPoint") == 0) {
+        char rj[65536];
+        const jv *ra = jv_get(root, "results");
+        rj[0] = '\0';
+        if (ra && ra->type == JV_ARR) {
+            sb tmp;
+            sb_init(&tmp);
+            jv_serialize(ra, &tmp);
+            aic_strlcpy_utf8(rj, sizeof(rj), sb_cstr(&tmp));
+            sb_free(&tmp);
+        }
+        cmd_plugin_call_point(jv_get_str(root, "point", "ui.panel"), jv_get_str(root, "op", "describe"),
+                              rj, jv_get_ll(root, "count", 0), jv_get_str(root, "note", ""), out);
     } else if (strcmp(cmd, "pluginSetEnabled") == 0) {
         cmd_plugin_set_enabled(jv_get_str(root, "id", ""), jv_get_bool(root, "enabled", 0), out);
     } else if (strcmp(cmd, "pluginUninstall") == 0) {
@@ -2626,6 +2997,18 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_sync_pump((int)jv_get_int(root, "timeoutMs", 30), out);
     } else if (strcmp(cmd, "conflictList") == 0) {
         cmd_conflict_list(out);
+    } else if (strcmp(cmd, "btAttach") == 0) {
+        cmd_bt_attach(jv_get_str(root, "kind", "fd"), (int)jv_get_int(root, "fd", -1), out);
+    } else if (strcmp(cmd, "btFeed") == 0) {
+        cmd_bt_feed(jv_get_str(root, "data", ""), out);
+    } else if (strcmp(cmd, "btDrain") == 0) {
+        cmd_bt_drain(out);
+    } else if (strcmp(cmd, "btPeersSet") == 0) {
+        cmd_bt_peers_set(jv_get_str(root, "peers", "[]"), out);
+    } else if (strcmp(cmd, "btDetach") == 0) {
+        cmd_bt_detach(out);
+    } else if (strcmp(cmd, "syncChannel") == 0) {
+        cmd_sync_channel((int)jv_get_int(root, "channel", -1), out);
     } else {
         reply_err(out, "未知命令");
     }

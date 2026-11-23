@@ -2,7 +2,9 @@
  *
  * 两条通道：
  *  - AIC_CH_LAN：同一局域网内用 UDP 广播做服务发现、TCP 直连传业务帧；
- *  - AIC_CH_BLUETOOTH：平台串行或低功耗通道，本实现只留接口（能力探测返回不可用）。
+ *  - AIC_CH_BLUETOOTH：蓝牙 RFCOMM 串行通道（Windows 走 AF_BTH 的 RFCOMM 套接字，
+ *    Android 走平台的 BluetoothSocket，由 Java 侧建立后把字节流转交 C 侧）。
+ *    蓝牙通道不做 UDP 发现，设备地址就是蓝牙地址或已配对的点名，port 是 RFCOMM 通道号。
  *
  * 统一抽象 discover / connect / send / receive / close，上层同步逻辑不区分介质。
  * 帧格式：4 字节大端长度 + 载荷，避免 TCP 粘包。 */
@@ -22,6 +24,11 @@ extern "C" {
 #define AIC_TRANSPORT_PEER_MAX     16
 #define AIC_DISCOVER_MAGIC         "SAI-DISCOVER 1"
 #define AIC_DISCOVER_REPLY         "SAI-HERE"
+
+#define AIC_BT_CHANNEL_MIN       1
+#define AIC_BT_CHANNEL_MAX       30
+#define AIC_BT_ADDR_MAX          32
+#define AIC_TRANSPORT_RING_CAP   (512u * 1024u) /* Android 蓝牙字节流中转缓冲 */
 
 typedef enum aic_channel {
     AIC_CH_LAN = 0,
@@ -75,6 +82,45 @@ int aic_transport_respond(int port, int wait_ms, const char *device_id, const ch
 
 /* 本机 IPv4 地址（局域网地址，用于生成配对提示与直连）；失败返回空串。 */
 int aic_transport_local_ip(char *out, size_t cap);
+
+/* 选择配对要用的通道：AIC_CH_LAN / AIC_CH_BLUETOOTH；-1 表示用默认
+ * （局域网可用就用局域网，否则蓝牙）。之后 host / connect / discover 都走这条通道。
+ * 已经建立链路时拒绝切换（返回 AIC_E_STATE）。 */
+struct aic_session;
+int aic_session_use_channel(struct aic_session *s, int channel);
+
+/* 蓝牙通道：列出已配对或已发现的蓝牙设备（Windows 走 BluetoothFindFirstDevice，
+ * Android 走 Java 侧的回调），addr 可直接喂给 aic_transport_connect。 */
+int aic_transport_bluetooth_peers(aic_peer *out, size_t cap, size_t *out_n,
+                                  char *err, size_t errlen);
+
+#ifdef __ANDROID__
+/* Android 蓝牙只能由 Java 的 BluetoothSocket 建立，C 侧用一个环形缓冲接字节流。
+ * 连接方向由 aic_transport_connect / listen+accept 决定：连接方调用 connect 后即使
+ * 套接字稍后才到，recv 也会等它出现。 */
+/* 0 = 未连接 / 1 = 已就绪；连接方 connect 返回后由 Java 把套接字登记进来。 */
+int  aic_bt_attach_fd(int fd, char *err, size_t errlen);
+/* 对端主动连入的套接字（listen + accept 用）。 */
+int  aic_bt_attach_listen_fd(int fd, char *err, size_t errlen);
+int  aic_bt_attach_incoming_fd(int fd, char *err, size_t errlen);
+/* 由 Java 把系统已配对/已发现的蓝牙设备清单交给 C 侧，供「列出已配对设备」显示。 */
+int  aic_bt_peers_set(const aic_peer *list, size_t n);
+void aic_bt_detach(void);
+int  aic_bt_attached(void);
+/* 把 Java 读到的字节塞进接收环形缓冲（返回空闲空间，便于背压）。 */
+int  aic_bt_feed(const void *data, size_t len);
+/* 取出 C 侧要发出的字节交给 Java 写（返回拷贝的字节数）。 */
+int  aic_bt_drain(void *buf, size_t cap, size_t *out_n);
+/* 查询 Java 侧写队列里还有多少字节未发出。 */
+int  aic_bt_pending_out(void);
+#else
+/* Windows：蓝牙 RFCOMM 地址换算（BT 地址形如 "AA:BB:CC:DD:EE:FF"，也接受
+ * "aabbccddeeff" 或带分隔的十位十六进制）与是否已打开蓝牙无线电。
+ * 这两项只做地址格式与无线电状态的判断，不需要蓝牙硬件即可验证。 */
+int  aic_bt_parse_addr(const char *text, unsigned long long *out_addr);
+int  aic_bt_radio_ready(char *err, size_t errlen);
+/* 蓝牙通道的帧收发走独立的 transport 对象（与局域网同构），connect 的 port 即 RFCOMM 通道号。 */
+#endif
 
 #ifdef __cplusplus
 }

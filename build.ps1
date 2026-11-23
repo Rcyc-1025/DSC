@@ -79,7 +79,7 @@ function Link-Exe {
 switch ($Target) {
     'test' {
         $t = Build-Object -Source (Join-Path $Root 'tests\unit\test_core.c') -Extra @()
-        Link-Exe -Out (Join-Path $Root 'build\test_core.exe') -Objects ($coreObjs + $winObjs + @($t)) -Libs @('-lws2_32', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lshell32', '-lgdi32', '-luser32')
+        Link-Exe -Out (Join-Path $Root 'build\test_core.exe') -Objects ($coreObjs + $winObjs + @($t)) -Libs @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lshell32', '-lgdi32', '-luser32')
         Write-Host 'built: build\test_core.exe'
 
         # 插件宿主进程与三个测试插件（正常 / 崩溃 / 卡死）
@@ -101,20 +101,20 @@ switch ($Target) {
         $cliInc = @(('-I' + (Join-Path $Root 'src\cli')))
         $c = Build-Object -Source (Join-Path $Root 'src\cli\aic_cli.c') -Extra $cliInc
         $v = Build-Object -Source (Join-Path $Root 'src\cli\aic_verify.c') -Extra $cliInc
-        Link-Exe -Out (Join-Path $Root 'build\aic.exe') -Objects ($coreObjs + $winObjs + @($c, $v)) -Libs @('-lws2_32', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32')
+        Link-Exe -Out (Join-Path $Root 'build\aic.exe') -Objects ($coreObjs + $winObjs + @($c, $v)) -Libs @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32')
         Write-Host 'built: build\aic.exe'
     }
     'gui' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\Sai.exe'
-        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
+        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'Sai.exe'
         Write-Host 'built: build\Sai.exe'
     }
     'guidiag' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\SaiDiag.exe'
-        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
+        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'SaiDiag.exe'
         Write-Host 'built: build\SaiDiag.exe'
     }

@@ -35,7 +35,7 @@
       pairing.*          双向配对码：6 位码生成、5 分钟有效、5 次错误作废、共享密钥写安全存储
       sync.*             逻辑时钟、增量事件发件箱、应用事件、冲突判负与落败方副本
       sync_session.*     会话驱动：发现/连接/握手/泵（pump）/发件箱续传
-      transport.h        传输抽象（LAN 实装、蓝牙只留接口）+ 帧格式（4 字节大端长度）
+      transport.h        传输抽象（LAN 与蓝牙 RFCOMM 两条通道）+ 帧格式（4 字节大端长度）
       http.* / zip.* / backup.* / avatar.* / notify.* / diaglog.*
                          真实网络、ZIP、备份恢复、头像压缩、系统通知、诊断日志
 
@@ -165,7 +165,9 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 hello_ack（带本端码与已输入的对端码）→ 第二次 hello（带 entered）→ pair_ok 或 pair_fail。
 
 传输（§16.1）：局域网 TCP 长连接 + UDP 广播发现（SAI-DISCOVER 1 → SAI-HERE <id> <name>），帧格式为 4 字节大端长度 + JSON；
-蓝牙只保留 TransportAdapter 接口与状态机（aic_transport_available(BLUETOOTH) 恒 0），两通道统一同一套收发接口。
+蓝牙走 RFCOMM（Windows 用 AF_BTH + `winsock2` 的 bt_rfcomm，Android 由 Java 的 `BluetoothSocket` 建链后把字节流交给
+C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），两通道共用同一套帧格式、同一套配对流程与同一个状态机；
+`aic_transport_available(`BLUETOOTH`)` 只在平台确实提供蓝牙栈时返回 1（桌面恒 1，Android 由 Java 侧探测后置位）。
 
 同步（§16.3~16.6）：状态机 IDLE→DISCOVERING→CONNECTING→PAIRING→PAIRED→SYNCING（DISCOVERING 允许直接被连方转 PAIRING）。
 配对成功即进 SYNCING 且实时同步默认开启；暂停只停新事件发送，已入队事件恢复后按 event_id 补发；同一时刻只与一个设备同步。
@@ -198,6 +200,8 @@ aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分
     python tools\build_android.py     # 交叉编译 + javac + d8 + aapt2 + zipalign + apksigner
     python tools\verify_android.py    # APK 产物校验（无真机时的自动化证据）
     python tools\package_win.py       # 组装 Windows 便携包并算 SHA-256
+    python tools\sign_android.py      # 用发布方 keystore 重签 APK（缺证书退出 3）
+    scripts\sign_release.ps1          # 用发布方证书签 Windows 产物（缺证书退出 3）
 
 Windows 工具链为 MSYS2 ucrt64 gcc 15.2.0（装在 D:\Code\msys2ucrt），静态链接 libgcc，产物不依赖额外运行时；
 Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
@@ -206,15 +210,18 @@ Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
 
 1. 没有用真实 API Key 打 api.deepseek.com：传输、SSE 解析、错误分类、取消、余额解析都在本地以假传输与本地 HTTP 服务验证。
 2. Android 端做到可编译、可签名、产物可校验，未在真机/模拟器运行；Windows 端为离屏渲染 + 交互逻辑自动化。
-   因此 Android 侧的界面路径（三段式流式、选图、通知、更新安装器跳转）只有编译与结构校验，
-   C 侧协议另有主机复刻测试；Android 插件进程隔离不可用（state 报 pluginProcAvailable=0，界面提示"仅可管理清单"），
-   余额仍取本地账本口径，头像不读 EXIF 方向，系统对话框外观不随深色主题切换。
-3. Windows 产物未做代码签名（本机无 signtool/公开证书）；Android APK 用自签名 key。
+   因此 Android 侧的界面路径（三段式流式、选图、通知、更新安装器跳转、蓝牙 RFCOMM、真实余额、插件独立进程）
+   只有编译与结构校验，C 侧协议另有主机复刻测试；头像不读 EXIF 方向，系统对话框外观不随深色主题切换。
+3. 签名通道已闭环但不含证书：Windows 用 `scripts\sign_release.ps1`（`-Pfx` 或 `-Thumbprint`，缺 signtool 退出 2、
+   缺证书退出 3），Android 用 `tools\sign_android.py`（`SAI_ANDROID_KEYSTORE` 等环境变量，缺项退出 3，产出 v2+v3 并当场验签）。
+   仓库自带的 `build_android\sai.keystore` 只用于开发期出可安装包，发布前必须用发布方证书重签。
 4. 32 位 Windows 未构建；ARM64 为交叉编译产物（便携 zip），未在 ARM64 硬件上运行。
 5. 插件扩展点四个都已在 Windows 侧接通：prompt.fragment 拼提示词、ui.panel（describe/invoke）面板按钮、
-message.transform 改送模型的最后一条 user 文本、tool.provider 产出 tools 声明；Android 侧只做到清单管理，
-扩展点调用尚未接（state 里 pluginProcAvailable=0）。
+message.transform 改送模型的最后一条 user 文本、tool.provider 产出 tools 声明；Android 侧由
+`PluginHostService`（`:plugin` 进程）每次调用再 fork 一个一次性 `PluginWorker` 进程加载插件 dex，
+超时 5 秒即终止该进程，扩展点面板可查（state 里 pluginProcAvailable=1）。
 6. 双端同步的局域网通道在本机以回环地址端到端验证（发现、连接、握手、事件收发、续传、冲突副本都有断言）；
-   蓝牙只留 TransportAdapter 接口与状态机，未实现平台蓝牙栈；跨 NAT、跨网段与防火墙受阻场景需改用导出导入迁移记录。
+   蓝牙 RFCOMM 两端都已实现（Windows AF_BTH、Android BluetoothSocket + JNI 字节流桥），但本机没有可用的蓝牙对端，
+   **未做收发实测**；跨 NAT、跨网段与防火墙受阻场景需改用导出导入迁移记录。
 7. 实时同步不在界面线程阻塞：pump 在工作线程里按 400ms 轮询，链路中断时进入 PAIRED 并把事件留在队列，恢复后按 event_id 续传。
 

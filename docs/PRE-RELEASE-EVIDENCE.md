@@ -24,18 +24,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，1.3.0） | 1581068 | 12e7c2fbb570a19a6678932a51af2fe68f920d7b0f692bb78424a4a8030cc184 |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1544892 | accca2f0a7e90b2678590b509b7b860a20d318ffe4146f8dd1e56489028f01c4 |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 91dad0d12f02cbf691d68c93aa914fd13c626046b0736c91cd49eabdfb50283b |
-| build\test_core.exe（单元测试） | 1610858 | aa738efb5e651a237bf9cd5828c5c414af7aa609f4231115786f2ff6d0fa9767 |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1511936 | c928a8e338c5b639458b1936fc77966f9342861845966f4783ee52956b29e3b8 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 545c199d6684b2f8b42cbd34f9ca086382015bbba93c7a37a75d0d96ed627953 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 3516650c4ce2f3a579f7074a4d143ba7807409a1ba8593cf7d04d5e232b2a996 |
-| build_android\Sai.apk（Android ARM64 安装包，versionCode 4 / versionName 1.3.0） | 840142 | 6c090b98ff9dc5963aef52eeabe4ad8e728cb90eb40a536150ec30e45dc162b4 |
-| dist\Sai-1.3.0-win-x64-portable.zip | 1575514 | 8c77610139e93315c72e51f01fd5d456e19663e6650615ed7aed754bb873a5fd |
-| dist\Sai-1.3.0-win-x64-setup.exe | 3867955 | 72272625c293ad77a3e8e85f88b730a0d2f2d2f9a35b617b52edd22267176a17 |
-| dist\Sai-1.3.0-win-arm64-portable.zip | 887288 | 84857cc079cf68548fd7a1c3188505556eb0d863d18f21d7a0557c101b138209 |
-| dist\Sai-1.3.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 840142 | 6c090b98ff9dc5963aef52eeabe4ad8e728cb90eb40a536150ec30e45dc162b4 |
+| build\Sai.exe（Windows 界面，1.3.0） | 1589944 | b1be43efc3d2c599a190665d0ab8e7ec7d212f9044c3de55ac094d66dd54e2fb |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1551651 | 74d96661f9134bd655ec8474f11751d41f1b19fd87a2541fe2bcc48ea1c93897 |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | d11466050c45eaf24c050d00ddf197064d79c10a2ac685d1431178dbe8bfb7f4 |
+| build\test_core.exe（单元测试） | 1617105 | 584bb5ad0cab536ef4c9248f2803d150ee3d0a25be2e10d9e2e204a7d7d4fc23 |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1518592 | 5273144df13dd3c9eb74e1b8a715c8e173b3186bcc424939cb19287de495e350 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 6597001f075d71debfc9d173ca4b891ca438bc1827ea9c6bcdd98760c2d7680f |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | f15e9c74f80a03530c47df7475d1c6a4ec4dcd77b2db363819b0a340f98977da |
+| build_android\Sai.apk（Android ARM64 安装包，versionCode 4 / versionName 1.3.0） | 856526 | 6aeb757a38bcb7f295040a3aa301611828481bf16192a027697e5f12e6649b11 |
+| dist\Sai-1.3.0-win-x64-portable.zip | 1584073 | 14a0b7f580351b79b593288f85b14711d43a08cb305315838d07b718ac4f8df7 |
+| dist\Sai-1.3.0-win-x64-setup.exe | 3889607 | b04b90c62b062a43eafd47bd7b9e77f6c342fbd3c6e4c977a35651c87b3a75f6 |
+| dist\Sai-1.3.0-win-arm64-portable.zip | 893338 | e717fd19e5dee1db454f5c4b6368d79092357239c1566cfcc00a8fb56e6142ac |
+| dist\Sai-1.3.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 856526 | 6aeb757a38bcb7f295040a3aa301611828481bf16192a027697e5f12e6649b11 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -146,13 +146,22 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 | 更新检查 / 下载 / 安装 | `checkUpdate` / `downloadUpdate`（`aic_update_verify_file`）/ `installUpdate`（`aic_update_can_apply` + 二次校验） | `Updater.java`（FileProvider + 系统安装器） |
 | 备份 / 恢复 / 清理、导出 / 导入 | `backupCreate` / `backupList` / `backupRestore` / `backupClean`；`exportJson` / `importJson` | `MainActivity.showData` / `doBackup` / `doRestore` / `exportJson` / `doImport` |
 | 插件清单管理 | `pluginList` / `pluginInstall`（`aic_zip_extract` → `aic_plugin_install`）/ `pluginSetEnabled` / `pluginUninstall` | `showPlugins` / `pluginActions` |
+| 插件独立进程执行 | `pluginPointList`（问清单）/ `pluginCallPoint`（汇总回灌） | `PluginHostService`（`:plugin` 进程）→ `PluginWorker`（`:plugincall` 一次性进程）→ `PluginEngine`（DexClassLoader） |
+| 蓝牙 RFCOMM 通道 | `btAttach` / `btFeed` / `btDrain` / `btDetach` / `btPeersSet` / `syncChannel` | `BtBridge.java`（BluetoothSocket 读线程 → base64 → btFeed；20ms 一取 btDrain → 写回） |
+| 真实账户余额 | `balance` / `balanceApply` / `balanceFailed` | `BalanceQuery.java`（HttpURLConnection GET /user/balance） |
+| 两端签名通道 | — | `tools/sign_android.py`（v2+v3，缺 keystore 退出 3）、`scripts/sign_release.ps1`（缺 signtool 退出 2 / 缺证书退出 3） |
 | 线程模型 | — | `work()` / `ui()` 两个辅助：网络在 `Net` 守护线程、导入导出/插件/备份/更新在工作线程，刷新一律回 UI |
 
 **Android 侧的诚实边界**（都写进了 `docs/DESIGN.md` 第 12 节）：
 - 没有真机/模拟器运行过，上述 Java 路径只做过编译与结构校验；C 侧三段协议另有主机侧复刻测试（22 条断言，
   覆盖 1 字节分块切在中文中间、usage 解析、`supersede`、鉴权错误分类）。
-- 插件进程隔离在 Android 不可用（`pluginProcAvailable=0`），界面如实提示「仅可管理清单」。
-- 余额仍是本地账本口径；头像未读 EXIF 方向；系统对话框外观不随深色主题切换。
+- 插件在 Android 上改为「服务进程 + 一次性子进程」运行（`pluginProcAvailable=1`），但同样只在构建期验证，
+  没有在真机上验证过进程被 kill 后的表现；示例插件源码见 `plugins/sample_android`。
+- 余额改成走真实账户接口（失败保留上次结果），但同样未在真机上打过 api.deepseek.com；
+  头像未读 EXIF 方向；系统对话框外观不随深色主题切换。
+- 蓝牙 RFCOMM 两端实现完毕（Windows AF_BTH、Android BluetoothSocket），本机没有可操作的蓝牙对端，
+  **未做收发实测**；`aic_transport_available(BLUETOOTH)` 只反映平台是否具备蓝牙栈。
+- 签名通道只到「能用发布方证书自动签名」，仓库不签发证书；本机的自签 APK 只用于开发期内测。
 
 ## 8. 便携包可独立运行
 

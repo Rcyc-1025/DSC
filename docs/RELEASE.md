@@ -27,9 +27,9 @@
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target test
    .\build\test_core.exe                      # 期望"0 失败"
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
-   .\build\aic.exe verify . build\verify      # 期望退出码 0，24 条 FR 全 PASS
+   .\build\aic.exe verify . build\verify      # 期望退出码 0，30 条 FR 全 PASS
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-   python tools\shots.py                      # 8 张界面截图逐张目检
+   python tools\shots.py                      # 14 张界面截图逐张目检
    ```
 
 3. **基准**：`aic.exe bench` 与 `aic.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
@@ -44,7 +44,9 @@
    python tools\verify_android.py     # APK 结构 / ABI / 清单 / 签名校验
    ```
 
-7. **签名**：Windows 走 `scripts\sign_release.ps1`（本机无 `signtool` 时脚本以退出码 2 明确告知"未签名"，不要把它当成失败跳过）；Android 用 `build_android\sai.keystore` 自签名（`apksigner` 产出 v2+v3 签名）。
+7. **签名**（通道已闭环，证书由发布方提供，本仓库不签发证书）：
+   - Windows：`scripts\sign_release.ps1`。证书用 `-Pfx <文件>`（口令走环境变量 `SAI_SIGN_PASSWORD`）或 `-Thumbprint <指纹>`（证书已导入当前用户个人存储）。退出码：`0` 签名并验签通过；`2` 找不到 `signtool.exe`（需要 Windows SDK 签名工具）；`3` 没有证书或缺口令；`4` 没有可签名的文件。脚本不会自造证书、不会在缺证书时假装成功。
+   - Android：`python tools\sign_android.py`。keystore 用环境变量 `SAI_ANDROID_KEYSTORE` / `SAI_ANDROID_STOREPASS` / `SAI_ANDROID_KEYPASS` / `SAI_ANDROID_ALIAS`，缺任一项退出码 `3`，产出 v2+v3 签名并当场 `apksigner verify --print-certs`。`tools\build_android.py` 打出来的 `build_android\Sai.apk` 只是开发用自签包，发布前必须用发布方证书重新签名。
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
 9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[1.3.0] - 2026-11-22` 并新建空的 `[未发布]` 段。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表 + 未实测清单（`docs/PRE-RELEASE-EVIDENCE.md` 第 9 节）。
@@ -56,7 +58,7 @@
 | Windows 便携包 | `Sai-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `Sai-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\Sai` |
 | Windows ARM64 便携包 | `Sai-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `Sai-1.3.0-android-arm64.apk`（构建产物为 `build_android\Sai.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 1.3.0`，v2/v3 自签名 |
+| Android 安装包 | `Sai-1.3.0-android-arm64.apk`（构建产物为 `build_android\Sai.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 1.3.0`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
 
 **ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。本版用本机 LLVM 23 的 `clang` +
 `lld` 加 MSYS2 `clangarm64` 的 aarch64 mingw-w64 sysroot 交叉编译出 ARM64 的 `Sai.exe`、
@@ -71,4 +73,4 @@
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/aic.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-22（对应版本 v1.3.0，含 ARM64 交叉编译产物）。
+最后更新：2026-11-23（对应版本 v1.3.0，含 ARM64 交叉编译产物与两端签名通道）。

@@ -1522,12 +1522,29 @@ static void fr25(V *v, const char *wd)
     int rc, port;
 
     (void)wd;
-    fr_begin(v, "FR-25", "双端数据同步链路（局域网直连与发现 / 蓝牙仅接口）");
+    fr_begin(v, "FR-25", "双端数据同步链路（局域网直连与发现 / 蓝牙 RFCOMM）");
     err[0] = '\0';
     ip[0] = '\0';
     check(v, aic_transport_available(AIC_CH_LAN) == 1, "局域网传输通道可用");
-    check(v, aic_transport_available(AIC_CH_BLUETOOTH) == 0,
-          "蓝牙通道只保留 TransportAdapter 接口（平台蓝牙未实现）");
+    /* 蓝牙通道已实现（AF_BTH + RFCOMM）；本机是否有可用无线电由 available() 如实报告。 */
+    {
+        int bt = aic_transport_available(AIC_CH_BLUETOOTH);
+        check(v, bt == 0 || bt == 1, "蓝牙通道可探测（可用=%d，本机无无线电时为 0）", bt);
+        unsigned long long addr = 0;
+        check(v, aic_bt_parse_addr("AA:BB:CC:DD:EE:FF", &addr) == AIC_OK && addr == 0xAABBCCDDEEFFull,
+              "蓝牙地址解析（AA:BB:CC:DD:EE:FF → %llX）", (unsigned long long)addr);
+        check(v, aic_bt_parse_addr("aabbccddeeff", &addr) == AIC_OK && addr == 0xAABBCCDDEEFFull,
+              "蓝牙地址解析（无分隔形式）");
+        check(v, aic_bt_parse_addr("ZZ:BB:CC:DD:EE:FF", &addr) == AIC_E_INVAL,
+              "非法蓝牙地址被拒绝（%d）", aic_bt_parse_addr("ZZ:BB:CC:DD:EE:FF", &addr));
+        aic_peer btpeers[4];
+        size_t btn = 0;
+        int brc = aic_transport_bluetooth_peers(btpeers, 4, &btn, err, sizeof(err));
+        check(v, brc == AIC_OK || brc == AIC_E_NOTFOUND || brc == AIC_E_UNSUPPORTED || brc == AIC_E_IO,
+              "已配对蓝牙设备可枚举（rc=%d 找到 %d 台 %s）", brc, (int)btn, err);
+        check(v, aic_session_use_channel(NULL, AIC_CH_BLUETOOTH) == AIC_E_INVAL,
+              "通道切换接口存在且拒绝空会话");
+    }
     check(v, strcmp(aic_channel_name(AIC_CH_LAN), "") != 0 &&
              strcmp(aic_channel_name(AIC_CH_BLUETOOTH), "") != 0, "两条通道都有名称");
     check(v, AIC_TRANSPORT_MAX_FRAME == (1u << 20), "单帧载荷上限 %u 字节", AIC_TRANSPORT_MAX_FRAME);

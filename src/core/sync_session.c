@@ -20,6 +20,7 @@ struct aic_session {
     char            pending[AIC_SESSION_PENDING_MAX][AIC_SYNC_ID_MAX];
     int             sent_total;
     int             applied_total;
+    int             want_channel;  /* -1 = 跟随默认（局域网优先） */
 };
 
 int aic_session_create(aic_db *db, aic_session **out)
@@ -32,6 +33,7 @@ int aic_session_create(aic_db *db, aic_session **out)
     rc = aic_pairing_create(db, &s->pair);
     if (rc != AIC_OK) { aic_sync_destroy(s->sync); aic_xfree(s); return rc; }
     s->phase = AIC_SYNC_IDLE;
+    s->want_channel = -1;
     *out = s;
     return AIC_OK;
 }
@@ -58,14 +60,43 @@ aic_sync_state aic_session_phase(const aic_session *s) { return s ? s->phase : A
 int aic_session_is_paired(const aic_session *s) { return s && s->phase == AIC_SYNC_SYNCING; }
 const char *aic_session_our_code(const aic_session *s) { return s ? aic_pairing_code(s->pair) : ""; }
 
+/* 选通道：显式指定优先，未指定时局域网优先，局域网不可用再退回蓝牙（§16.1 两条通道统一抽象）。 */
+static aic_channel pick_channel(const aic_session *s)
+{
+    if (s->want_channel == (int)AIC_CH_LAN || s->want_channel == (int)AIC_CH_BLUETOOTH) {
+        return (aic_channel)s->want_channel;
+    }
+    if (aic_transport_available(AIC_CH_LAN)) return AIC_CH_LAN;
+    return AIC_CH_BLUETOOTH;
+}
+
 static int ensure_transport(aic_session *s, char *err, size_t errlen)
 {
     if (s->tr) return AIC_OK;
-    int rc = aic_transport_create(AIC_CH_LAN, &s->tr);
+    aic_channel ch = pick_channel(s);
+    int rc = aic_transport_create(ch, &s->tr);
     if (rc != AIC_OK) {
-        if (err && errlen) snprintf(err, errlen, "局域网传输不可用：%s", aic_strerror(rc));
+        if (err && errlen) {
+            snprintf(err, errlen, "%s通道不可用：%s", ch == AIC_CH_LAN ? "局域网" : "蓝牙", aic_strerror(rc));
+        }
         return rc;
     }
+    return AIC_OK;
+}
+
+int aic_session_use_channel(aic_session *s, int channel)
+{
+    if (!s) return AIC_E_INVAL;
+    if (channel != -1 && channel != (int)AIC_CH_LAN && channel != (int)AIC_CH_BLUETOOTH) {
+        return AIC_E_INVAL;
+    }
+    if (s->phase != AIC_SYNC_IDLE) return AIC_E_STATE;
+    if (s->tr) {
+        /* 还没进入任何阶段时允许换介质：关掉旧对象重建。 */
+        aic_transport_destroy(s->tr);
+        s->tr = NULL;
+    }
+    s->want_channel = channel;
     return AIC_OK;
 }
 

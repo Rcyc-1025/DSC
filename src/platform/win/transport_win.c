@@ -1,21 +1,27 @@
-/* transport_win.c —— Windows 传输适配层（Winsock2）：局域网 TCP 直连 + UDP 发现。
- * 蓝牙通道只做能力探测（本机无蓝牙栈接入，返回不可用）。 */
+/* transport_win.c —— Windows 传输适配层（Winsock2）：局域网 TCP 直连 + UDP 发现，
+ * 以及蓝牙 RFCOMM 串行通道（AF_BTH + BTHPROTO_RFCOMM，技术设计 §16.1）。
+ *
+ * 两条通道共用同一套帧格式与上层同步逻辑，只有套接字族、连接参数与发现方式不同：
+ * 局域网用 UDP 广播发现，蓝牙用系统已配对设备列表（BluetoothFindFirstDevice）。 */
 #include "transport.h"
 
 #include <winsock2.h>
+#include <ws2bth.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <bluetoothapis.h>
 
 #include <stdio.h>
 #include <string.h>
 
-
 struct aic_transport {
     aic_channel         ch;
     aic_transport_state state;
-    SOCKET              listener; /* 监听套接字 */
+    SOCKET              listener; /* 局域网监听套接字 */
     SOCKET              conn;     /* 已建立的连接 */
     int                 port;
+    int                 rfcomm_channel;  /* 蓝牙专用：RFCOMM 通道号 */
+    BTH_ADDR            rfcomm_addr;     /* 蓝牙专用：对端蓝牙地址 */
 };
 
 const char *aic_channel_name(aic_channel ch)
@@ -39,22 +45,152 @@ static int wsa_ready(void)
     return ok;
 }
 
+/* ---------- 蓝牙：地址与无线电状态 ---------- */
+
+int aic_bt_parse_addr(const char *text, unsigned long long *out_addr)
+{
+    if (out_addr) *out_addr = 0;
+    if (!text || !*text) return AIC_E_INVAL;
+    unsigned long long v = 0;
+    int digits = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p == ':' || *p == '-' || *p == ' ') continue;
+        int d;
+        if (*p >= '0' && *p <= '9') d = *p - '0';
+        else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+        else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+        else return AIC_E_INVAL;
+        v = (v << 4) | (unsigned long long)d;
+        digits++;
+    }
+    if (digits != 12) return AIC_E_INVAL;
+    if (out_addr) *out_addr = v;
+    return AIC_OK;
+}
+
+static void bt_addr_text(BTH_ADDR a, char *out, size_t cap)
+{
+    snprintf(out, cap, "%02llX:%02llX:%02llX:%02llX:%02llX:%02llX",
+             (unsigned long long)((a >> 40) & 0xFF),
+             (unsigned long long)((a >> 32) & 0xFF),
+             (unsigned long long)((a >> 24) & 0xFF),
+             (unsigned long long)((a >> 16) & 0xFF),
+             (unsigned long long)((a >> 8) & 0xFF),
+             (unsigned long long)(a & 0xFF));
+}
+
+static void request_bt_radio(void)
+{
+    /* 无线电被关掉时蓝牙查找会直接失败，先请求一次打开（系统会弹授权，用户拒绝也不影响其余通道）。 */
+    HMODULE lib = LoadLibraryW(L"bthprops.cpl");
+    if (!lib) return;
+    FARPROC fn = GetProcAddress(lib, "BluetoothEnableDiscovery");
+    if (fn) {
+        typedef int (WINAPI *pbth_turn_on_t)(void *);
+        ((pbth_turn_on_t)(void *)fn)(NULL);
+    }
+    FreeLibrary(lib);
+}
+
+int aic_bt_radio_ready(char *err, size_t errlen)
+{
+    if (err && errlen) err[0] = '\0';
+    if (!wsa_ready()) {
+        if (err && errlen) snprintf(err, errlen, "网络栈不可用");
+        return AIC_E_UNSUPPORTED;
+    }
+    BLUETOOTH_FIND_RADIO_PARAMS rp;
+    memset(&rp, 0, sizeof(rp));
+    rp.dwSize = sizeof(rp);
+    HANDLE hradio = NULL;
+    HBLUETOOTH_RADIO_FIND rf = BluetoothFindFirstRadio(&rp, &hradio);
+    if (!rf) {
+        request_bt_radio();
+        DWORD e = GetLastError();
+        if (err && errlen) {
+            if (e == ERROR_NO_MORE_ITEMS) snprintf(err, errlen, "这台电脑没有可用的蓝牙无线电");
+            else if (e == ERROR_NOT_READY) snprintf(err, errlen, "蓝牙未开启，请在系统设置里打开蓝牙");
+            else snprintf(err, errlen, "蓝牙无线电不可用（错误码 %lu）", (unsigned long)e);
+        }
+        return AIC_E_UNSUPPORTED;
+    }
+    if (hradio) CloseHandle(hradio);
+    BluetoothFindRadioClose(rf);
+    return AIC_OK;
+}
+
+int aic_transport_bluetooth_peers(aic_peer *out, size_t cap, size_t *out_n,
+                                  char *err, size_t errlen)
+{
+    if (err && errlen) err[0] = '\0';
+    if (out_n) *out_n = 0;
+    if (!out || !cap) return AIC_E_INVAL;
+    if (!wsa_ready()) return AIC_E_UNSUPPORTED;
+
+    BLUETOOTH_DEVICE_SEARCH_PARAMS sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.dwSize = sizeof(sp);
+    sp.fReturnAuthenticated = TRUE;  /* 只用已配对设备：未配对的还需要用户在系统里确认 */
+    sp.fReturnRemembered = TRUE;
+    sp.fReturnConnected = TRUE;
+    sp.fReturnUnknown = FALSE;
+    sp.fIssueInquiry = FALSE;        /* 不做主动搜索，避免打扰周围设备 */
+    sp.cTimeoutMultiplier = 2;
+    sp.hRadio = NULL;
+
+    BLUETOOTH_DEVICE_INFO di;
+    memset(&di, 0, sizeof(di));
+    di.dwSize = sizeof(di);
+    HBLUETOOTH_DEVICE_FIND fd = BluetoothFindFirstDevice(&sp, &di);
+    if (!fd) {
+        DWORD e = GetLastError();
+        if (e == ERROR_NO_MORE_ITEMS) {
+            if (err && errlen) snprintf(err, errlen, "没有已配对的蓝牙设备，请先在系统设置里配对");
+            return AIC_E_NOTFOUND;
+        }
+        if (err && errlen) snprintf(err, errlen, "枚举蓝牙设备失败（错误码 %lu）", (unsigned long)e);
+        return AIC_E_IO;
+    }
+    size_t n = 0;
+    do {
+        if (n >= cap) break;
+        char addr[AIC_BT_ADDR_MAX];
+        bt_addr_text(di.Address.ullLong, addr, sizeof(addr));
+        aic_strlcpy_utf8(out[n].device_id, sizeof(out[n].device_id), addr);
+        /* szName 是 UTF-16，先转 UTF-8 再存。 */
+        WideCharToMultiByte(CP_UTF8, 0, di.szName, -1, out[n].name, (int)sizeof(out[n].name), NULL, NULL);
+        aic_strlcpy_utf8(out[n].addr, sizeof(out[n].addr), addr);
+        out[n].port = AIC_BT_CHANNEL_MIN;
+        out[n].channel = AIC_CH_BLUETOOTH;
+        n++;
+    } while (BluetoothFindNextDevice(fd, &di));
+    BluetoothFindDeviceClose(fd);
+    if (out_n) *out_n = n;
+    return n ? AIC_OK : AIC_E_NOTFOUND;
+}
+
+/* ---------- 通用 ---------- */
+
 int aic_transport_available(aic_channel ch)
 {
     if (ch == AIC_CH_LAN) return wsa_ready();
-    return 0; /* 蓝牙通道未实现：上层据此提示改用局域网或导出导入 */
+    if (ch == AIC_CH_BLUETOOTH) return aic_bt_radio_ready(NULL, 0) == AIC_OK;
+    return 0;
 }
 
 int aic_transport_create(aic_channel ch, aic_transport **out)
 {
     if (!out) return AIC_E_INVAL;
-    if (!aic_transport_available(ch)) return AIC_E_UNSUPPORTED;
+    if (!wsa_ready()) return AIC_E_UNSUPPORTED;
+    /* 蓝牙预留：无线电没开也允许创建对象，具体失败由 listen / connect 报出来。 */
+    if (ch != AIC_CH_LAN && ch != AIC_CH_BLUETOOTH) return AIC_E_UNSUPPORTED;
     aic_transport *t = (aic_transport *)aic_xcalloc(1, sizeof(aic_transport));
     t->ch = ch;
     t->state = AIC_TRANSPORT_CLOSED;
     t->listener = INVALID_SOCKET;
     t->conn = INVALID_SOCKET;
     t->port = AIC_TRANSPORT_DEFAULT_PORT;
+    t->rfcomm_channel = AIC_BT_CHANNEL_MIN;
     *out = t;
     return AIC_OK;
 }
@@ -79,11 +215,73 @@ aic_transport_state aic_transport_get_state(const aic_transport *t)
     return t ? t->state : AIC_TRANSPORT_CLOSED;
 }
 
+static int wait_readable(SOCKET s, int timeout_ms)
+{
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(s, &rd);
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int rc = select(0, &rd, NULL, NULL, &tv);
+    return rc > 0 ? 1 : (rc == 0 ? 0 : -1);
+}
+
+/* 把 SOCKADDR_BTH 填好：蓝牙地址 + RFCOMM 通道号。 */
+static void fill_bth_addr(SOCKADDR_BTH *addr, BTH_ADDR dev, int channel)
+{
+    memset(addr, 0, sizeof(*addr));
+    addr->addressFamily = AF_BTH;
+    addr->btAddr = dev;
+    addr->port = (ULONG)channel;
+}
+
+static int bt_listen(aic_transport *t, int port, char *err, size_t errlen)
+{
+    int ch = port > 0 ? port : AIC_BT_CHANNEL_MIN;
+    if (ch < AIC_BT_CHANNEL_MIN || ch > AIC_BT_CHANNEL_MAX) {
+        if (err && errlen) snprintf(err, errlen, "RFCOMM 通道号 %d 超出范围（%d~%d）", ch,
+                                    AIC_BT_CHANNEL_MIN, AIC_BT_CHANNEL_MAX);
+        return AIC_E_INVAL;
+    }
+    char rerr[256];
+    rerr[0] = '\0';
+    int rc = aic_bt_radio_ready(rerr, sizeof(rerr));
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "%s", rerr[0] ? rerr : "蓝牙不可用");
+        return rc;
+    }
+    SOCKET s = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
+    if (s == INVALID_SOCKET) {
+        if (err && errlen) snprintf(err, errlen, "创建蓝牙套接字失败（错误码 %d）", WSAGetLastError());
+        return AIC_E_IO;
+    }
+    SOCKADDR_BTH sa;
+    fill_bth_addr(&sa, 0, ch); /* 本端地址填 0，由协议栈分配 */
+    if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        int e = WSAGetLastError();
+        closesocket(s);
+        if (err && errlen) snprintf(err, errlen, "RFCOMM 通道 %d 无法绑定（错误码 %d），可能被其它程序占用", ch, e);
+        return AIC_E_IO;
+    }
+    if (listen(s, SOMAXCONN) != 0) {
+        closesocket(s);
+        if (err && errlen) snprintf(err, errlen, "蓝牙监听失败（错误码 %d）", WSAGetLastError());
+        return AIC_E_IO;
+    }
+    t->listener = s;
+    t->port = ch;
+    t->rfcomm_channel = ch;
+    t->state = AIC_TRANSPORT_LISTENING;
+    return AIC_OK;
+}
+
 int aic_transport_listen(aic_transport *t, int port, char *err, size_t errlen)
 {
     if (err && errlen) err[0] = '\0';
     if (!t) return AIC_E_INVAL;
     aic_transport_close(t);
+    if (t->ch == AIC_CH_BLUETOOTH) return bt_listen(t, port, err, errlen);
 
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
@@ -115,18 +313,6 @@ int aic_transport_listen(aic_transport *t, int port, char *err, size_t errlen)
     return AIC_OK;
 }
 
-static int wait_readable(SOCKET s, int timeout_ms)
-{
-    fd_set rd;
-    FD_ZERO(&rd);
-    FD_SET(s, &rd);
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    int rc = select(0, &rd, NULL, NULL, &tv);
-    return rc > 0 ? 1 : (rc == 0 ? 0 : -1);
-}
-
 int aic_transport_accept(aic_transport *t, int timeout_ms, char *err, size_t errlen)
 {
     if (err && errlen) err[0] = '\0';
@@ -146,12 +332,59 @@ int aic_transport_accept(aic_transport *t, int timeout_ms, char *err, size_t err
     return AIC_OK;
 }
 
+static int bt_connect(aic_transport *t, const char *host, int port, int timeout_ms,
+                      char *err, size_t errlen)
+{
+    unsigned long long dev = 0;
+    if (aic_bt_parse_addr(host, &dev) != AIC_OK) {
+        /* 也允许直接传设备名：到已配对设备里找同名的一项。 */
+        aic_peer list[16];
+        size_t n = 0;
+        if (aic_transport_bluetooth_peers(list, 16, &n, NULL, 0) == AIC_OK) {
+            for (size_t i = 0; i < n; i++) {
+                if (aic_str_ieq(list[i].name, host)) {
+                    aic_bt_parse_addr(list[i].addr, &dev);
+                    break;
+                }
+            }
+        }
+        if (dev == 0) {
+            if (err && errlen) snprintf(err, errlen, "蓝牙地址或设备名无法识别：%s", host);
+            return AIC_E_INVAL;
+        }
+    }
+    int ch = port >= AIC_BT_CHANNEL_MIN && port <= AIC_BT_CHANNEL_MAX ? port : AIC_BT_CHANNEL_MIN;
+    SOCKET s = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
+    if (s == INVALID_SOCKET) {
+        if (err && errlen) snprintf(err, errlen, "创建蓝牙套接字失败（错误码 %d）", WSAGetLastError());
+        return AIC_E_IO;
+    }
+    /* 蓝牙套接字不支持非阻塞 connect，改由上层超时：这里直接阻塞，
+     * 超时由系统协议栈决定（通常 10 秒内返回失败）。 */
+    (void)timeout_ms;
+    SOCKADDR_BTH sa;
+    fill_bth_addr(&sa, (BTH_ADDR)dev, ch);
+    if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        int e = WSAGetLastError();
+        closesocket(s);
+        if (err && errlen) snprintf(err, errlen, "蓝牙连接 %s 通道 %d 失败（错误码 %d）", host, ch, e);
+        return AIC_E_IO;
+    }
+    t->conn = s;
+    t->port = ch;
+    t->rfcomm_channel = ch;
+    t->rfcomm_addr = (BTH_ADDR)dev;
+    t->state = AIC_TRANSPORT_CONNECTED;
+    return AIC_OK;
+}
+
 int aic_transport_connect(aic_transport *t, const char *host, int port, int timeout_ms,
                           char *err, size_t errlen)
 {
     if (err && errlen) err[0] = '\0';
     if (!t || !host) return AIC_E_INVAL;
     aic_transport_close(t);
+    if (t->ch == AIC_CH_BLUETOOTH) return bt_connect(t, host, port, timeout_ms, err, errlen);
 
     struct addrinfo hints;
     struct addrinfo *res = NULL;

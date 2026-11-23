@@ -90,6 +90,7 @@ enum {
     ACT_CRED_KEY_EDIT, ACT_CRED_SAVE, ACT_CRED_DEMO, ACT_MODE_CHAT, ACT_MODE_QA,
     ACT_PAIR_BACK, ACT_PAIR_ADDR_EDIT, ACT_PAIR_CODE_EDIT, ACT_PAIR_HOST, ACT_PAIR_DISCOVER,
     ACT_PAIR_CONNECT, ACT_PAIR_HANDSHAKE, ACT_PAIR_TOGGLE, ACT_PAIR_CONFLICTS, ACT_PAIR_UNPAIR,
+    ACT_PAIR_CH_LAN, ACT_PAIR_CH_BT,
     ACT_FIELD_BASE = 900
 };
 
@@ -161,6 +162,7 @@ typedef struct App {
 
     int   quit_confirm;
     char  sel_msg[40];       /* 当前选中的消息（撤回/修改用） */
+    int   pair_channel;      /* 配对通道：0=局域网 1=蓝牙 */
 
     /* 后台发送（技术设计 4.2：网络与流式解析跑工作线程，结果经消息队列回界面线程） */
     volatile LONG sending;
@@ -405,12 +407,34 @@ static DWORD WINAPI sync_worker(LPVOID lp)
     return 0;
 }
 
+/* 当前配对通道：0=局域网 1=蓝牙；以 session 里的选择为准，界面只在未建会话时给出默认。 */
+static int app_pair_channel(App *a)
+{
+    return a ? a->pair_channel : 0;
+}
+
+static void app_pair_set_channel(App *a, int ch)
+{
+    if (!a) return;
+    if (a->ses && aic_session_use_channel(a->ses, ch) != AIC_OK) {
+        app_status(a, "链路已经建立，先解除配对或等当前连接结束后再换通道");
+        return;
+    }
+    a->pair_channel = ch;
+    app_status(a, ch == AIC_CH_BLUETOOTH
+                      ? "改用蓝牙通道：地址填已配对设备的蓝牙地址（如 AA:BB:CC:DD:EE:FF），通道号默认 1"
+                      : "改用局域网通道：地址填对端的局域网 IPv4 地址");
+    a->peer_n = 0;
+    app_invalidate(a);
+}
+
 static void app_sync_start(App *a)
 {
     if (!a->ses && aic_session_create(a->db, &a->ses) != AIC_OK) {
         a->ses = NULL;
         return;
     }
+    if (a->ses) aic_session_use_channel(a->ses, a->pair_channel);
     if (!a->sync_thread) {
         a->sync_stop = 0;
         a->sync_thread = CreateThread(NULL, 0, sync_worker, a, 0, NULL);
@@ -430,20 +454,51 @@ static void app_sync_stop(App *a)
 struct PairJob {
     App *a;
     int  kind;      /* 1 监听等待连入 / 2 发现同网设备 / 3 直连该地址 / 4 重试握手 */
+    int  channel;   /* 0=局域网 1=蓝牙：端口对蓝牙是 RFCOMM 通道号 */
     char addr[64];
     char code[16];
 };
+
+/* 局域网用固定 TCP 端口；蓝牙用 RFCOMM 通道号（默认 1，可在地址框里写 地址:通道号）。 */
+static int pair_port(int channel, const char *addr)
+{
+    if (channel != AIC_CH_BLUETOOTH) return AIC_TRANSPORT_DEFAULT_PORT;
+    const char *colon = addr ? strrchr(addr, ':') : NULL;
+    if (colon) {
+        /* 只有最后一节不含冒号且长度为 1~2 位时才当作通道号（蓝牙地址本身含冒号）。 */
+        const char *p = colon + 1;
+        if (*p && strlen(p) <= 2 && !strchr(p, ':')) return aic_parse_int(p, 0);
+    }
+    return AIC_BT_CHANNEL_MIN;
+}
+
+/* 去掉地址尾部的 ":通道号"（蓝牙地址本身是 AA:BB:CC:DD:EE:FF 这种，只去掉纯数字尾段）。 */
+static void pair_strip_channel(const char *in, char *out, size_t cap)
+{
+    const char *colon = in ? strrchr(in, ':') : NULL;
+    if (colon && colon[1] && strlen(colon + 1) <= 2 && strspn(colon + 1, "0123456789") == strlen(colon + 1)) {
+        size_t n = (size_t)(colon - in);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, in, n);
+        out[n] = '\0';
+        return;
+    }
+    aic_strlcpy_utf8(out, cap, in ? in : "");
+}
 
 static DWORD WINAPI pair_worker(LPVOID lp)
 {
     struct PairJob *j = (struct PairJob *)lp;
     App *a = j->a;
     char err[256];
+    char host[64];
     int rc = AIC_OK;
+    int port = pair_port(j->channel, j->addr);
 
     err[0] = '\0';
+    pair_strip_channel(j->addr, host, sizeof(host));
     if (j->kind == 1) {
-        rc = aic_session_host(a->ses, AIC_TRANSPORT_DEFAULT_PORT, NULL, err, sizeof(err));
+        rc = aic_session_host(a->ses, port, NULL, err, sizeof(err));
         if (rc == AIC_OK) rc = aic_session_accept(a->ses, 60000, err, sizeof(err));
         if (rc == AIC_OK) {
             a->pair_role = 1;
@@ -452,15 +507,19 @@ static DWORD WINAPI pair_worker(LPVOID lp)
     } else if (j->kind == 2) {
         aic_peer found[8];
         size_t n = 0;
-        rc = aic_session_discover(a->ses, AIC_TRANSPORT_DEFAULT_PORT, 1500, found, 8, &n, err, sizeof(err));
+        if (j->channel == AIC_CH_BLUETOOTH) {
+            /* 蓝牙不做广播发现：列系统已配对设备。 */
+            rc = aic_transport_bluetooth_peers(found, 8, &n, err, sizeof(err));
+        } else {
+            rc = aic_session_discover(a->ses, port, 1500, found, 8, &n, err, sizeof(err));
+        }
         if (rc == AIC_OK) {
             int i;
             a->peer_n = (int)(n > 8 ? 8 : n);
             for (i = 0; i < a->peer_n; i++) a->peers[i] = found[i];
         }
     } else if (j->kind == 3) {
-        rc = aic_session_connect(a->ses, j->addr, AIC_TRANSPORT_DEFAULT_PORT, 4000, NULL,
-                                 err, sizeof(err));
+        rc = aic_session_connect(a->ses, host, port, 4000, NULL, err, sizeof(err));
         if (rc == AIC_OK) {
             a->pair_role = 3;
             rc = aic_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
@@ -471,7 +530,10 @@ static DWORD WINAPI pair_worker(LPVOID lp)
     }
 
     if (rc == AIC_OK) {
-        if (j->kind == 2) snprintf(a->pair_msg, sizeof(a->pair_msg), "发现 %d 台设备，点一行填入地址后再连接", a->peer_n);
+        if (j->kind == 2) snprintf(a->pair_msg, sizeof(a->pair_msg),
+                                   j->channel == AIC_CH_BLUETOOTH
+                                       ? "找到 %d 台已配对蓝牙设备，点一行填入地址后再连接"
+                                       : "发现 %d 台设备，点一行填入地址后再连接", a->peer_n);
         else snprintf(a->pair_msg, sizeof(a->pair_msg), "配对成功：已建立同步链路，实时同步默认开启");
     } else {
         snprintf(a->pair_msg, sizeof(a->pair_msg), "%s", err[0] ? err : aic_strerror(rc));
@@ -498,13 +560,16 @@ static void app_pair_start(App *a, int kind)
     }
     if (kind == 3 && !a->pair_addr_in[0]) {
         InterlockedExchange(&a->pair_busy, 0);
-        app_status(a, "请先填对端的局域网地址，或先点「发现同网设备」");
+        app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+                           ? "请先填对端的蓝牙地址（如 AA:BB:CC:DD:EE:FF），或先点「列出已配对蓝牙设备」"
+                           : "请先填对端的局域网地址，或先点「发现同网设备」");
         return;
     }
     j = (struct PairJob *)aic_xcalloc(1, sizeof(*j));
     if (!j) { InterlockedExchange(&a->pair_busy, 0); return; }
     j->a = a;
     j->kind = kind;
+    j->channel = a->pair_channel;
     aic_strlcpy_utf8(j->addr, sizeof(j->addr), a->pair_addr_in);
     aic_strlcpy_utf8(j->code, sizeof(j->code), a->pair_code_in);
     a->pair_msg[0] = '\0';
@@ -514,8 +579,12 @@ static void app_pair_start(App *a, int kind)
         app_status(a, "起配对线程失败");
         return;
     }
-    if (kind == 1) app_status(a, "正在监听 %d 端口，等待对端连入（最长 60 秒）", AIC_TRANSPORT_DEFAULT_PORT);
-    else if (kind == 2) app_status(a, "正在广播发现同网设备…");
+    if (kind == 1) app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+                                         ? "正在监听蓝牙 RFCOMM 通道，等待对端连入（最长 60 秒）"
+                                         : "正在监听 %d 端口，等待对端连入（最长 60 秒）",
+                              AIC_TRANSPORT_DEFAULT_PORT);
+    else if (kind == 2) app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+                                         ? "正在列出系统已配对的蓝牙设备…" : "正在广播发现同网设备…");
     else if (kind == 3) app_status(a, "正在连接对端…");
     else app_status(a, "正在重试握手…");
     app_invalidate(a);
@@ -3479,12 +3548,19 @@ static void do_action(App *a, int act)
         return;
     }
     if (act == ACT_PAIR_UNPAIR) { app_pair_unpair(a); return; }
+    if (act == ACT_PAIR_CH_LAN)   { app_pair_set_channel(a, AIC_CH_LAN); return; }
+    if (act == ACT_PAIR_CH_BT)    { app_pair_set_channel(a, AIC_CH_BLUETOOTH); return; }
     if (act >= ACT_PAIR_DISCOVER + 100 && act < ACT_PAIR_DISCOVER + 108) {
         int i = act - (ACT_PAIR_DISCOVER + 100);
         if (i >= 0 && i < a->peer_n) {
             aic_strlcpy_utf8(a->pair_addr_in, sizeof(a->pair_addr_in), a->peers[i].addr);
             a->pair_focus = 2;
-            app_status(a, "已填入 %s:%d，再点「连到该地址并配对」", a->peers[i].addr, a->peers[i].port);
+            if (a->peers[i].channel == AIC_CH_BLUETOOTH) {
+                app_status(a, "已填入蓝牙设备 %s（%s），再点「连到该地址并配对」",
+                           a->peers[i].name, a->peers[i].addr);
+            } else {
+                app_status(a, "已填入 %s:%d，再点「连到该地址并配对」", a->peers[i].addr, a->peers[i].port);
+            }
         }
         app_invalidate(a);
         return;
@@ -4318,9 +4394,21 @@ static void paint_pair(App *a, HDC dc, RECT content)
     {
         RECT b1 = {y.left, y.top, y.left + 220, y.top + 38};
         RECT b2 = {y.left + 236, y.top, y.left + 440, y.top + 38};
-        draw_pill(a, dc, b1, "开始监听等待连入", ACT_PAIR_HOST, 0);
-        draw_pill(a, dc, b2, "发现同网设备", ACT_PAIR_DISCOVER, 0);
+        draw_pill(a, dc, b1, a->pair_channel == AIC_CH_BLUETOOTH
+                                   ? "开始监听等待连入（蓝牙）" : "开始监听等待连入", ACT_PAIR_HOST, 0);
+        draw_pill(a, dc, b2, a->pair_channel == AIC_CH_BLUETOOTH
+                                   ? "列出已配对蓝牙设备" : "发现同网设备", ACT_PAIR_DISCOVER, 0);
         y.top += 50;
+        {
+            RECT c1 = {y.left, y.top, y.left + 300, y.top + 34};
+            RECT c2 = {y.left + 316, y.top, y.left + 616, y.top + 34};
+            int cur = app_pair_channel(a);
+            draw_pill(a, dc, c1, cur == AIC_CH_LAN ? "通道：局域网（当前）" : "通道：局域网",
+                      ACT_PAIR_CH_LAN, 0);
+            draw_pill(a, dc, c2, cur == AIC_CH_BLUETOOTH ? "通道：蓝牙 RFCOMM（当前）" : "通道：蓝牙 RFCOMM",
+                      ACT_PAIR_CH_BT, 0);
+            y.top += 44;
+        }
     }
 
     if (a->peer_n > 0) {
@@ -4367,7 +4455,8 @@ static void paint_pair(App *a, HDC dc, RECT content)
         y.top += 66;
     }
     draw_text(dc, a->font_small,
-              "蓝牙通道当前只留传输接口、未实现平台蓝牙；跨网络或防火墙阻断时请改用导出导入迁移记录。",
+              "两条通道共用同一套帧格式与配对流程：局域网用于同一网段的两台设备，蓝牙 RFCOMM 用于"
+              "已系统配对的设备（Android 由平台套接字转发字节流）。跨网络或防火墙阻断时请改用导出导入迁移记录。",
               (RECT){y.left, y.top, y.right, y.top + 40},
               tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
 }

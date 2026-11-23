@@ -81,6 +81,7 @@ public class MainActivity extends Activity {
     private static final int REQ_PICK_IMPORT = 1002;
     private static final int REQ_PICK_PLUGIN = 1003;
     private static final int REQ_NOTIFY = 1004;
+    private static final int REQ_BT_PERM = 1005;
 
     /* 流式生成时的界面状态：正在输出的气泡、已收到的文本、停止按钮 */
     private boolean streaming = false;
@@ -125,6 +126,10 @@ public class MainActivity extends Activity {
     private TextView pairPeerView;
     private TextView pairLogView;
     private EditText pairPeerInput;
+    /** 当前选的同步通道：false=局域网 true=蓝牙（切换时同步告知核心层）。 */
+    private boolean btMode = false;
+    /** 蓝牙通道下本端是「等服务连入」的一侧还是「主动连接」的一侧（握手要按这个分角色）。 */
+    private boolean btListenStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -154,6 +159,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         /* 退出前中断还没结束的流，避免工作线程继续往已销毁的界面回写。 */
         if (streaming) Net.stop();
+        BtBridge.get().disconnect();
         if (uiHandler != null) uiHandler.removeCallbacks(syncPumpTask);
         Native.shutdown();
         super.onDestroy();
@@ -1685,6 +1691,21 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+    /* ---------- 蓝牙同步通道（技术设计 16.1） ---------- */
+
+    /** Android 12 起蓝牙连接/扫描是运行时权限：没有就先申请一次，拒绝后由 BtBridge 报错说明。 */
+    private void ensureBtPermission() {
+        if (Build.VERSION.SDK_INT < 31) return;
+        try {
+            if (checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            requestPermissions(new String[]{"android.permission.BLUETOOTH_CONNECT"}, REQ_BT_PERM);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /* ---------- 实时同步：界面每 1.5 秒搬一次增量（配对态才调） ---------- */
 
     private void pumpOnce() {
@@ -1800,10 +1821,28 @@ public class MainActivity extends Activity {
         pairPeerInput.setTextColor(cText);
         col.addView(pairPeerInput);
 
-        col.addView(pairButton("开始监听等待连入", new View.OnClickListener() {
+        col.addView(pairButton("开始监听等待连入（局域网）", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                btMode = false;
+                syncChannel(0);
                 pairHosting();
+            }
+        }));
+        col.addView(pairButton("蓝牙：等待对端连入", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                btMode = true;
+                syncChannel(1);
+                btListen();
+            }
+        }));
+        col.addView(pairButton("蓝牙：列出已配对设备", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                btMode = true;
+                syncChannel(1);
+                btPickPaired();
             }
         }));
         col.addView(pairButton("继续等待连入（20 秒）", new View.OnClickListener() {
@@ -1854,7 +1893,8 @@ public class MainActivity extends Activity {
                 + "· 6 位配对码有效期 5 分钟；输入错误累计 5 次本条码作废，需要重新生成。\n"
                 + "· 两侧各有一个码，连通后只用输一次对端的码（双向校验）。\n"
                 + "· 配对成功后实时同步默认开启；同一时刻只与一个设备同步。\n"
-                + "· 蓝牙通道未实现，当前用同一局域网直连（同一 Wi-Fi，默认端口 45871）。");
+                + "· 两条通道共用同一套帧格式与配对流程：局域网用于同一 Wi-Fi（默认端口 45871），"
+                + "蓝牙 RFCOMM 用于系统里已配对的设备。");
         note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         note.setTextColor(cSub);
         note.setPadding(0, dp(14), 0, dp(4));
@@ -1939,6 +1979,107 @@ public class MainActivity extends Activity {
                     public void run() {
                         pairLog(opt(r, "ok") ? "对端已连入：输入对端屏幕上的 6 位码，再点『握手校验』"
                                 : optStr(r, "err", "等待超时：对端没有连入，可以点『继续等待连入』再等一轮"));
+                        pairRefresh();
+                    }
+                });
+            }
+        });
+    }
+
+    /** 切换同步通道：0=局域网 1=蓝牙（核心层拒绝在链路已建立时切换）。 */
+    private void syncChannel(final int channel) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("channel", channel);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("syncChannel", extra);
+        if (!opt(r, "ok")) pairLog(optStr(r, "err", "切换通道失败"));
+    }
+
+    /** 蓝牙服务端：等对端连入（在 Java 层建 BluetoothServerSocket，字节流交给 C）。 */
+    private void btListen() {
+        ensureBtPermission();
+        btListenStarted = true;
+        pairLog("正在打开蓝牙监听（服务名 Sai Sync），等待对端连入，最长 60 秒…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final String err = btListenBlocking();
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (err == null) {
+                            pairLog("对端已通过蓝牙连入：输入对端屏幕上的 6 位码，再点『握手校验』");
+                        } else {
+                            pairLog(err);
+                        }
+                        pairRefresh();
+                    }
+                });
+            }
+        });
+    }
+
+    private String btListenBlocking() {
+        if (!BtBridge.get().available(MainActivity.this)) return BtBridge.get().lastError();
+        if (!BtBridge.get().listenAndAccept(60000)) return BtBridge.get().lastError();
+        /* 蓝牙在本端只是字节搬运：对端连入后 C 侧的状态由握手阶段决定，
+         * 这里不需要再动 pairRole（握手命令会带上 side=accept）。 */
+        return null;
+    }
+
+    /** 蓝牙客户端：列出系统已配对设备，选中后连过去。 */
+    private void btPickPaired() {
+        ensureBtPermission();
+        if (!BtBridge.get().available(this)) {
+            pairLog(BtBridge.get().lastError());
+            return;
+        }
+        final JSONArray list = BtBridge.get().pairedPeers(this);
+        if (list == null || list.length() == 0) {
+            pairLog("没有已配对的蓝牙设备：请先在系统设置里与对端完成蓝牙配对");
+            return;
+        }
+        String[] labels = new String[list.length()];
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject d = list.optJSONObject(i);
+            labels[i] = optStr(d, "name", "设备") + " · " + optStr(d, "addr", "?");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("已配对的蓝牙设备")
+                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject o = list.optJSONObject(which);
+                        btConnectTo(optStr(o, "addr", ""));
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void btConnectTo(final String addr) {
+        btListenStarted = false;
+        if (addr == null || addr.isEmpty()) {
+            toast("蓝牙地址为空");
+            return;
+        }
+        pairLog("正在通过蓝牙连接 " + addr + " …");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final boolean ok = BtBridge.get().available(MainActivity.this)
+                        && BtBridge.get().connect(addr, 20000);
+                final String err = ok ? "" : BtBridge.get().lastError();
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (ok) {
+                            pairLog("已通过蓝牙连上对端：输入对端配对码后点『握手校验』");
+                        } else {
+                            pairLog("蓝牙连接失败：" + err);
+                        }
                         pairRefresh();
                     }
                 });
@@ -2056,6 +2197,8 @@ public class MainActivity extends Activity {
                 JSONObject extra = new JSONObject();
                 try {
                     extra.put("peerCode", code);
+                    /* 蓝牙通道由 Java 建链，C 侧分不清自己是连接方还是被连接方，这里显式说明。 */
+                    if (btMode) extra.put("side", btListenStarted ? "accept" : "connect");
                 } catch (Exception ignored) {
                 }
                 final JSONObject r = Native.req("pairHandshake", extra);
@@ -2339,26 +2482,56 @@ public class MainActivity extends Activity {
     }
 
     private void showUsage() {
-        JSONObject extra = new JSONObject();
-        JSONObject bal = Native.req("balance", extra);
+        /* 与 Windows 端同一条路：先向核心层要地址与上次结果，再由 Java 发真实请求，
+         * 返回体回灌核心层解析（账户可用余额与本地账本并列展示并标注来源）。 */
+        JSONObject bal = Native.req("balance");
+        final JSONObject balInit = bal;
+        final String url = optStr(bal, "url", "");
+        final boolean hasKey = bal.optBoolean("hasKey", false);
+        if (!hasKey || url.isEmpty()) {
+            showUsageText(bal, false);
+            return;
+        }
+        toast("正在向账户接口查询余额…");
+        work(new Runnable() {
+            @Override
+            public void run() {
+                /* apiKey 由核心层随 balance 回给界面（只在这一次请求里出现，不落日志）。 */
+                JSONObject applied = BalanceQuery.fetch(url, hasKey, MainActivity.this,
+                        optStr(balInit, "apiKey", ""));
+                final JSONObject finalBal = applied;
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        showUsageText(finalBal, true);
+                    }
+                });
+            }
+        });
+    }
+
+    private void showUsageText(JSONObject bal, boolean queried) {
         JSONObject usage = st.optJSONObject("usage");
-        String text = "本地账本：请求 " + (usage == null ? 0 : usage.optInt("requests", 0))
-                + " 次\nToken 合计：" + (usage == null ? 0 : usage.optInt("totalTokens", 0))
-                + "\n累计花费：" + (usage == null ? "¥0.0000" : optStr(usage, "cost", "¥0.0000"))
-                + "\n\n账户余额：" + optStr(bal, "available", "未查询")
-                + "\n" + optStr(bal, "note", "");
-        /* 超过提醒阈值 → 发系统通知（没有通知权限时只留在界面上）。 */
-        int alertCents = st.optInt("balanceAlertCents", 0);
-        long costMicros = usage == null ? 0 : usage.optLong("costMicros", 0);
+        StringBuilder text = new StringBuilder();
+        text.append("本地账本：请求 ").append(usage == null ? 0 : usage.optInt("requests", 0))
+                .append(" 次\nToken 合计：").append(usage == null ? 0 : usage.optInt("totalTokens", 0))
+                .append("\n累计花费：").append(usage == null ? "¥0.0000" : optStr(usage, "cost", "¥0.0000"))
+                .append("\n\n账户可用余额：").append(optStr(bal, "available", "未查询"))
+                .append("\n未出账金额：").append(optStr(bal, "pending", "—"))
+                .append("\n来源：").append(optStr(bal, "source", "本地账本"));
+        if (bal.optBoolean("stale", false)) text.append("（上次结果，本次查询未成功）");
+        String note = optStr(bal, "note", "");
+        if (!note.isEmpty()) text.append("\n").append(note);
+
+        /* 余额低于阈值 → 发系统通知（没有通知权限时只留在界面上）。 */
         boolean pushed = false;
-        if (alertCents > 0 && costMicros >= alertCents * 10000L) {
-            pushed = Notifier.post(this, Notifier.ID_BALANCE, "用量提醒",
-                    "累计花费 " + (usage == null ? "¥0.0000" : optStr(usage, "cost", "¥0.0000"))
-                            + "，已超过提醒阈值 ¥" + String.format(java.util.Locale.CHINA, "%.2f", alertCents / 100.0));
+        if (bal.optBoolean("belowAlert", false)) {
+            pushed = Notifier.post(this, Notifier.ID_BALANCE, "余额偏低",
+                    "账户可用余额 " + optStr(bal, "available", "?") + "，已低于设置里的提醒阈值");
         }
         new AlertDialog.Builder(this)
-                .setTitle("余额与用量")
-                .setMessage(text + (pushed ? "\n\n已发送系统通知。" : ""))
+                .setTitle(queried ? "余额与用量（已向账户接口查询）" : "余额与用量")
+                .setMessage(text.toString() + (pushed ? "\n\n已发送系统通知。" : ""))
                 .setPositiveButton("好", null)
                 .show();
         markGuide("balance_query");
@@ -2593,7 +2766,10 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** 插件清单管理。Android 没有可用的进程隔离环境，所以只能登记与开关，不能真的运行。 */
+    /**
+     * 插件清单与扩展点。插件由 Java 在独立进程里运行（PluginService 单独进程 + PluginWorker 再 fork 一次），
+     * 崩溃或超时只终止那个进程，主程序继续；调用入口是核心层的 aic_plugin_call_point。
+     */
     private void showPlugins() {
         work(new Runnable() {
             @Override
@@ -2620,15 +2796,18 @@ public class MainActivity extends Activity {
                             }
                         }
                         labels.add("＋ 安装插件（选 zip）");
+                        labels.add("▶ 调用扩展点面板 ui.panel");
                         new AlertDialog.Builder(MainActivity.this)
                                 .setTitle("插件")
-                                .setMessage(optStr(r, "procNote", "Android 暂不支持插件运行，仅可管理清单"))
+                                .setMessage(optStr(r, "procNote", "插件在独立进程里运行"))
                                 .setItems(labels.toArray(new String[labels.size()]),
                                         new android.content.DialogInterface.OnClickListener() {
                                             @Override
                                             public void onClick(android.content.DialogInterface d, int which) {
                                                 if (which == ids.size()) {
                                                     pickPluginFile();
+                                                } else if (which == ids.size() + 1) {
+                                                    callPanelPoint();
                                                 } else {
                                                     pluginActions(ids.get(which));
                                                 }
@@ -2642,9 +2821,80 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** 调用全部启用插件声明的 ui.panel 扩展点，把每个插件的返回原样展示。 */
+    private void callPanelPoint() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                /* 第一段：向核心层要「声明了 ui.panel 的启用插件」。 */
+                JSONObject ask = new JSONObject();
+                try {
+                    ask.put("point", "ui.panel");
+                } catch (Throwable ignored) {
+                }
+                JSONObject info = Native.req("pluginPointList", ask);
+                JSONArray items = info.optJSONArray("items");
+                int count = items == null ? 0 : items.length();
+                String results = null;
+                if (count > 0) {
+                    /* 第二段：插件在 :plugin 进程里的一次性进程中执行（超时 5 秒）。 */
+                    results = PluginHostService.remoteCallAndWait(MainActivity.this,
+                            "ui.panel", "describe", "{}", 5000);
+                }
+                /* 第三段：结果回灌核心层汇总（与桌面端 aic_plugin_call_point 同一份口径）。 */
+                JSONObject submit = new JSONObject();
+                JSONObject r;
+                try {
+                    submit.put("point", "ui.panel");
+                    submit.put("op", "describe");
+                    submit.put("count", count);
+                    submit.put("results", results == null ? new JSONArray() : new JSONArray(results));
+                    if (results == null && count > 0) submit.put("note", "插件宿主不可用，已跳过执行");
+                    r = Native.req("pluginCallPoint", submit);
+                } catch (Throwable t) {
+                    r = Native.req("pluginCallPoint", null);
+                }
+                final JSONObject fr = r;
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(fr, "ok")) {
+                            toast(optStr(fr, "err", "调用扩展点失败"));
+                            return;
+                        }
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("点：").append(optStr(fr, "point", "ui.panel"))
+                          .append("\n命中插件：").append(fr.optInt("count", 0)).append(" 个");
+                        String note = optStr(fr, "note", "");
+                        if (!note.isEmpty()) sb.append("\n").append(note);
+                        JSONArray results = fr.optJSONArray("results");
+                        if (results != null && results.length() > 0) {
+                            for (int i = 0; i < results.length(); i++) {
+                                JSONObject one = results.optJSONObject(i);
+                                if (one == null) continue;
+                                sb.append("\n\n[").append(optStr(one, "plugin", "?"))
+                                  .append(one.optBoolean("ok", false) ? " ✓" : " ✗").append("]\n")
+                                  .append(one.optBoolean("ok", false)
+                                          ? optStr(one, "result", "")
+                                          : optStr(one, "error", "插件调用失败"));
+                            }
+                        } else {
+                            sb.append("\n没有插件声明该扩展点时 count 为 0，界面不显示空面板。");
+                        }
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("扩展点面板")
+                                .setMessage(sb.toString())
+                                .setPositiveButton("好", null)
+                                .show();
+                    }
+                });
+            }
+        });
+    }
+
     /** 单个插件的启用 / 停用 / 卸载。 */
     private void pluginActions(final String id) {
-        final String[] acts = new String[]{"启用（仅登记）", "停用", "卸载"};
+        final String[] acts = new String[]{"启用", "停用", "卸载"};
         new AlertDialog.Builder(this)
                 .setTitle(id)
                 .setItems(acts, new android.content.DialogInterface.OnClickListener() {
