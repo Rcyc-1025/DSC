@@ -344,6 +344,17 @@ Android 侧这六项与桌面一样只到「编译 + 产物结构校验」，未
     python tools\build_android.py && python tools\verify_android.py
     python tools\package_win.py
     python tools\build_arm64.py && python tools\package_win.py --arm64
-    python tools\make_installer.py && python tools\precommit_scan.py
     python tools\make_installer.py
     python tools\precommit_scan.py
+
+## 13. 发布结果（2026-11-25，GitHub）
+
+- 仓库：<https://github.com/Rcyc-1025/Sai> —— 由私有转为 **公开**（PUBLIC），许可证识别为 Apache-2.0，
+  topics：deepseek / chat-client / windows / android / c11 / sqlite。
+- Release：<https://github.com/Rcyc-1025/Sai/releases/tag/v0.1.0>，标题「Sai 0.1.0 - 第一个正式版本」，
+  非草稿、非预发布（Latest），正文取自 `docs/RELEASE-NOTES-0.1.0.md`（7232 字符）。
+- 资产 8 个，状态全部 `uploaded`：`Sai-0.1.0-win-x64-portable.zip`（1685291）、`Sai-0.1.0-win-x64-setup.exe`（4122037）、
+  `Sai-0.1.0-win-arm64-portable.zip`（951696）、`Sai-0.1.0-android-arm64.apk`（905678）与各自 `.sha256`。
+- 回读校验：`gh release download` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
+- 标签：`v0.1.0` 指向发布提交（文档定稿后前移过一次；发布后不再移动）。
+- CI：推送后 `ci` 工作流在该提交上 **success**。

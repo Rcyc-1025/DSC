@@ -34,7 +34,9 @@
 
 3. **基准**：`aic.exe bench` 与 `aic.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入）。
-5. **打标签**：`git tag -a v0.1.0 -m "Sai 0.1.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应；标签一旦推送不再移动。
+5. **打标签**：`git tag -a v0.1.0 -m "Sai 0.1.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
+   之后若只改文档（不动代码、不改产物），在推 Release 前允许把标签前移到最新提交一次；Release 发布之后一律不再移动，
+   后续修正走新的 PATCH 版本（见「回滚」一节）。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
 
    ```powershell
@@ -50,12 +52,15 @@
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
 9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[0.1.0] - 2026-11-24` 并新建空的 `[未发布]` 段。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
-    未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文（0.1.0 正式发布的口径，见 `docs/RELEASE-NOTES-v0.1.0.md`）。
+    未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文。发布说明同时存档到
+    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 的存档即 `docs/RELEASE-NOTES-0.1.0.md`），`--notes-file` 指的就是这份文件。
+    **0.1.0 首发实测**：2026-11-25 用上述命令创建 <https://github.com/Rcyc-1025/Sai/releases/tag/v0.1.0>，
+    8 个资产（4 个产物 + 4 个 `.sha256`）全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
 11. **发布到 GitHub**（0.1.0 起的固定步骤）：
 
     ```powershell
     gh release create v0.1.0 --repo <owner>/Sai --title "Sai 0.1.0" ^
-      --notes-file docs\RELEASE-NOTES-v0.1.0.md ^
+      --notes-file docs\RELEASE-NOTES-0.1.0.md ^
       dist\Sai-0.1.0-win-x64-portable.zip dist\Sai-0.1.0-win-x64-portable.zip.sha256 ^
       dist\Sai-0.1.0-win-x64-setup.exe dist\Sai-0.1.0-win-x64-setup.exe.sha256 ^
       dist\Sai-0.1.0-win-arm64-portable.zip dist\Sai-0.1.0-win-arm64-portable.zip.sha256 ^
@@ -63,8 +68,9 @@
     gh release view v0.1.0 --repo <owner>/Sai --json assets --jq '.assets[] | "\(.name) \(.size)"'
     ```
 
-    推送前先确认远端标签与本地一致（`git ls-remote --tags origin`），标签一旦推送不再移动；Release 不是预发布，
-    每个产物都要挂同名 `.sha256`。
+    推送前先确认远端标签与本地一致（`git ls-remote --tags origin`）；Release 不是预发布（`--latest`），
+    每个产物都要挂同名 `.sha256`。**注意**：在 `pwsh` 里用 `^` 续行会报语法错误（`^` 是 cmd.exe 的续行符），改用
+    PowerShell 反引号续行，或先把资产路径放进 `$files = @(...)` 数组再用 `@files` 传参。
 
 ## 产物口径与命名
 
