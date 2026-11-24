@@ -1,4 +1,4 @@
-﻿# build.ps1 —— Sai 构建脚本（Windows，mingw-w64 + 纯 C11）
+﻿# build.ps1 —— DSC 构建脚本（Windows，mingw-w64 + 纯 C11）
 # 用法： pwsh -File build.ps1 -Target test
 param(
     [string]$Target = 'test'
@@ -84,10 +84,10 @@ switch ($Target) {
 
         # 插件宿主进程与三个测试插件（正常 / 崩溃 / 卡死）
         $plgInc = @('-I', (Join-Path $Root 'src\plugin_runner'))
-        $hostObj = Build-Object -Source (Join-Path $Root 'src\plugin_runner\aic_plugin_host.c') -Extra $plgInc
-        $hostExe = Join-Path $Root 'build\aic_plugin_host.exe'
-        Invoke-Gcc -Arguments @('-o', $hostExe, $hostObj, '-static-libgcc') -What 'aic_plugin_host.exe'
-        Write-Host 'built: build\aic_plugin_host.exe'
+        $hostObj = Build-Object -Source (Join-Path $Root 'src\plugin_runner\dsc_plugin_host.c') -Extra $plgInc
+        $hostExe = Join-Path $Root 'build\dsc_plugin_host.exe'
+        Invoke-Gcc -Arguments @('-o', $hostExe, $hostObj, '-static-libgcc') -What 'dsc_plugin_host.exe'
+        Write-Host 'built: build\dsc_plugin_host.exe'
 
         $pluginsOut = Join-Path $Root 'build\plugins'
         New-Item -ItemType Directory -Force -Path $pluginsOut | Out-Null
@@ -99,24 +99,24 @@ switch ($Target) {
     }
     'cli' {
         $cliInc = @(('-I' + (Join-Path $Root 'src\cli')))
-        $c = Build-Object -Source (Join-Path $Root 'src\cli\aic_cli.c') -Extra $cliInc
-        $v = Build-Object -Source (Join-Path $Root 'src\cli\aic_verify.c') -Extra $cliInc
-        Link-Exe -Out (Join-Path $Root 'build\aic.exe') -Objects ($coreObjs + $winObjs + @($c, $v)) -Libs @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32')
-        Write-Host 'built: build\aic.exe'
+        $c = Build-Object -Source (Join-Path $Root 'src\cli\dsc_cli.c') -Extra $cliInc
+        $v = Build-Object -Source (Join-Path $Root 'src\cli\dsc_verify.c') -Extra $cliInc
+        Link-Exe -Out (Join-Path $Root 'build\dsc-cli.exe') -Objects ($coreObjs + $winObjs + @($c, $v)) -Libs @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdiplus', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32')
+        Write-Host 'built: build\dsc-cli.exe'
     }
     'gui' {
-        $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
-        $exe = Join-Path $Root 'build\Sai.exe'
+        $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
+        $exe = Join-Path $Root 'build\DSC.exe'
         $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
-        Invoke-Gcc -Arguments $a -What 'Sai.exe'
-        Write-Host 'built: build\Sai.exe'
+        Invoke-Gcc -Arguments $a -What 'DSC.exe'
+        Write-Host 'built: build\DSC.exe'
     }
     'guidiag' {
-        $g = Build-Object -Source (Join-Path $Root 'src\ui\win\aic_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
-        $exe = Join-Path $Root 'build\SaiDiag.exe'
+        $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
+        $exe = Join-Path $Root 'build\DscDiag.exe'
         $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
-        Invoke-Gcc -Arguments $a -What 'SaiDiag.exe'
-        Write-Host 'built: build\SaiDiag.exe'
+        Invoke-Gcc -Arguments $a -What 'DscDiag.exe'
+        Write-Host 'built: build\DscDiag.exe'
     }
     default { Write-Host ('unknown target: ' + $Target); exit 2 }
 }

@@ -16,26 +16,41 @@
   `README.md` / `README.en.md` 的许可一节重写，`CONTRIBUTING.md` 与 `DEPENDENCIES.md` 的约束口径同步改为 Apache-2.0；
   `tools/precommit_scan.py` 的许可证检查由「必须是 MIT」改为「必须是 Apache-2.0」，GPL/AGPL 拦截不变。
   运行期唯一第三方依赖 SQLite 为 Public Domain，与 Apache-2.0 兼容，依赖清单无需改动。
+- **产品更名为 DSC（DeepSeek Chat）**：发布前把项目从旧名 `Sai` 整体更名为 DSC，不复用旧名，也不保留旧产物。
+  改名覆盖**全部相关因素**，共 145 个文件、14217 处替换：
+  - 展示名与文案：窗口标题、关于框、设置页、`使用说明.txt`、安装程序与卸载程序、Android 应用名一律写作 **DSC**；
+  - C 代码：标识符前缀 `aic_` → `dsc_`（8684 处）、宏 `AIC_` → `DSC_`（5030 处），CamelCase 简称 `SaiXxx` → `DscXxx`；
+  - 源文件名：`dsc_app.c`、`dsc_cli.c`、`dsc_verify.c/.h`、`dsc_setup.c`、`dsc_uninstall.c`、`dsc_plugin_host.c`、
+    `dsc_jni.c`、`dsc_types.c/.h`；
+  - 可执行文件：`DSC.exe`（界面）、`dsc-cli.exe`（命令行验收器）、`dsc_plugin_host.exe`（插件宿主）；
+  - 数据与环境：数据库 `dsc.db`、数据目录 `%LOCALAPPDATA%\DSC`、安装目录 `%LOCALAPPDATA%\Programs\DSC`、
+    环境变量 `DSC_*`（`DSC_DATA_DIR`、`DSC_ANDROID_KEYSTORE` 等）；
+  - Android：包名 `com.dsc.app`（`java/com/dsc/app`）、JNI 符号 `Java_com_dsc_app_*`、原生库 `libdsc.so`、
+    `DscPlugin` / `DscFileProvider`；
+  - 产物与仓库：`DSC-0.1.0-*.zip/exe/apk`，GitHub 仓库由 `Rcyc-1025/Sai` 改为 `Rcyc-1025/DSC`，
+    旧 `v0.1.0` 的 Release 与标签一并删除后重建（版本号仍是 0.1.0，仍是第一个正式版本）。
+  为了不再退化，`tools/precommit_scan.py` 新增第 7 项检查：文本文件里出现 `aic_` / `AIC_` / `Sai` / 独立 `sai`
+  即判失败（扫描器自身豁免）。本文件的历史段落按同一口径统一写作 DSC。
 - **产物按新许可证重打**：`dist` 下四个包 + 各自 `.sha256` 旁挂文件；GitHub 仓库由私有转为公开，
   建立 Release `v0.1.0` 并挂上四个安装包。
 - **签名与校验状态（务必先读）**：本次 Windows 产物**未做代码签名**（无签名证书，首次运行会有 SmartScreen 提示）；
-  Android APK 用**调试证书**签名（证书 DN：`CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN`），
+  Android APK 用**调试证书**签名（证书 DN：`CN=DSC, OU=Dev, O=DSC, L=Local, ST=Local, C=CN`），
   只适合自测与内部分发，不适合上架。两者完整性一律以同一行的 SHA-256 为准。
-- **发布后复测**：`test_core` 1014 通过 0 失败；`aic.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
+- **发布后复测**：`test_core` 1014 通过 0 失败；`dsc-cli.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
   `python tools\shots.py` 19 个场景 0 失败；`tools/precommit_scan.py` 0 问题；
-  `aic.exe bench` 万条分页 12.06 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 11.9 MB（预算 240 MB）；
-  安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `Sai Setup 0.1.0`，静默卸载后目录整体消失。
+  `dsc-cli.exe bench` 万条分页 11.74 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 12.0 MB（预算 240 MB）；
+  安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `DSC Setup 0.1.0`，静默卸载后目录整体消失。
 - **仍未实测的边界**（不在本版声明之内）：Android 真机运行、用真实 Key 打 `api.deepseek.com`、
   Windows 安装程序的开始菜单快捷方式与卸载登记（本机沙箱拒绝写注册表）、ARM64 真机启动、32 位 Windows、代码签名。
   逐条说明见 `docs/PRE-RELEASE-EVIDENCE.md` 第 11 节。
 
 ### 工程记录（随本节一并公开）
 
-- 新增 `tools/clean.py`：一键清掉 `build/`、`build_android/`、仓库根的 `aic_test_*` 临时目录、散落日志与
+- 新增 `tools/clean.py`：一键清掉 `build/`、`build_android/`、仓库根的 `dsc_test_*` 临时目录、散落日志与
   `dist/` 里的旧版本包（`--dry-run` 只预演，`--all` 连当前版本产物一起清）；`.gitignore` 补上散落日志规则；
   `CONTRIBUTING.md` 新增「收尾清理（每次都做）」一节，把「写完代码或测完就清理」定为硬要求。
-- 清理仓库：删除 101 个仓库根 `aic_test_*` 目录、`build/`（180 MB）、`build_android/`（8.6 MB）、
-  `dist/` 里 AIChat-1.0.0 与 Sai-1.0.0~1.3.0 的旧包及其展开目录；工作区从 285 MB 降到约 20 MB。
+- 清理仓库：删除 101 个仓库根 `dsc_test_*` 目录、`build/`（180 MB）、`build_android/`（8.6 MB）、
+  `dist/` 里 AIChat-1.0.0 与 DSC-1.0.0~1.3.0 的旧包及其展开目录；工作区从 285 MB 降到约 20 MB。
 按技术设计文档 V1.0（2026-11-21，FR-01 ~ FR-36）逐章复核，补齐第 17 章（内置知识库与来源引用）、
 第 18 章（设备能力与权限）与 FR-36（AI 发言修改与记忆同步），并把主色调改为深蓝。逐条对照见
 `docs/TDD-TRACE-0.1.0.md`，自动化验收见 `docs/FR-MATRIX.md`（36 条需求、719 项断言）。
@@ -65,7 +80,7 @@
   （不设时间窗）在同一事务内按 `source_message_id` 物理删除旧记忆条目与索引后重新抽取，失败整体回滚；成功后向已配对
   设备发 `memory_replace` 事件（新增同步实体 `memory`），接收端整条重建。两端编辑浮层都先提示「修改将同步更改 AI 记忆」。
 - **schema v5**：新增 `error_record`、`memory_entry`、`memory_token`、`capability_grant` 四张表与索引，迁移前照旧落备份。
-- **验收与文档**：`aic.exe verify` 扩到 FR-01 ~ FR-36（新增 fr31~fr36，断言 719 项），单元测试增至 1014 项；
+- **验收与文档**：`dsc-cli.exe verify` 扩到 FR-01 ~ FR-36（新增 fr31~fr36，断言 719 项），单元测试增至 1014 项；
   新增 `docs/TDD-TRACE-0.1.0.md`（逐条对照与口径差异）、`tools/gen_knowledge.py`；截图场景扩到 20 张。
 
 ### 新增（1.3.0 之后的两端补强）
@@ -76,15 +91,15 @@
   `btAttach/btFeed/btDrain/btDetach/btPeersSet` 交给 C 侧的环形缓冲；两条通道共用同一套帧格式、配对流程与状态机。
   桌面配对页新增「通道：局域网 / 通道：蓝牙 RFCOMM」切换与「蓝牙：等待对端连入」「蓝牙：列出已配对设备」。
 - **Android 余额改走真实账户接口（FR-11）**：新增 `BalanceQuery`（`HttpURLConnection` GET `/user/balance`，Bearer 头），
-  返回体交回 C 侧 `aic_llm_balance_parse` 解析；失败保留上次结果并标注「上次结果，本次查询未成功」；低于阈值发系统通知。
+  返回体交回 C 侧 `dsc_llm_balance_parse` 解析；失败保留上次结果并标注「上次结果，本次查询未成功」；低于阈值发系统通知。
   C 侧新增 `balance` / `balanceApply` / `balanceFailed` 三个桥命令。
 - **Android 插件独立进程（FR-05 / §10.1）**：新增 `PluginHostService`（`android:process=":plugin"`）与 `PluginWorker`
   （`am broadcast` 拉起的一次性 `:plugincall` 进程），`PluginEngine` 用 `DexClassLoader` 加载插件 dex、反射调用
-  `SaiPlugin.aic_plugin_call(String)`；超时 5 秒即 `destroy` 子进程，插件崩溃不影响主程序。C 侧新增 `pluginPointList` 与
+  `DscPlugin.dsc_plugin_call(String)`；超时 5 秒即 `destroy` 子进程，插件崩溃不影响主程序。C 侧新增 `pluginPointList` 与
   三段式 `pluginCallPoint`（问清单 → 独立进程执行 → 回灌汇总），界面「插件」里可直接调 `ui.panel` 扩展点面板。
-- **Android 示例插件源码**：`plugins/sample_android`（`plugin.json` + `SaiPlugin.java` + 打包说明）。
+- **Android 示例插件源码**：`plugins/sample_android`（`plugin.json` + `DscPlugin.java` + 打包说明）。
 - **两端签名通道闭环**：`scripts/sign_release.ps1` 支持 `-Pfx`/`-Thumbprint` 并验签（缺 signtool 退出 2、缺证书退出 3、
-  无产物退出 4）；新增 `tools/sign_android.py`（`SAI_ANDROID_KEYSTORE/STOREPASS/KEYPASS/ALIAS`，缺项退出 3，
+  无产物退出 4）；新增 `tools/sign_android.py`（`DSC_ANDROID_KEYSTORE/STOREPASS/KEYPASS/ALIAS`，缺项退出 3，
   产出 v2+v3 并当场 `apksigner verify --print-certs`）。仓库不签发证书。
 
 ### 变更
@@ -112,10 +127,10 @@
   已入队事件恢复后按 event_id 补发）；同一时刻只与一个已配对设备同步。同步范围为用户资料、人设、会话、消息、提示词版本、
   设置白名单、插件清单；插件二进制、凭证、用量流水、日志、备份包不参与。
 - **跨端时序（FR-29）**：消息表新增 `logical_ts` 与 `origin_device`，逻辑时钟本地新增取最大值 +1、远端事件沿用对端值并抬高本地最大值；
-  排序键 `(logical_ts, origin_device, seq)`，墙钟只做展示；撤回与修改作为独立事件带原消息 id；新分页入口 `aic_msg_page_ordered`。
+  排序键 `(logical_ts, origin_device, seq)`，墙钟只做展示；撤回与修改作为独立事件带原消息 id；新分页入口 `dsc_msg_page_ordered`。
 - **冲突合并**：logical_ts 大者胜出，相等比 origin_device 字典序，落败方原始实体写进 `sync_conflict` 留副本，界面可查看冲突条数。
 - **首次启动顺序（FR-30）**：BOOT → CONFIG_CHECK → CREDENTIAL_CHECK →（无凭证）CREDENTIAL_SETUP → MODE_SELECT → CHAT_READY / QA_READY；
-  凭证未写入安全存储前不能进主页；保留 `SAI_DEMO=1` 演示旁路。
+  凭证未写入安全存储前不能进主页；保留 `DSC_DEMO=1` 演示旁路。
 - **实体变更自动入队**：桌面端与 Android 端在发送/重新生成、撤回与撤销、消息修改、资料与人设保存、会话新建与改名、
   主题/模型/动效切换、插件安装与启停之后都会把对应实体快照交给发件箱（未配对时直接忽略）；此前只有显式 `pairPublish`
   一个入口，实时同步实际上同步不到真实编辑产生的变更。
@@ -129,7 +144,7 @@
 - 版本号升到 1.3.0（安装包、APK `versionCode=4`、便携包文件名同步）。
 - 数据模型升到 schema v4：v3 加消息跨端两列与 device_pair / sync_event / sync_cursor / sync_conflict，v4 加实体时钟表；
   迁移前仍自动备份到 `backups/pre-migrate-vN-<ms>.db`。
-- `aic_llm_transport.post_stream` 增加可取消标志位；桌面界面的发送、重新生成、导出、导入、更新下载、余额查询、备份都在工作线程里跑。
+- `dsc_llm_transport.post_stream` 增加可取消标志位；桌面界面的发送、重新生成、导出、导入、更新下载、余额查询、备份都在工作线程里跑。
 - 界面截图从 12 张扩到 14 张（新增凭证页、模式选择、配对管理）。
 
 ## [1.2.0] - 2026-11-22
@@ -155,7 +170,7 @@
 
 - 版本号升到 1.2.0（安装包、APK `versionCode=3`、便携包文件名同步）。
 - 界面截图场景扩到 12 张（新增进阶指南、导出、消息操作、插件面板）。
-- `aic.exe verify` 断言从 254 项增到 274 项（覆盖模型注册表、撤销修改、插件哈希与覆盖安装、导出范围、分页翻页）。
+- `dsc-cli.exe verify` 断言从 254 项增到 274 项（覆盖模型注册表、撤销修改、插件哈希与覆盖安装、导出范围、分页翻页）。
 - 单元测试从 626 项增到 694 项。
 
 ## [1.1.0] - 2026-11-22
@@ -199,15 +214,15 @@
 - **存储**：SQLite（内置 amalgamation），`user_version` 顺序迁移、迁移前自动备份、失败回退；聊天模式唯一会话由部分唯一索引保证。
 - **Windows 界面**：Win32 + GDI 自绘，三栏导航、消息气泡、输入区、设置 13 项、浮层（AI 信息 / 指南 / 确认 / 编辑）、深色主题、快捷键与滚动。
 - **Android**：原生 View 界面 + 单一 JSON 桥接入口的 JNI 层，覆盖同一套功能；APK 手工打包（javac + d8 + aapt2 + zipalign + apksigner），v2/v3 自签名。
-- **工具链与验收**：`build.ps1`（test / cli / gui 目标）、`aic.exe verify`（24 条 FR 逐条断言，退出码 = 失败数）、`bench`、`perf`、`doctor`、578 项单元测试、8 张离屏界面截图、APK 结构校验。
-- **Windows 安装包**：自解压式纯 C 安装程序（`src/installer`），默认装到 `%LOCALAPPDATA%\Programs\Sai`，支持 `/S` 静默与 `/D=<目录>`，写开始菜单快捷方式与卸载登记，安装结果写入安装目录 `install.log`；配套静默卸载程序（自删除）。
-- **Windows ARM64 交叉编译产物**：`tools\build_arm64.py` 用本机 clang + lld 与 MSYS2 `clangarm64` sysroot 交叉编译出 ARM64 的 `Sai.exe`、`aic_plugin_host.exe` 与示例插件 DLL，打 `Sai-1.0.0-win-arm64-portable.zip`；`tools\package_win.py --arm64`。未在 ARM64 真机验证（见已知限制）。
+- **工具链与验收**：`build.ps1`（test / cli / gui 目标）、`dsc-cli.exe verify`（24 条 FR 逐条断言，退出码 = 失败数）、`bench`、`perf`、`doctor`、578 项单元测试、8 张离屏界面截图、APK 结构校验。
+- **Windows 安装包**：自解压式纯 C 安装程序（`src/installer`），默认装到 `%LOCALAPPDATA%\Programs\DSC`，支持 `/S` 静默与 `/D=<目录>`，写开始菜单快捷方式与卸载登记，安装结果写入安装目录 `install.log`；配套静默卸载程序（自删除）。
+- **Windows ARM64 交叉编译产物**：`tools\build_arm64.py` 用本机 clang + lld 与 MSYS2 `clangarm64` sysroot 交叉编译出 ARM64 的 `DSC.exe`、`dsc_plugin_host.exe` 与示例插件 DLL，打 `DSC-1.0.0-win-arm64-portable.zip`；`tools\package_win.py --arm64`。未在 ARM64 真机验证（见已知限制）。
 - **仓库要件**：`DEPENDENCIES.md`、`docs/RELEASE.md`、`CHANGELOG.md`、双语 README、`CONTRIBUTING.md`、`tools/precommit_scan.py`（敏感字符串 + 许可证 + 大文件扫描）、GitHub Actions CI。
 
 ### 变更
 
-- **产品更名为 Sai**（依据 2026-11-22 技术设计文档的改名修订）：可执行文件改为 `Sai.exe` / `SaiDiag.exe`，窗口标题与窗口类、安装包与便携包文件名、Android 应用名与包名（`com.sai.app`）、JNI 入口（`Java_com_sai_app_Native_call`）、数据目录环境变量（`SAI_DATA_DIR`）、凭证服务名、文档与仓库名统一为 Sai；核心模块前缀 `aic_` 与 `aic.exe` 验收器保持不动（它是内部工具，不是产品名）。
-- 验收口径：技术设计修订版删除了原 `16「测试与验收口径」整章，改为每版由 `aic.exe verify` 生成的 `docs/FR-MATRIX.md` 与 `docs/PRE-RELEASE-EVIDENCE.md` 承载，差异记录见 `docs/TDD-DIFF-2026-11-22.md`。
+- **产品更名为 DSC**（依据 2026-11-22 技术设计文档的改名修订）：可执行文件改为 `DSC.exe` / `DscDiag.exe`，窗口标题与窗口类、安装包与便携包文件名、Android 应用名与包名（`com.dsc.app`）、JNI 入口（`Java_com_dsc_app_Native_call`）、数据目录环境变量（`DSC_DATA_DIR`）、凭证服务名、文档与仓库名统一为 DSC；核心模块前缀 `dsc_` 与 `dsc-cli.exe` 验收器保持不动（它是内部工具，不是产品名）。
+- 验收口径：技术设计修订版删除了原 `16「测试与验收口径」整章，改为每版由 `dsc-cli.exe verify` 生成的 `docs/FR-MATRIX.md` 与 `docs/PRE-RELEASE-EVIDENCE.md` 承载，差异记录见 `docs/TDD-DIFF-2026-11-22.md`。
 
 ### 已知限制
 
@@ -215,7 +230,7 @@
 - Android APK 可编译、可签名、产物可校验，未在真机上运行。
 - 更新流程止于"下载 + 校验"，不执行真实安装动作。
 - 本机无 `signtool` 与代码签名证书，Windows 产物为未签名二进制；Android 为自签名证书。
-- Windows ARM64 已有交叉编译产物（`Sai-1.0.0-win-arm64-portable.zip`），但构建机是 x64，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包；安装程序本身是 x64，在 ARM64 上靠系统仿真运行）。
+- Windows ARM64 已有交叉编译产物（`DSC-1.0.0-win-arm64-portable.zip`），但构建机是 x64，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包；安装程序本身是 x64，在 ARM64 上靠系统仿真运行）。
 - 安装程序的"开始菜单快捷方式"与"卸载登记"两步在本机构建环境（沙箱）内被系统策略拒绝（`RegCreateKeyExW` 返回 ERROR_ACCESS_DENIED），代码路径按标准 API 实现，结果如实写入 `install.log`。
 
 ## 版本对照

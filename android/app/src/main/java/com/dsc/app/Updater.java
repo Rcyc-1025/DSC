@@ -6,7 +6,7 @@
  *   3. Java 下载安装包 → C 侧 downloadUpdate 用大小与 SHA-256 校验；
  *   4. installUpdate 再校验一次并要求「本进程内已成功备份过」，然后交系统安装器。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.app.Activity;
 import android.content.Context;
@@ -70,7 +70,7 @@ public final class Updater {
                     });
                 }
             }
-        }, "sai-update-check");
+        }, "dsc-update-check");
         t.setDaemon(true);
         t.start();
     }
@@ -89,7 +89,7 @@ public final class Updater {
                 try {
                     File dir = new File(act.getFilesDir(), "updates");
                     if (!dir.exists() && !dir.mkdirs()) throw new Exception("无法创建下载目录");
-                    File dst = new File(dir, "Sai-" + version + ".apk");
+                    File dst = new File(dir, "DSC-" + version + ".apk");
                     downloadTo(url, dst);
 
                     JSONObject extra = new JSONObject();
@@ -111,7 +111,7 @@ public final class Updater {
                     });
                 }
             }
-        }, "sai-update-download");
+        }, "dsc-update-download");
         t.setDaemon(true);
         t.start();
     }
@@ -146,11 +146,11 @@ public final class Updater {
                 act.startActivity(it);
             } catch (Throwable ignored) {
             }
-            return "请先允许 Sai 安装未知来源应用，然后再点一次安装";
+            return "请先允许 DSC 安装未知来源应用，然后再点一次安装";
         }
 
         try {
-            Uri uri = SaiFileProvider.uriFor(act, apk);
+            Uri uri = DscFileProvider.uriFor(act, apk);
             Intent it = new Intent(Intent.ACTION_VIEW);
             it.setDataAndType(uri, "application/vnd.android.package-archive");
             it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);

@@ -3,7 +3,7 @@
 
 #include "plugin_api.h"
 
-int aic_plugin_call(const char *request_json, char *out, size_t out_cap)
+int dsc_plugin_call(const char *request_json, char *out, size_t out_cap)
 {
     (void)request_json;
     Sleep(5000);

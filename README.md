@@ -1,6 +1,6 @@
-# Sai
+# DSC
 
-一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
+**DSC = DeepSeek Chat。** 一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
 
 - 双模式：**问答模式**（多会话，参照 DeepSeek 网页版）与**聊天模式**（单会话，QQ 风格三栏）
 - 陪伴人设与提示词版本管理、用户资料变量替换，插件可按扩展点注入提示词片段
@@ -42,10 +42,10 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `Sai-0.1.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
-| `Sai-0.1.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `Sai-0.1.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `Sai-0.1.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
+| `DSC-0.1.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `DSC.exe` |
+| `DSC-0.1.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `DSC-0.1.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `DSC-0.1.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 
 每个包都附同名 `.sha256`。
 
@@ -55,34 +55,34 @@
 
 ~~~powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-.\build\Sai.exe
+.\build\DSC.exe
 ~~~
 
-默认编译参数为 `-std=c11 -O2 -Wall -Wextra`。命令行工具用 `-Target cli` 产出 `build\aic.exe`。
+默认编译参数为 `-std=c11 -O2 -Wall -Wextra`。命令行工具用 `-Target cli` 产出 `build\dsc-cli.exe`。
 
 ## Android 构建
 
 要求：Android SDK（build-tools 37.0.0 + platforms/android-35）、NDK r27c、JDK 21。**不需要 Gradle**，脚本用 javac + d8 + aapt2 + zipalign + apksigner 手工打包。
 
 ~~~powershell
-python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v2/v3 自签名）
+python tools\build_android.py     # 产出 build_android\DSC.apk（arm64-v8a，v2/v3 自签名）
 ~~~
 
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-0.1.0-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\DSC-0.1.0-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-0.1.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\DSC-0.1.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\DSC-0.1.0-win-x64-setup.exe + .sha256
 ~~~
 
-便携包内含 `Sai.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
+便携包内含 `DSC.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
 解压即可运行，不依赖构建目录与 mingw 运行库。
 
 安装程序（`src/installer`，纯 C，不需要 NSIS/Inno）：
 
-- 默认安装到 `%LOCALAPPDATA%\Programs\Sai`，不需要管理员权限；`/D=<目录>` 可指定其他目录。
+- 默认安装到 `%LOCALAPPDATA%\Programs\DSC`，不需要管理员权限；`/D=<目录>` 可指定其他目录。
 - `/S` 静默安装；安装结果写入安装目录的 `install.log`。
 - 创建开始菜单快捷方式，并登记到「设置 - 应用」的卸载列表；配套 `uninstall.exe` 支持 `/S` 静默卸载并自删除。
 
@@ -101,7 +101,7 @@ python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe + .sha25
 ## 数据与隐私
 
 - API Key 只存系统安全存储（Windows 凭据管理 / Android 系统安全存储），界面与日志不出现明文；导出包不含凭证。
-- 会话数据存在应用私有目录（`%LOCALAPPDATA%\Sai`，便携模式可用环境变量 `SAI_DATA_DIR` 指定）。
+- 会话数据存在应用私有目录（`%LOCALAPPDATA%\DSC`，便携模式可用环境变量 `DSC_DATA_DIR` 指定）。
 - 所有对话请求直连用户配置的模型地址，本项目不收集任何数据。
 - 设备能力（位置、天气、图片、软件列表、文件）只在用户逐项授权后、且仅当次需要时取一段文本；原始图片、原始文件、完整软件清单都不上传，日志只记能力名与状态。
 - 记忆条目挂在来源消息上，改 AI 发言会在同一事务里整批重抽；日志与错误中心里的原始响应先脱敏（Key、Bearer、邮箱、长十六进制串）。

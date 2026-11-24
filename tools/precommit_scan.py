@@ -13,6 +13,7 @@
     4. 大文件：third_party 之外不得有 >1 MB 的文本文件（防二进制误提交）
     5. 二进制混入：.c/.h 里不得出现 NUL 字节
     6. 产物目录：dist / build / build_android 等不应被跟踪（提示性，不判失败）
+    7. 残留旧名：产品更名（Sai -> DSC）后，代码与文档里不得再出现 aic_ / AIC_ / Sai / 独立 sai
 """
 
 import os
@@ -50,13 +51,18 @@ EXEMPT = {
     "src/core/util.c": "敏感字符串扫描器的模式表本身",
     "tools/precommit_scan.py": "扫描器自身",
     "tests/unit/test_core.c": "测试夹具，全部为假凭证占位",
-    "src/cli/aic_verify.c": "验收器夹具，全部为假凭证占位",
+    "src/cli/dsc_verify.c": "验收器夹具，全部为假凭证占位",
 }
 
 # 明确允许的占位口令（本地自签名 keystore，仅开发期使用，不涉及任何线上凭证）
-ALLOW_LINE = re.compile(r"sai123|SAI_DEV_KEY_PLACEHOLDER")
+ALLOW_LINE = re.compile(r"dsc123|DSC_DEV_KEY_PLACEHOLDER")
 
 BAD_LICENSE = re.compile(r"(?i)(GNU (?:Lesser |Affero )?General Public License|AGPL|GPLv[23])")
+
+# 更名前的旧标识（Sai / aic_）：产品统一写作 DSC / dsc_，任何一处残留都算问题。
+# 本文件自己列出这些模式，所以扫描时豁免自身。
+LEGACY_NAME = re.compile(r"aic_|AIC_|Sai|(?<![A-Za-z0-9])sai(?![A-Za-z])")
+LEGACY_EXEMPT = {"tools/precommit_scan.py"}
 
 problems = []      # (类别, 文件, 行号, 描述)
 notes = []         # 提示，不判失败
@@ -129,6 +135,29 @@ def check_header(root, path, text):
         problems.append(("源码头", r, 1, "头注释前 5 行没有写明文件名 " + base))
 
 
+_QUOTES = ('"', "'", chr(96))   # 双引号、单引号、反引号：文档里用它把旧名括起来举例
+_QUOTE_PRE = _QUOTES + ("/",)     # 另允许 owner/Sai 这种仓库路径写法
+
+
+def check_legacy_name(root, path, text):
+    """代码里一处旧名都不许有；文档允许用反引号/引号把它当"旧名"举例说明。"""
+    r = rel(root, path)
+    if r in LEGACY_EXEMPT:
+        return
+    is_doc = r.endswith(".md")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for m in LEGACY_NAME.finditer(line):
+            if is_doc:
+                before = line[m.start() - 1] if m.start() > 0 else ""
+                after = line[m.end()] if m.end() < len(line) else ""
+                if before in _QUOTE_PRE and after in _QUOTES:
+                    continue
+                if line[m.end():].startswith("Xxx"):
+                    continue
+            problems.append(("残留旧名", r, lineno, "出现更名前的旧标识：" + m.group(0)))
+            return
+
+
 def check_size(root, path, data):
     r = rel(root, path)
     if r.startswith("third_party/"):
@@ -165,6 +194,7 @@ def main(argv):
                 check_license(root, path, text)
                 check_header(root, path, text)
                 check_binary(root, path, data, text)
+                check_legacy_name(root, path, text)
         check_size(root, path, data)
 
     if not os.path.exists(os.path.join(root, "LICENSE")):
@@ -176,7 +206,7 @@ def main(argv):
             notes.append("产物目录 %s 存在（发布时用，提交前不必删除，但不应被 git 跟踪）" % d)
 
     if not quiet:
-        print("Sai 提交前扫描")
+        print("DSC 提交前扫描")
         print("  扫描目录：%s" % root)
         print("  文件数：%d" % seen_tracked)
         for n in notes:
@@ -189,7 +219,7 @@ def main(argv):
                 loc = "%s:%d" % (f, line) if line else f
                 print("  [%s] %s —— %s" % (cat, loc, desc))
         else:
-            print("\n未发现问题：敏感字符串 0、许可证合规、源码头齐备、无超大文件、无二进制混入。")
+            print("\n未发现问题：敏感字符串 0、许可证合规、源码头齐备、无超大文件、无二进制混入、无残留旧名。")
     return len(problems)
 
 

@@ -24,18 +24,18 @@ static void win_err(char *err, size_t errlen, const char *what, DWORD code)
     snprintf(err, errlen, "%s（Windows 错误码 %lu）", what, (unsigned long)code);
 }
 
-int aic_cred_available(void) { return 1; }
+int dsc_cred_available(void) { return 1; }
 
-int aic_cred_save(const char *service, const char *account, const char *secret,
+int dsc_cred_save(const char *service, const char *account, const char *secret,
                   char *err, size_t errlen)
 {
-    if (!service || !account || !secret) return AIC_E_INVAL;
+    if (!service || !account || !secret) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
 
     wchar_t wtarget[512], wuser[256];
     if (!to_wide(service, wtarget, 256) || !to_wide(account, wuser, 128)) {
         win_err(err, errlen, "凭据名称转码失败", GetLastError());
-        return AIC_E_INVAL;
+        return DSC_E_INVAL;
     }
 
     CREDENTIALW cred;
@@ -43,64 +43,64 @@ int aic_cred_save(const char *service, const char *account, const char *secret,
     cred.Type = CRED_TYPE_GENERIC;
     cred.TargetName = wtarget;
     cred.UserName = wuser;
-    cred.Comment = (LPWSTR)L"Sai API Key";
+    cred.Comment = (LPWSTR)L"DSC API Key";
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
     cred.CredentialBlobSize = (DWORD)strlen(secret);
     cred.CredentialBlob = (LPBYTE)secret;
 
     if (!CredWriteW(&cred, 0)) {
         win_err(err, errlen, "写入系统凭据失败", GetLastError());
-        return AIC_E_IO;
+        return DSC_E_IO;
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_cred_load(const char *service, const char *account, char *out, size_t cap,
+int dsc_cred_load(const char *service, const char *account, char *out, size_t cap,
                   char *err, size_t errlen)
 {
-    if (!service || !account || !out || cap == 0) return AIC_E_INVAL;
+    if (!service || !account || !out || cap == 0) return DSC_E_INVAL;
     out[0] = '\0';
     if (err && errlen) err[0] = '\0';
 
     wchar_t wtarget[512];
     if (!to_wide(service, wtarget, 256)) {
         win_err(err, errlen, "凭据名称转码失败", GetLastError());
-        return AIC_E_INVAL;
+        return DSC_E_INVAL;
     }
 
     PCREDENTIALW cred = NULL;
     if (!CredReadW(wtarget, CRED_TYPE_GENERIC, 0, &cred)) {
         DWORD code = GetLastError();
         if (code == ERROR_NOT_FOUND) {
-            if (err && errlen) aic_strlcpy_utf8(err, errlen, "尚未配置 API Key");
-            return AIC_E_NOTFOUND;
+            if (err && errlen) dsc_strlcpy_utf8(err, errlen, "尚未配置 API Key");
+            return DSC_E_NOTFOUND;
         }
         win_err(err, errlen, "读取系统凭据失败", code);
-        return AIC_E_IO;
+        return DSC_E_IO;
     }
 
-    int rc = AIC_OK;
+    int rc = DSC_OK;
     size_t n = cred->CredentialBlobSize;
     if (n >= cap) n = cap - 1;
     if (n > 0) memcpy(out, cred->CredentialBlob, n);
     out[n] = '\0';
-    if (n == 0) rc = AIC_E_NOTFOUND;
+    if (n == 0) rc = DSC_E_NOTFOUND;
     CredFree(cred);
     return rc;
 }
 
-int aic_cred_delete(const char *service, const char *account, char *err, size_t errlen)
+int dsc_cred_delete(const char *service, const char *account, char *err, size_t errlen)
 {
     (void)account;
-    if (!service) return AIC_E_INVAL;
+    if (!service) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
     wchar_t wtarget[512];
-    if (!to_wide(service, wtarget, 256)) return AIC_E_INVAL;
+    if (!to_wide(service, wtarget, 256)) return DSC_E_INVAL;
     if (!CredDeleteW(wtarget, CRED_TYPE_GENERIC, 0)) {
         DWORD code = GetLastError();
-        if (code == ERROR_NOT_FOUND) return AIC_E_NOTFOUND;
+        if (code == ERROR_NOT_FOUND) return DSC_E_NOTFOUND;
         win_err(err, errlen, "删除系统凭据失败", code);
-        return AIC_E_IO;
+        return DSC_E_IO;
     }
-    return AIC_OK;
+    return DSC_OK;
 }

@@ -4,10 +4,10 @@
  * 上层（C 层 credential_android.c）只通过静态方法 save / load / remove / available 访问，
  * 界面与日志永远拿不到明文 Key。
  *
- * 存储位置：应用私有 SharedPreferences（sai_secure），随应用卸载删除；
+ * 存储位置：应用私有 SharedPreferences（dsc_secure），随应用卸载删除；
  * 条目名 = service + "/" + account，值 = Base64(iv[12] || ciphertext || tag)。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -26,8 +26,8 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class SecureStore {
 
-    private static final String PREF_NAME = "sai_secure";
-    private static final String KEY_ALIAS = "sai_cred_key";
+    private static final String PREF_NAME = "dsc_secure";
+    private static final String KEY_ALIAS = "dsc_cred_key";
     private static final String TRANSFORM = "AES/GCM/NoPadding";
     private static final int IV_LEN = 12;
     private static final int TAG_BITS = 128;
@@ -115,7 +115,7 @@ public final class SecureStore {
         }
     }
 
-    /** 不存在（或密文损坏、密钥被系统清掉）时返回 null，由 C 侧转成 AIC_E_NOTFOUND。 */
+    /** 不存在（或密文损坏、密钥被系统清掉）时返回 null，由 C 侧转成 DSC_E_NOTFOUND。 */
     public static String load(String service, String account) {
         Context c = appContext();
         if (c == null) return null;

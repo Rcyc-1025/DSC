@@ -1,6 +1,6 @@
-# Sai — a companion chat client in pure C
+# DSC — a companion chat client in pure C
 
-A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and Android. You bring your own DeepSeek API key; no third-party server sits in between.
+**DSC stands for DeepSeek Chat.** A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and Android. You bring your own DeepSeek API key; no third-party server sits in between.
 
 中文说明见 [README.md](README.md).
 
@@ -44,10 +44,10 @@ Each version ships the packages below (produced under `dist\` for a local build)
 
 | File | What it is |
 | --- | --- |
-| `Sai-0.1.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
-| `Sai-0.1.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `Sai-0.1.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `Sai-0.1.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+| `DSC-0.1.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `DSC.exe` |
+| `DSC-0.1.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `DSC-0.1.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `DSC-0.1.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
 
 ## Build
 
@@ -55,29 +55,29 @@ Requirements: Windows 10/11 x64 with a MinGW-w64 (MSYS2 ucrt64) toolchain. No MS
 
 ~~~powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-.\build\Sai.exe
+.\build\DSC.exe
 ~~~
 
-Default flags are `-std=c11 -O2 -Wall -Wextra`. The command-line tool is built with `-Target cli` into `build\aic.exe`.
+Default flags are `-std=c11 -O2 -Wall -Wextra`. The command-line tool is built with `-Target cli` into `build\dsc-cli.exe`.
 
 ## Android
 
 Requirements: Android SDK (build-tools 37.0.0 + platforms/android-35), NDK r27c, JDK 21. **No Gradle** — the script packs with javac + d8 + aapt2 + zipalign + apksigner.
 
 ~~~powershell
-python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self-signed)
+python tools\build_android.py     # build_android\DSC.apk (arm64-v8a, v2/v3 self-signed)
 ~~~
 
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-0.1.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\DSC-0.1.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-0.1.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\DSC-0.1.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\DSC-0.1.0-win-x64-setup.exe (+ .sha256)
 ~~~
 
-The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
+The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\DSC` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
 
 ## Documentation
 
@@ -93,7 +93,7 @@ The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plug
 ## Data and privacy
 
 - The API key lives only in the OS credential store (Windows Credential Manager / Android Keystore-backed storage); neither the UI nor logs show it, and exports never contain credentials.
-- Conversation data stays in the app-private directory (`%LOCALAPPDATA%\Sai`; portable mode honours `SAI_DATA_DIR`).
+- Conversation data stays in the app-private directory (`%LOCALAPPDATA%\DSC`; portable mode honours `DSC_DATA_DIR`).
 - Requests go directly to the model endpoint you configure. This project collects nothing.
 
 ## License

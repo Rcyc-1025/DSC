@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* 每个版本的迁移脚本。新增版本时追加条目，并同步更新 AIC_SCHEMA_LATEST。 */
+/* 每个版本的迁移脚本。新增版本时追加条目，并同步更新 DSC_SCHEMA_LATEST。 */
 typedef struct migration {
     int         version;
     const char *sql;
@@ -226,80 +226,80 @@ static const migration g_migrations[] = {
 
 static const int g_migration_count = (int)(sizeof(g_migrations) / sizeof(g_migrations[0]));
 
-int AIC_SCHEMA_LATEST(void)
+int DSC_SCHEMA_LATEST(void)
 {
     return g_migration_count ? g_migrations[g_migration_count - 1].version : 0;
 }
 
-int aic_db_schema_version(aic_db *db, int *out_version)
+int dsc_db_schema_version(dsc_db *db, int *out_version)
 {
-    if (!db || !out_version) return AIC_E_INVAL;
-    aic_stmt *st = aic_db_prepare(db, "PRAGMA user_version;");
-    if (!st) return AIC_E_DB;
-    int rc = aic_stmt_step(st);
+    if (!db || !out_version) return DSC_E_INVAL;
+    dsc_stmt *st = dsc_db_prepare(db, "PRAGMA user_version;");
+    if (!st) return DSC_E_DB;
+    int rc = dsc_stmt_step(st);
     int v = 0;
-    if (rc == AIC_ROW) v = aic_stmt_int(st, 0);
-    aic_stmt_finalize(st);
-    if (rc != AIC_ROW) return AIC_E_DB;
+    if (rc == DSC_ROW) v = dsc_stmt_int(st, 0);
+    dsc_stmt_finalize(st);
+    if (rc != DSC_ROW) return DSC_E_DB;
     *out_version = v;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-static int set_user_version(aic_db *db, int version)
+static int set_user_version(dsc_db *db, int version)
 {
     char sql[64];
     snprintf(sql, sizeof(sql), "PRAGMA user_version = %d;", version);
-    return aic_db_exec(db, sql);
+    return dsc_db_exec(db, sql);
 }
 
 static int make_backup(const char *db_path, const char *backup_dir, int from_version, char *out_path, size_t out_len)
 {
-    if (!backup_dir || !*backup_dir) return AIC_OK;
+    if (!backup_dir || !*backup_dir) return DSC_OK;
     if (out_path && out_len) out_path[0] = '\0';
-    if (aic_mkdir_p(backup_dir) != AIC_OK) return AIC_E_IO;
+    if (dsc_mkdir_p(backup_dir) != DSC_OK) return DSC_E_IO;
     char name[160];
-    snprintf(name, sizeof(name), "pre-migrate-v%d-%lld.db", from_version, (long long)aic_now_ms());
+    snprintf(name, sizeof(name), "pre-migrate-v%d-%lld.db", from_version, (long long)dsc_now_ms());
     char dest[1024];
-    if (aic_path_join(dest, sizeof(dest), backup_dir, name) != AIC_OK) return AIC_E_IO;
-    int rc = aic_file_copy(db_path, dest);
-    if (rc == AIC_OK && out_path && out_len) aic_strlcpy_utf8(out_path, out_len, dest);
+    if (dsc_path_join(dest, sizeof(dest), backup_dir, name) != DSC_OK) return DSC_E_IO;
+    int rc = dsc_file_copy(db_path, dest);
+    if (rc == DSC_OK && out_path && out_len) dsc_strlcpy_utf8(out_path, out_len, dest);
     return rc;
 }
 
-int aic_db_migrate(aic_db *db, const char *db_path, const char *backup_dir,
+int dsc_db_migrate(dsc_db *db, const char *db_path, const char *backup_dir,
                    int *out_from, int *out_to)
 {
-    if (!db) return AIC_E_INVAL;
+    if (!db) return DSC_E_INVAL;
     int cur = 0;
-    int rc = aic_db_schema_version(db, &cur);
-    if (rc != AIC_OK) return rc;
-    int latest = AIC_SCHEMA_LATEST();
+    int rc = dsc_db_schema_version(db, &cur);
+    if (rc != DSC_OK) return rc;
+    int latest = DSC_SCHEMA_LATEST();
     const int from_version = cur;
     if (out_from) *out_from = from_version;
     if (out_to) *out_to = latest;
-    if (cur > latest) return AIC_E_VERSION;   /* 库比程序新，不允许降级 */
-    if (cur == latest) return AIC_OK;
+    if (cur > latest) return DSC_E_VERSION;   /* 库比程序新，不允许降级 */
+    if (cur == latest) return DSC_OK;
 
     /* 已有数据的库在迁移前必须备份；备份失败是写入的前置条件，直接阻断。 */
     if (cur > 0 && db_path && *db_path) {
         rc = make_backup(db_path, backup_dir, cur, NULL, 0);
-        if (rc != AIC_OK) return rc;
+        if (rc != DSC_OK) return rc;
     }
 
     for (int i = 0; i < g_migration_count; i++) {
         const migration *m = &g_migrations[i];
         if (m->version <= cur) continue;
-        rc = aic_db_begin(db);
-        if (rc != AIC_OK) return rc;
-        rc = aic_db_exec(db, m->sql);
-        if (rc == AIC_OK) rc = set_user_version(db, m->version);
-        if (rc != AIC_OK) {
-            aic_db_rollback(db);
+        rc = dsc_db_begin(db);
+        if (rc != DSC_OK) return rc;
+        rc = dsc_db_exec(db, m->sql);
+        if (rc == DSC_OK) rc = set_user_version(db, m->version);
+        if (rc != DSC_OK) {
+            dsc_db_rollback(db);
             return rc;
         }
-        rc = aic_db_commit(db);
-        if (rc != AIC_OK) return rc;
+        rc = dsc_db_commit(db);
+        if (rc != DSC_OK) return rc;
         cur = m->version;
     }
-    return AIC_OK;
+    return DSC_OK;
 }

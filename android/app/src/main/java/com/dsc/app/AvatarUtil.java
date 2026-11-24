@@ -6,7 +6,7 @@
  * 说明（降级项，如实记录）：没有读取 EXIF 方向，
  * 竖拍照片若相机把方向写在 EXIF 里，显示时可能被旋转 90 度。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.ContentResolver;
 import android.graphics.Bitmap;
@@ -24,7 +24,7 @@ import java.io.InputStream;
 
 public final class AvatarUtil {
 
-    /** 与核心层 AIC_AVATAR_MAX_EDGE 保持一致。 */
+    /** 与核心层 DSC_AVATAR_MAX_EDGE 保持一致。 */
     public static final int MAX_EDGE = 512;
 
     private AvatarUtil() {

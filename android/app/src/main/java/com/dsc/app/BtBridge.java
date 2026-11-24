@@ -2,10 +2,10 @@
  * BtBridge.java —— 蓝牙 RFCOMM 同步通道（技术设计 16.1）。
  *
  * <p>Android 的 BluetoothSocket 无法把文件描述符交给 C 侧，所以由本类建链并做收发：
- * 读到的字节 base64 后交给核心层 aic_bt_feed，核心层要发时由 aic_bt_drain 取出再写回对端。
+ * 读到的字节 base64 后交给核心层 dsc_bt_feed，核心层要发时由 dsc_bt_drain 取出再写回对端。
  * 帧格式、配对流程与状态机和局域网通道完全一致。</p>
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -38,11 +38,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class BtBridge {
 
-    /** 与 C 侧 AIC_BT_CHANNEL_MIN/1 对齐：RFCOMM 通道号在应用里由 UUID 决定，这里只做记账。 */
+    /** 与 C 侧 DSC_BT_CHANNEL_MIN/1 对齐：RFCOMM 通道号在应用里由 UUID 决定，这里只做记账。 */
     public static final int CHANNEL = 1;
     /** 固定的服务 UUID：两端必须一致，否则互相找不到服务。 */
     public static final UUID SERVICE_UUID = UUID.fromString("6f2c5d1a-93b7-4a1e-8c55-53c9a1c0d701");
-    public static final String SERVICE_NAME = "Sai Sync";
+    public static final String SERVICE_NAME = "DSC Sync";
 
     private static BtBridge sInstance;
 
@@ -261,7 +261,7 @@ public final class BtBridge {
                     disconnect();
                 }
             }
-        }, "sai-bt-read");
+        }, "dsc-bt-read");
         readThread.setDaemon(true);
         readThread.start();
 
@@ -290,7 +290,7 @@ public final class BtBridge {
                     if (running.get()) lastError = "蓝牙发送中断：" + describe(e);
                 }
             }
-        }, "sai-bt-write");
+        }, "dsc-bt-write");
         writeThread.setDaemon(true);
         writeThread.start();
     }

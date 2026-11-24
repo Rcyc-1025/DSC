@@ -11,7 +11,7 @@
 /* ---------- 内嵌数据 ---------- */
 
 /* 数据本体在 knowledge_data.c（生成文件）里，这里只声明用得到的那一个符号。 */
-extern const char *aic_knowledge_json(void);
+extern const char *dsc_knowledge_json(void);
 
 /* ---------- 小工具 ---------- */
 
@@ -31,19 +31,19 @@ static void copy_str(char *dst, size_t cap, const char *src)
 {
     if (!dst || cap == 0) return;
     dst[0] = '\0';
-    if (src) aic_strlcpy_utf8(dst, cap, src);
+    if (src) dsc_strlcpy_utf8(dst, cap, src);
 }
 
 /* 解析一篇；调用方已保证 a 非空。 */
-static int parse_article(const jv *v, const char *group_id, aic_kb_article *a)
+static int parse_article(const jv *v, const char *group_id, dsc_kb_article *a)
 {
-    if (!v || v->type != JV_OBJ) return AIC_E_FORMAT;
+    if (!v || v->type != JV_OBJ) return DSC_E_FORMAT;
     memset(a, 0, sizeof(*a));
     copy_str(a->id, sizeof(a->id), jv_get_str(v, "id", ""));
     copy_str(a->group_id, sizeof(a->group_id), group_id);
     copy_str(a->title, sizeof(a->title), jv_get_str(v, "title", ""));
     copy_str(a->summary, sizeof(a->summary), jv_get_str(v, "summary", ""));
-    if (!a->id[0] || !a->title[0]) return AIC_E_FORMAT;
+    if (!a->id[0] || !a->title[0]) return DSC_E_FORMAT;
 
     sb tmp;
     sb_init(&tmp);
@@ -60,38 +60,38 @@ static int parse_article(const jv *v, const char *group_id, aic_kb_article *a)
 
     const jv *srcs = jv_get(v, "sources");
     size_t sn = jv_len(srcs);
-    for (size_t i = 0; i < sn && a->source_n < AIC_KB_MAX_SOURCES; i++) {
+    for (size_t i = 0; i < sn && a->source_n < DSC_KB_MAX_SOURCES; i++) {
         const jv *s = jv_at(srcs, i);
-        aic_kb_source *d = &a->sources[a->source_n];
+        dsc_kb_source *d = &a->sources[a->source_n];
         copy_str(d->title, sizeof(d->title), jv_get_str(s, "title", ""));
         copy_str(d->author, sizeof(d->author), jv_get_str(s, "author", ""));
         copy_str(d->url, sizeof(d->url), jv_get_str(s, "url", ""));
         copy_str(d->license, sizeof(d->license), jv_get_str(s, "license", ""));
         copy_str(d->date, sizeof(d->date), jv_get_str(s, "date", ""));
-        if (!d->title[0] || !d->url[0] || !d->license[0]) return AIC_E_FORMAT;
+        if (!d->title[0] || !d->url[0] || !d->license[0]) return DSC_E_FORMAT;
         a->source_n++;
     }
-    if (a->source_n == 0) return AIC_E_FORMAT;   /* 每条记录必须有来源（§17） */
-    return AIC_OK;
+    if (a->source_n == 0) return DSC_E_FORMAT;   /* 每条记录必须有来源（§17） */
+    return DSC_OK;
 }
 
-int aic_kb_load(aic_kb **out, char *err, size_t errlen)
+int dsc_kb_load(dsc_kb **out, char *err, size_t errlen)
 {
-    if (!out) return AIC_E_INVAL;
+    if (!out) return DSC_E_INVAL;
     *out = NULL;
     if (err && errlen) err[0] = '\0';
 
-    const char *text = aic_knowledge_json();
+    const char *text = dsc_knowledge_json();
     if (!text || !text[0]) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "知识库数据为空");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "知识库数据为空");
+        return DSC_E_FORMAT;
     }
     jv *root = NULL;
     int rc = jv_parse(text, strlen(text), &root, err, errlen);
-    if (rc != AIC_OK) return rc;
+    if (rc != DSC_OK) return rc;
 
-    aic_kb *kb = (aic_kb *)aic_xcalloc(1, sizeof(aic_kb));
-    if (!kb) { jv_free(root); return AIC_E_IO; }
+    dsc_kb *kb = (dsc_kb *)dsc_xcalloc(1, sizeof(dsc_kb));
+    if (!kb) { jv_free(root); return DSC_E_IO; }
 
     copy_str(kb->version, sizeof(kb->version), jv_get_str(root, "version", ""));
     copy_str(kb->updated_at, sizeof(kb->updated_at), jv_get_str(root, "updated_at", ""));
@@ -112,11 +112,11 @@ int aic_kb_load(aic_kb **out, char *err, size_t errlen)
 
     const jv *groups = jv_get(root, "groups");
     size_t gn = jv_len(groups);
-    int bad = (!kb->version[0] || !kb->changelog[0] || gn < 5 || gn > (size_t)AIC_KB_MAX_GROUPS);
+    int bad = (!kb->version[0] || !kb->changelog[0] || gn < 5 || gn > (size_t)DSC_KB_MAX_GROUPS);
     int ai = 0;
-    for (size_t gi = 0; gi < gn && !bad && gi < (size_t)AIC_KB_MAX_GROUPS; gi++) {
+    for (size_t gi = 0; gi < gn && !bad && gi < (size_t)DSC_KB_MAX_GROUPS; gi++) {
         const jv *g = jv_at(groups, gi);
-        aic_kb_group *gout = &kb->groups[kb->group_n];
+        dsc_kb_group *gout = &kb->groups[kb->group_n];
         copy_str(gout->id, sizeof(gout->id), jv_get_str(g, "id", ""));
         copy_str(gout->title, sizeof(gout->title), jv_get_str(g, "title", ""));
         copy_str(gout->summary, sizeof(gout->summary), jv_get_str(g, "summary", ""));
@@ -126,8 +126,8 @@ int aic_kb_load(aic_kb **out, char *err, size_t errlen)
         size_t an = jv_len(arts);
         if (an == 0) { bad = 1; break; }
         for (size_t aj = 0; aj < an; aj++) {
-            if (ai >= AIC_KB_MAX_ARTICLES) { bad = 1; break; }
-            if (parse_article(jv_at(arts, aj), gout->id, &kb->articles[ai]) != AIC_OK) { bad = 1; break; }
+            if (ai >= DSC_KB_MAX_ARTICLES) { bad = 1; break; }
+            if (parse_article(jv_at(arts, aj), gout->id, &kb->articles[ai]) != DSC_OK) { bad = 1; break; }
             ai++;
         }
         gout->count = ai - gout->first;
@@ -137,29 +137,29 @@ int aic_kb_load(aic_kb **out, char *err, size_t errlen)
     jv_free(root);
 
     if (bad || kb->group_n < 5 || kb->article_n < 15) {
-        aic_kb_free(kb);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "知识库结构不完整（需五组、每组至少三篇、每篇含来源）");
-        return AIC_E_FORMAT;
+        dsc_kb_free(kb);
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "知识库结构不完整（需五组、每组至少三篇、每篇含来源）");
+        return DSC_E_FORMAT;
     }
     *out = kb;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-void aic_kb_free(aic_kb *kb) { aic_xfree(kb); }
+void dsc_kb_free(dsc_kb *kb) { dsc_xfree(kb); }
 
-const char *aic_kb_version(const aic_kb *kb) { return kb ? kb->version : ""; }
-const char *aic_kb_updated_at(const aic_kb *kb) { return kb ? kb->updated_at : ""; }
-const char *aic_kb_changelog(const aic_kb *kb) { return kb ? kb->changelog : ""; }
+const char *dsc_kb_version(const dsc_kb *kb) { return kb ? kb->version : ""; }
+const char *dsc_kb_updated_at(const dsc_kb *kb) { return kb ? kb->updated_at : ""; }
+const char *dsc_kb_changelog(const dsc_kb *kb) { return kb ? kb->changelog : ""; }
 
-int aic_kb_group_count(const aic_kb *kb) { return kb ? kb->group_n : 0; }
+int dsc_kb_group_count(const dsc_kb *kb) { return kb ? kb->group_n : 0; }
 
-const aic_kb_group *aic_kb_group_at(const aic_kb *kb, int index)
+const dsc_kb_group *dsc_kb_group_at(const dsc_kb *kb, int index)
 {
     if (!kb || index < 0 || index >= kb->group_n) return NULL;
     return &kb->groups[index];
 }
 
-int aic_kb_group_index_of(const aic_kb *kb, const char *group_id)
+int dsc_kb_group_index_of(const dsc_kb *kb, const char *group_id)
 {
     if (!kb || !group_id) return -1;
     for (int i = 0; i < kb->group_n; i++) {
@@ -168,20 +168,20 @@ int aic_kb_group_index_of(const aic_kb *kb, const char *group_id)
     return -1;
 }
 
-int aic_kb_article_count(const aic_kb *kb, int group_index)
+int dsc_kb_article_count(const dsc_kb *kb, int group_index)
 {
-    const aic_kb_group *g = aic_kb_group_at(kb, group_index);
+    const dsc_kb_group *g = dsc_kb_group_at(kb, group_index);
     return g ? g->count : 0;
 }
 
-const aic_kb_article *aic_kb_article_at(const aic_kb *kb, int group_index, int i)
+const dsc_kb_article *dsc_kb_article_at(const dsc_kb *kb, int group_index, int i)
 {
-    const aic_kb_group *g = aic_kb_group_at(kb, group_index);
+    const dsc_kb_group *g = dsc_kb_group_at(kb, group_index);
     if (!g || i < 0 || i >= g->count) return NULL;
     return &kb->articles[g->first + i];
 }
 
-const aic_kb_article *aic_kb_find(const aic_kb *kb, const char *article_id)
+const dsc_kb_article *dsc_kb_find(const dsc_kb *kb, const char *article_id)
 {
     if (!kb || !article_id) return NULL;
     for (int i = 0; i < kb->article_n; i++) {
@@ -279,7 +279,7 @@ static int kb_split_terms(const char *q, char terms[][KB_TERM_CAP], int cap)
     }
     /* 全是中文单字（比如查「token」以外的单个汉字）时，补一个单字词，避免空查询。 */
     if (n == 0 && q[0]) {
-        aic_strlcpy_utf8(terms[n], KB_TERM_CAP, q);
+        dsc_strlcpy_utf8(terms[n], KB_TERM_CAP, q);
         n = 1;
     }
     return n;
@@ -309,9 +309,9 @@ static char *ascii_lower_copy(const char *src, char *buf, size_t cap)
     return buf;
 }
 
-static int kb_score(const aic_kb_article *a, char terms[][KB_TERM_CAP], int nt)
+static int kb_score(const dsc_kb_article *a, char terms[][KB_TERM_CAP], int nt)
 {
-    char buf[AIC_KB_BODY_CAP];
+    char buf[DSC_KB_BODY_CAP];
     int score = 0;
     ascii_lower_copy(a->title, buf, sizeof(buf));
     for (int i = 0; i < nt; i++) score += count_hits(buf, terms[i]) * 5;
@@ -324,7 +324,7 @@ static int kb_score(const aic_kb_article *a, char terms[][KB_TERM_CAP], int nt)
     return score;
 }
 
-int aic_kb_search(const aic_kb *kb, const char *query, char *out_ids, size_t id_stride,
+int dsc_kb_search(const dsc_kb *kb, const char *query, char *out_ids, size_t id_stride,
                   int cap, int *out_hit)
 {
     if (out_hit) *out_hit = 0;
@@ -333,8 +333,8 @@ int aic_kb_search(const aic_kb *kb, const char *query, char *out_ids, size_t id_
     int nt = kb_split_terms(query, terms, KB_MAX_TERMS);
     if (nt == 0) return 0;
 
-    int   scores[AIC_KB_MAX_ARTICLES];
-    int   order[AIC_KB_MAX_ARTICLES];
+    int   scores[DSC_KB_MAX_ARTICLES];
+    int   order[DSC_KB_MAX_ARTICLES];
     int   hit = 0;
     for (int i = 0; i < kb->article_n; i++) {
         scores[i] = kb_score(&kb->articles[i], terms, nt);
@@ -357,7 +357,7 @@ int aic_kb_search(const aic_kb *kb, const char *query, char *out_ids, size_t id_
 
 /* ---------- 段落与引用 ---------- */
 
-int aic_kb_paragraph_count(const aic_kb_article *a)
+int dsc_kb_paragraph_count(const dsc_kb_article *a)
 {
     if (!a || !a->body[0]) return 0;
     int n = 1;
@@ -365,7 +365,7 @@ int aic_kb_paragraph_count(const aic_kb_article *a)
     return n;
 }
 
-const char *aic_kb_paragraph(const aic_kb_article *a, int index, int *out_len)
+const char *dsc_kb_paragraph(const dsc_kb_article *a, int index, int *out_len)
 {
     if (out_len) *out_len = 0;
     if (!a || index < 0) return NULL;
@@ -381,7 +381,7 @@ const char *aic_kb_paragraph(const aic_kb_article *a, int index, int *out_len)
     return p;
 }
 
-const char *aic_kb_source_line(const aic_kb_source *s, char *buf, size_t cap)
+const char *dsc_kb_source_line(const dsc_kb_source *s, char *buf, size_t cap)
 {
     if (!buf || cap == 0) return "";
     buf[0] = '\0';
@@ -390,36 +390,36 @@ const char *aic_kb_source_line(const aic_kb_source *s, char *buf, size_t cap)
     return buf;
 }
 
-int aic_kb_cite(const aic_kb *kb, const char *article_id, int paragraph_index, sb *out)
+int dsc_kb_cite(const dsc_kb *kb, const char *article_id, int paragraph_index, sb *out)
 {
-    if (!kb || !article_id || !out) return AIC_E_INVAL;
-    const aic_kb_article *a = aic_kb_find(kb, article_id);
-    if (!a) return AIC_E_NOTFOUND;
+    if (!kb || !article_id || !out) return DSC_E_INVAL;
+    const dsc_kb_article *a = dsc_kb_find(kb, article_id);
+    if (!a) return DSC_E_NOTFOUND;
     int len = 0;
-    const char *p = aic_kb_paragraph(a, paragraph_index, &len);
-    if (!p) return AIC_E_INVAL;
+    const char *p = dsc_kb_paragraph(a, paragraph_index, &len);
+    if (!p) return DSC_E_INVAL;
     sb_appendf(out, "【知识库引用】《%s》第 %d 段：\n", a->title, paragraph_index + 1);
     sb_appendn(out, p, (size_t)len);
     sb_append(out, "\n来源：");
     for (int i = 0; i < a->source_n; i++) {
         char line[512];
-        aic_kb_source_line(&a->sources[i], line, sizeof(line));
+        dsc_kb_source_line(&a->sources[i], line, sizeof(line));
         if (i) sb_append(out, "；");
         sb_append(out, line);
     }
     sb_appendf(out, "\n（知识包 %s）", kb->version);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* ---------- 书签与最近阅读（存 setting 的 JSON 数组） ---------- */
 
-static int ids_load(aic_db *db, const char *key, char *ids, int stride, int cap, int *out_n)
+static int ids_load(dsc_db *db, const char *key, char *ids, int stride, int cap, int *out_n)
 {
     if (out_n) *out_n = 0;
     char raw[4096];
-    if (aic_setting_get(db, key, raw, sizeof(raw)) != AIC_OK || !raw[0]) return AIC_OK;
+    if (dsc_setting_get(db, key, raw, sizeof(raw)) != DSC_OK || !raw[0]) return DSC_OK;
     jv *v = NULL;
-    if (jv_parse(raw, strlen(raw), &v, NULL, 0) != AIC_OK) return AIC_OK; /* 坏了就当空，不让设置文件毁掉功能 */
+    if (jv_parse(raw, strlen(raw), &v, NULL, 0) != DSC_OK) return DSC_OK; /* 坏了就当空，不让设置文件毁掉功能 */
     int n = 0;
     size_t len = jv_len(v);
     for (size_t i = 0; i < len && n < cap; i++) {
@@ -430,10 +430,10 @@ static int ids_load(aic_db *db, const char *key, char *ids, int stride, int cap,
     }
     jv_free(v);
     if (out_n) *out_n = n;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-static int ids_save(aic_db *db, const char *key, const char *ids, int stride, int n)
+static int ids_save(dsc_db *db, const char *key, const char *ids, int stride, int n)
 {
     sb b;
     sb_init(&b);
@@ -443,28 +443,28 @@ static int ids_save(aic_db *db, const char *key, const char *ids, int stride, in
         jw_escape_into(&b, ids + (size_t)i * stride);
     }
     sb_appendc(&b, ']');
-    int rc = aic_setting_set(db, key, sb_cstr(&b));
+    int rc = dsc_setting_set(db, key, sb_cstr(&b));
     sb_free(&b);
     return rc;
 }
 
-int aic_kb_bookmark_has(aic_db *db, const char *article_id)
+int dsc_kb_bookmark_has(dsc_db *db, const char *article_id)
 {
     if (!db || !article_id) return 0;
-    char ids[AIC_KB_MAX_ARTICLES * 64];
+    char ids[DSC_KB_MAX_ARTICLES * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_BOOKMARK, ids, 64, AIC_KB_MAX_ARTICLES, &n);
+    ids_load(db, DSC_SET_KB_BOOKMARK, ids, 64, DSC_KB_MAX_ARTICLES, &n);
     for (int i = 0; i < n; i++) if (strcmp(ids + (size_t)i * 64, article_id) == 0) return 1;
     return 0;
 }
 
-int aic_kb_bookmark_toggle(aic_db *db, const char *article_id, int *out_on)
+int dsc_kb_bookmark_toggle(dsc_db *db, const char *article_id, int *out_on)
 {
     if (out_on) *out_on = 0;
-    if (!db || !article_id || !article_id[0]) return AIC_E_INVAL;
-    char ids[AIC_KB_MAX_ARTICLES * 64];
+    if (!db || !article_id || !article_id[0]) return DSC_E_INVAL;
+    char ids[DSC_KB_MAX_ARTICLES * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_BOOKMARK, ids, 64, AIC_KB_MAX_ARTICLES, &n);
+    ids_load(db, DSC_SET_KB_BOOKMARK, ids, 64, DSC_KB_MAX_ARTICLES, &n);
     int found = -1;
     for (int i = 0; i < n; i++) if (strcmp(ids + (size_t)i * 64, article_id) == 0) { found = i; break; }
     if (found >= 0) {
@@ -472,96 +472,96 @@ int aic_kb_bookmark_toggle(aic_db *db, const char *article_id, int *out_on)
         n--;
         if (out_on) *out_on = 0;
     } else {
-        if (n >= AIC_KB_MAX_ARTICLES) return AIC_E_LIMIT;
+        if (n >= DSC_KB_MAX_ARTICLES) return DSC_E_LIMIT;
         snprintf(ids + (size_t)n * 64, 64, "%s", article_id);
         n++;
         if (out_on) *out_on = 1;
     }
-    return ids_save(db, AIC_SET_KB_BOOKMARK, ids, 64, n);
+    return ids_save(db, DSC_SET_KB_BOOKMARK, ids, 64, n);
 }
 
-int aic_kb_bookmark_list(aic_db *db, sb *out_json)
+int dsc_kb_bookmark_list(dsc_db *db, sb *out_json)
 {
-    if (!db || !out_json) return AIC_E_INVAL;
-    char ids[AIC_KB_MAX_ARTICLES * 64];
+    if (!db || !out_json) return DSC_E_INVAL;
+    char ids[DSC_KB_MAX_ARTICLES * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_BOOKMARK, ids, 64, AIC_KB_MAX_ARTICLES, &n);
+    ids_load(db, DSC_SET_KB_BOOKMARK, ids, 64, DSC_KB_MAX_ARTICLES, &n);
     sb_appendc(out_json, '[');
     for (int i = 0; i < n; i++) {
         if (i) sb_appendc(out_json, ',');
         jw_escape_into(out_json, ids + (size_t)i * 64);
     }
     sb_appendc(out_json, ']');
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_kb_bookmark_count(aic_db *db)
+int dsc_kb_bookmark_count(dsc_db *db)
 {
     if (!db) return 0;
-    char ids[AIC_KB_MAX_ARTICLES * 64];
+    char ids[DSC_KB_MAX_ARTICLES * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_BOOKMARK, ids, 64, AIC_KB_MAX_ARTICLES, &n);
+    ids_load(db, DSC_SET_KB_BOOKMARK, ids, 64, DSC_KB_MAX_ARTICLES, &n);
     return n;
 }
 
-int aic_kb_recent_push(aic_db *db, const char *article_id)
+int dsc_kb_recent_push(dsc_db *db, const char *article_id)
 {
-    if (!db || !article_id || !article_id[0]) return AIC_E_INVAL;
-    char ids[AIC_KB_RECENT_MAX * 64];
+    if (!db || !article_id || !article_id[0]) return DSC_E_INVAL;
+    char ids[DSC_KB_RECENT_MAX * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_RECENT, ids, 64, AIC_KB_RECENT_MAX, &n);
+    ids_load(db, DSC_SET_KB_RECENT, ids, 64, DSC_KB_RECENT_MAX, &n);
     int exists = 0;
     for (int i = 0; i < n; i++) if (strcmp(ids + (size_t)i * 64, article_id) == 0) { exists = 1; break; }
     if (exists) {
         int j = 0;
-        char out[AIC_KB_RECENT_MAX * 64];
+        char out[DSC_KB_RECENT_MAX * 64];
         snprintf(out, 64, "%s", article_id);
         j = 1;
-        for (int i = 0; i < n && j < AIC_KB_RECENT_MAX; i++) {
+        for (int i = 0; i < n && j < DSC_KB_RECENT_MAX; i++) {
             if (strcmp(ids + (size_t)i * 64, article_id) == 0) continue;
             memcpy(out + (size_t)j * 64, ids + (size_t)i * 64, 64);
             j++;
         }
-        return ids_save(db, AIC_SET_KB_RECENT, out, 64, j);
+        return ids_save(db, DSC_SET_KB_RECENT, out, 64, j);
     }
-    char out[AIC_KB_RECENT_MAX * 64];
+    char out[DSC_KB_RECENT_MAX * 64];
     snprintf(out, 64, "%s", article_id);
     int j = 1;
-    for (int i = 0; i < n && j < AIC_KB_RECENT_MAX; i++) {
+    for (int i = 0; i < n && j < DSC_KB_RECENT_MAX; i++) {
         memcpy(out + (size_t)j * 64, ids + (size_t)i * 64, 64);
         j++;
     }
-    return ids_save(db, AIC_SET_KB_RECENT, out, 64, j);
+    return ids_save(db, DSC_SET_KB_RECENT, out, 64, j);
 }
 
-int aic_kb_recent_list(aic_db *db, sb *out_json)
+int dsc_kb_recent_list(dsc_db *db, sb *out_json)
 {
-    if (!db || !out_json) return AIC_E_INVAL;
-    char ids[AIC_KB_RECENT_MAX * 64];
+    if (!db || !out_json) return DSC_E_INVAL;
+    char ids[DSC_KB_RECENT_MAX * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_RECENT, ids, 64, AIC_KB_RECENT_MAX, &n);
+    ids_load(db, DSC_SET_KB_RECENT, ids, 64, DSC_KB_RECENT_MAX, &n);
     sb_appendc(out_json, '[');
     for (int i = 0; i < n; i++) {
         if (i) sb_appendc(out_json, ',');
         jw_escape_into(out_json, ids + (size_t)i * 64);
     }
     sb_appendc(out_json, ']');
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_kb_recent_count(aic_db *db)
+int dsc_kb_recent_count(dsc_db *db)
 {
     if (!db) return 0;
-    char ids[AIC_KB_RECENT_MAX * 64];
+    char ids[DSC_KB_RECENT_MAX * 64];
     int n = 0;
-    ids_load(db, AIC_SET_KB_RECENT, ids, 64, AIC_KB_RECENT_MAX, &n);
+    ids_load(db, DSC_SET_KB_RECENT, ids, 64, DSC_KB_RECENT_MAX, &n);
     return n;
 }
 
-int aic_kb_state_clear(aic_db *db)
+int dsc_kb_state_clear(dsc_db *db)
 {
-    if (!db) return AIC_E_INVAL;
-    aic_setting_del(db, AIC_SET_KB_BOOKMARK);
-    aic_setting_del(db, AIC_SET_KB_RECENT);
-    return AIC_OK;
+    if (!db) return DSC_E_INVAL;
+    dsc_setting_del(db, DSC_SET_KB_BOOKMARK);
+    dsc_setting_del(db, DSC_SET_KB_RECENT);
+    return DSC_OK;
 }

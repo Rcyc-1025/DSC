@@ -1,9 +1,9 @@
-/* aic_app.c —— Windows 桌面端界面（Win32 + GDI，纯 C，不引入脚本解释器）。
+/* dsc_app.c —— Windows 桌面端界面（Win32 + GDI，纯 C，不引入脚本解释器）。
  *
  * 设计约束（技术设计 §3/§7）：
  *   - 界面层用平台原生能力，自绘全部控件，配色只来自 theme.h 的令牌（禁止硬编码色值）；
  *   - 三栏「我 / 设置 / 聊天」同级不入栈，AI 信息与设置子页入栈，浮层不销毁底层页面；
- *   - 动效只用位置与透明度，时长取自 theme.h 的 aic_motion（220/180/200/160/140/120 毫秒）。
+ *   - 动效只用位置与透明度，时长取自 theme.h 的 dsc_motion（220/180/200/160/140/120 毫秒）。
  *
  * 本机没有可用的真实网络通道（产品裁决：模型层只留配置项与接口），
  * 因此聊天发送走「离线演示传输」：不发任何 HTTP 请求，只在本地流式吐出一段固定回复。
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "aic_types.h"
+#include "dsc_types.h"
 #include "avatar.h"
 #include "backup.h"
 #include "capability.h"
@@ -53,8 +53,8 @@
 #include "update.h"
 #include "util.h"
 
-#define APP_TITLE        "Sai"
-#define APP_CLASS        L"SaiMainWindow"
+#define APP_TITLE        "DSC"
+#define APP_CLASS        L"DscMainWindow"
 #define NAV_W            96
 #define PAD              16
 #define LINE_H           26
@@ -124,9 +124,9 @@ typedef struct Field {
 typedef struct App {
     HINSTANCE hinst;
     HWND      hwnd;
-    aic_db       *db;
-    aic_engine   *eng;
-    aic_router   *router;
+    dsc_db       *db;
+    dsc_engine   *eng;
+    dsc_router   *router;
     char root[512];
 
     HFONT font_ui, font_title, font_small, font_bold, font_mono;
@@ -146,7 +146,7 @@ typedef struct App {
     int scroll[3];
 
     /* 聊天数据 */
-    aic_message *msgs;
+    dsc_message *msgs;
     size_t msg_n;
     char conv_id[40];
     char conv_title[128];
@@ -158,7 +158,7 @@ typedef struct App {
     int  caret_on;
 
     /* 浮层 */
-    aic_overlay_kind overlay;
+    dsc_overlay_kind overlay;
     Field fields[8];
     int   field_n;
     int   field_focus;
@@ -167,7 +167,7 @@ typedef struct App {
     int   confirm_action;
 
     /* 问答模式 */
-    aic_conversation *threads;
+    dsc_conversation *threads;
     size_t thread_n;
     char   search[128];
     int    search_focus;
@@ -194,7 +194,7 @@ typedef struct App {
     int   notified_update;
 
     /* 更新 */
-    aic_update_manifest upd;
+    dsc_update_manifest upd;
     int        upd_available;
     char       upd_pkg[1024];
     long long  upd_last_check;
@@ -202,11 +202,11 @@ typedef struct App {
     /* 插件面板（ui.panel 扩展点返回的按钮清单） */
     char  plugin_panel[4096];
     int   plugin_panel_n;
-    aic_plugin *plugs;
+    dsc_plugin *plugs;
     size_t      plug_n;
 
     /* 余额（FR-11：账户接口 + 本地账本并列） */
-    aic_llm_balance bal;
+    dsc_llm_balance bal;
     int             bal_valid;
     long long       bal_ms;
 
@@ -247,21 +247,21 @@ typedef struct App {
     int  cred_focus;
 
     /* 双端配对与实时同步（第 16 章 FR-25 ~ FR-29） */
-    aic_session *ses;
+    dsc_session *ses;
     volatile LONG sync_stop;
     HANDLE        sync_thread;
     int   page_pair;
     char  pair_code_in[16];
     char  pair_addr_in[64];
     int   pair_focus;          /* 0 无 / 1 对端码 / 2 地址 */
-    aic_peer peers[8];
+    dsc_peer peers[8];
     int   peer_n;
     char  pair_msg[512];
     volatile LONG pair_busy;
     int   pair_role;           /* 1=被连接方 3=连接方（重试握手时用） */
 
     /* 内置知识库（FR-31 / FR-32）：章节树、全文检索、书签、引用片段 */
-    aic_kb *kb;
+    dsc_kb *kb;
     int  page_kb;              /* 1=知识库页（列表或文章） */
     char kb_article[64];       /* 非空时显示文章详情 */
     int  kb_para;              /* 选中的正文段落，-1 表示没有选中 */
@@ -273,8 +273,8 @@ typedef struct App {
 
     /* 错误中心（FR-34）：类别筛选与列表缓冲 */
     int  page_error;
-    int  err_filter;           /* 0=全部，1..AIC_ERR_OTHER 为类别序号 */
-    aic_error_entry err_rows[64];
+    int  err_filter;           /* 0=全部，1..DSC_ERR_OTHER 为类别序号 */
+    dsc_error_entry err_rows[64];
     int  err_n;
 
     /* 设备权限（FR-35） */
@@ -292,7 +292,7 @@ static void app_init(App *a);
 static void app_shutdown(App *a);
 static int  app_root_dir(App *a);
 
-/* 诊断模式：命令行带 --diag 时把初始化过程写到 exe 同目录的 aic_diag.log。 */
+/* 诊断模式：命令行带 --diag 时把初始化过程写到 exe 同目录的 dsc_diag.log。 */
 static void w_to_u8(const wchar_t *s, char *out, int cap);
 static int g_diag = 0;
 static FILE *g_logf = NULL;
@@ -309,12 +309,12 @@ static void DLOG(const char *fmt, ...)
         w_to_u8(wmod, mod, sizeof(mod));
         {
             char dir[480];
-            aic_strlcpy_utf8(dir, sizeof(dir), mod);
+            dsc_strlcpy_utf8(dir, sizeof(dir), mod);
             {
                 char *slash = strrchr(dir, '\\');
                 if (slash) slash[0] = 0;
             }
-            snprintf(path, sizeof(path), "%s\\sai_diag.log", dir);
+            snprintf(path, sizeof(path), "%s\\dsc_diag.log", dir);
         }
         g_logf = fopen(path, "wb");
         if (!g_logf) return;
@@ -334,13 +334,13 @@ static void app_load_older(App *a);
 static void app_plugin_import_confirm(App *a);
 static void app_status(App *a, const char *fmt, ...);
 static void app_toast(App *a, const char *fmt, ...);
-static void app_set_overlay(App *a, aic_overlay_kind kind, const char *title);
+static void app_set_overlay(App *a, dsc_overlay_kind kind, const char *title);
 static void app_close_overlay(App *a);
 static void app_try_close(App *a);
 static void app_begin_anim(App *a, int kind, int dur_ms);
 static void app_invalidate(App *a);
 
-static COLORREF tok(App *a, aic_token t);
+static COLORREF tok(App *a, dsc_token t);
 static void u8_to_w(const char *s, wchar_t *out, int cap);
 static void w_to_u8(const wchar_t *s, char *out, int cap);
 static void draw_text(HDC dc, HFONT f, const char *utf8, RECT rc, COLORREF color, UINT fmt);
@@ -368,7 +368,7 @@ static int  cap_pick_action(const char *kind);
 static int  cap_pick_path(App *a, const wchar_t *filter, const char *key, const wchar_t *title);
 static void app_cred_save(App *a);
 static void app_cred_demo(App *a);
-static void app_mode_select(App *a, aic_mode m);
+static void app_mode_select(App *a, dsc_mode m);
 static void app_sync_start(App *a);
 static void app_sync_stop(App *a);
 static void app_pair_start(App *a, int kind);
@@ -394,17 +394,17 @@ static void app_cred_save(App *a)
         app_status(a, "API Key 格式不正确：应以 sk- 开头且长度不少于 20 个字符");
         return;
     }
-    if (aic_cred_save(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, a->cred_key,
-                      err, sizeof(err)) != AIC_OK) {
+    if (dsc_cred_save(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, a->cred_key,
+                      err, sizeof(err)) != DSC_OK) {
         app_status(a, "写入系统安全存储失败：%s", err[0] ? err : "未知错误");
         return;
     }
-    aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
-    aic_guide_mark(a->db, "api_key", 0);
+    dsc_setting_set(a->db, DSC_SET_CRED_HAS_KEY, "1");
+    dsc_guide_mark(a->db, "api_key", 0);
     app_setup_engine(a);
-    aic_secure_zero(a->cred_key, sizeof(a->cred_key));
+    dsc_secure_zero(a->cred_key, sizeof(a->cred_key));
     a->cred_focus = 0;
-    aic_router_credential_done(a->router);
+    dsc_router_credential_done(a->router);
     app_status(a, "凭证已写入系统安全存储，接下来选择默认模式");
     app_invalidate(a);
 }
@@ -413,24 +413,24 @@ static void app_cred_demo(App *a)
 {
     /* 演示旁路：不写任何凭证，只放行首启顺序，界面与设置页都会提示演示模式。 */
     a->offline_demo = 1;
-    aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
+    dsc_setting_set(a->db, DSC_SET_CRED_HAS_KEY, "1");
     app_setup_engine(a);
     a->cred_focus = 0;
-    aic_router_credential_done(a->router);
+    dsc_router_credential_done(a->router);
     app_status(a, "已进入演示模式：不写凭证、不发任何网络请求");
     app_invalidate(a);
 }
 
-static void app_mode_select(App *a, aic_mode m)
+static void app_mode_select(App *a, dsc_mode m)
 {
-    if (aic_router_mode_select(a->router, m) != AIC_OK) {
+    if (dsc_router_mode_select(a->router, m) != DSC_OK) {
         app_status(a, "进入主页失败，请重试");
         return;
     }
-    aic_guide_mark(a->db, "mode_intro", 0);
+    dsc_guide_mark(a->db, "mode_intro", 0);
     app_reload_threads(a);
     app_load_chat(a);
-    app_status(a, m == AIC_MODE_CHAT ? "已进入聊天模式" : "已进入问答模式");
+    app_status(a, m == DSC_MODE_CHAT ? "已进入聊天模式" : "已进入问答模式");
     app_invalidate(a);
 }
 
@@ -442,11 +442,11 @@ static DWORD WINAPI sync_worker(LPVOID lp)
 {
     App *a = (App *)lp;
     while (!InterlockedCompareExchange(&a->sync_stop, 1, 1)) {
-        if (a->ses && aic_session_is_paired(a->ses)) {
+        if (a->ses && dsc_session_is_paired(a->ses)) {
             int sent = 0, applied = 0;
             char err[256];
             err[0] = '\0';
-            if (aic_session_pump(a->ses, 400, &sent, &applied, err, sizeof(err)) == AIC_OK) {
+            if (dsc_session_pump(a->ses, 400, &sent, &applied, err, sizeof(err)) == DSC_OK) {
                 if (sent || applied)
                     PostMessageA(a->hwnd, WM_APP_SYNC, (WPARAM)sent, (LPARAM)applied);
             } else {
@@ -468,12 +468,12 @@ static int app_pair_channel(App *a)
 static void app_pair_set_channel(App *a, int ch)
 {
     if (!a) return;
-    if (a->ses && aic_session_use_channel(a->ses, ch) != AIC_OK) {
+    if (a->ses && dsc_session_use_channel(a->ses, ch) != DSC_OK) {
         app_status(a, "链路已经建立，先解除配对或等当前连接结束后再换通道");
         return;
     }
     a->pair_channel = ch;
-    app_status(a, ch == AIC_CH_BLUETOOTH
+    app_status(a, ch == DSC_CH_BLUETOOTH
                       ? "改用蓝牙通道：地址填已配对设备的蓝牙地址（如 AA:BB:CC:DD:EE:FF），通道号默认 1"
                       : "改用局域网通道：地址填对端的局域网 IPv4 地址");
     a->peer_n = 0;
@@ -482,11 +482,11 @@ static void app_pair_set_channel(App *a, int ch)
 
 static void app_sync_start(App *a)
 {
-    if (!a->ses && aic_session_create(a->db, &a->ses) != AIC_OK) {
+    if (!a->ses && dsc_session_create(a->db, &a->ses) != DSC_OK) {
         a->ses = NULL;
         return;
     }
-    if (a->ses) aic_session_use_channel(a->ses, a->pair_channel);
+    if (a->ses) dsc_session_use_channel(a->ses, a->pair_channel);
     if (!a->sync_thread) {
         a->sync_stop = 0;
         a->sync_thread = CreateThread(NULL, 0, sync_worker, a, 0, NULL);
@@ -514,14 +514,14 @@ struct PairJob {
 /* 局域网用固定 TCP 端口；蓝牙用 RFCOMM 通道号（默认 1，可在地址框里写 地址:通道号）。 */
 static int pair_port(int channel, const char *addr)
 {
-    if (channel != AIC_CH_BLUETOOTH) return AIC_TRANSPORT_DEFAULT_PORT;
+    if (channel != DSC_CH_BLUETOOTH) return DSC_TRANSPORT_DEFAULT_PORT;
     const char *colon = addr ? strrchr(addr, ':') : NULL;
     if (colon) {
         /* 只有最后一节不含冒号且长度为 1~2 位时才当作通道号（蓝牙地址本身含冒号）。 */
         const char *p = colon + 1;
-        if (*p && strlen(p) <= 2 && !strchr(p, ':')) return aic_parse_int(p, 0);
+        if (*p && strlen(p) <= 2 && !strchr(p, ':')) return dsc_parse_int(p, 0);
     }
-    return AIC_BT_CHANNEL_MIN;
+    return DSC_BT_CHANNEL_MIN;
 }
 
 /* 去掉地址尾部的 ":通道号"（蓝牙地址本身是 AA:BB:CC:DD:EE:FF 这种，只去掉纯数字尾段）。 */
@@ -535,7 +535,7 @@ static void pair_strip_channel(const char *in, char *out, size_t cap)
         out[n] = '\0';
         return;
     }
-    aic_strlcpy_utf8(out, cap, in ? in : "");
+    dsc_strlcpy_utf8(out, cap, in ? in : "");
 }
 
 static DWORD WINAPI pair_worker(LPVOID lp)
@@ -544,53 +544,53 @@ static DWORD WINAPI pair_worker(LPVOID lp)
     App *a = j->a;
     char err[256];
     char host[64];
-    int rc = AIC_OK;
+    int rc = DSC_OK;
     int port = pair_port(j->channel, j->addr);
 
     err[0] = '\0';
     pair_strip_channel(j->addr, host, sizeof(host));
     if (j->kind == 1) {
-        rc = aic_session_host(a->ses, port, NULL, err, sizeof(err));
-        if (rc == AIC_OK) rc = aic_session_accept(a->ses, 60000, err, sizeof(err));
-        if (rc == AIC_OK) {
+        rc = dsc_session_host(a->ses, port, NULL, err, sizeof(err));
+        if (rc == DSC_OK) rc = dsc_session_accept(a->ses, 60000, err, sizeof(err));
+        if (rc == DSC_OK) {
             a->pair_role = 1;
-            rc = aic_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
+            rc = dsc_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
         }
     } else if (j->kind == 2) {
-        aic_peer found[8];
+        dsc_peer found[8];
         size_t n = 0;
-        if (j->channel == AIC_CH_BLUETOOTH) {
+        if (j->channel == DSC_CH_BLUETOOTH) {
             /* 蓝牙不做广播发现：列系统已配对设备。 */
-            rc = aic_transport_bluetooth_peers(found, 8, &n, err, sizeof(err));
+            rc = dsc_transport_bluetooth_peers(found, 8, &n, err, sizeof(err));
         } else {
-            rc = aic_session_discover(a->ses, port, 1500, found, 8, &n, err, sizeof(err));
+            rc = dsc_session_discover(a->ses, port, 1500, found, 8, &n, err, sizeof(err));
         }
-        if (rc == AIC_OK) {
+        if (rc == DSC_OK) {
             int i;
             a->peer_n = (int)(n > 8 ? 8 : n);
             for (i = 0; i < a->peer_n; i++) a->peers[i] = found[i];
         }
     } else if (j->kind == 3) {
-        rc = aic_session_connect(a->ses, host, port, 4000, NULL, err, sizeof(err));
-        if (rc == AIC_OK) {
+        rc = dsc_session_connect(a->ses, host, port, 4000, NULL, err, sizeof(err));
+        if (rc == DSC_OK) {
             a->pair_role = 3;
-            rc = aic_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
+            rc = dsc_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
         }
     } else {
-        if (a->pair_role == 1) rc = aic_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
-        else rc = aic_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
+        if (a->pair_role == 1) rc = dsc_session_handshake_accept(a->ses, j->code, 20000, err, sizeof(err));
+        else rc = dsc_session_handshake_connect(a->ses, j->code, 20000, err, sizeof(err));
     }
 
-    if (rc == AIC_OK) {
+    if (rc == DSC_OK) {
         if (j->kind == 2) snprintf(a->pair_msg, sizeof(a->pair_msg),
-                                   j->channel == AIC_CH_BLUETOOTH
+                                   j->channel == DSC_CH_BLUETOOTH
                                        ? "找到 %d 台已配对蓝牙设备，点一行填入地址后再连接"
                                        : "发现 %d 台设备，点一行填入地址后再连接", a->peer_n);
         else snprintf(a->pair_msg, sizeof(a->pair_msg), "配对成功：已建立同步链路，实时同步默认开启");
     } else {
-        snprintf(a->pair_msg, sizeof(a->pair_msg), "%s", err[0] ? err : aic_strerror(rc));
+        snprintf(a->pair_msg, sizeof(a->pair_msg), "%s", err[0] ? err : dsc_strerror(rc));
     }
-    aic_xfree(j);
+    dsc_xfree(j);
     PostMessageA(a->hwnd, WM_APP_PAIR, (WPARAM)rc, 0);
     return 0;
 }
@@ -605,37 +605,37 @@ static void app_pair_start(App *a, int kind)
         app_status(a, "上一次配对动作还没结束，请稍候");
         return;
     }
-    if (kind != 2 && !aic_pair_code_valid(a->pair_code_in)) {
+    if (kind != 2 && !dsc_pair_code_valid(a->pair_code_in)) {
         InterlockedExchange(&a->pair_busy, 0);
         app_status(a, "请先填对端界面显示的 6 位配对码");
         return;
     }
     if (kind == 3 && !a->pair_addr_in[0]) {
         InterlockedExchange(&a->pair_busy, 0);
-        app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+        app_status(a, a->pair_channel == DSC_CH_BLUETOOTH
                            ? "请先填对端的蓝牙地址（如 AA:BB:CC:DD:EE:FF），或先点「列出已配对蓝牙设备」"
                            : "请先填对端的局域网地址，或先点「发现同网设备」");
         return;
     }
-    j = (struct PairJob *)aic_xcalloc(1, sizeof(*j));
+    j = (struct PairJob *)dsc_xcalloc(1, sizeof(*j));
     if (!j) { InterlockedExchange(&a->pair_busy, 0); return; }
     j->a = a;
     j->kind = kind;
     j->channel = a->pair_channel;
-    aic_strlcpy_utf8(j->addr, sizeof(j->addr), a->pair_addr_in);
-    aic_strlcpy_utf8(j->code, sizeof(j->code), a->pair_code_in);
+    dsc_strlcpy_utf8(j->addr, sizeof(j->addr), a->pair_addr_in);
+    dsc_strlcpy_utf8(j->code, sizeof(j->code), a->pair_code_in);
     a->pair_msg[0] = '\0';
     if (!CreateThread(NULL, 0, pair_worker, j, 0, NULL)) {
-        aic_xfree(j);
+        dsc_xfree(j);
         InterlockedExchange(&a->pair_busy, 0);
         app_status(a, "起配对线程失败");
         return;
     }
-    if (kind == 1) app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+    if (kind == 1) app_status(a, a->pair_channel == DSC_CH_BLUETOOTH
                                          ? "正在监听蓝牙 RFCOMM 通道，等待对端连入（最长 60 秒）"
                                          : "正在监听 %d 端口，等待对端连入（最长 60 秒）",
-                              AIC_TRANSPORT_DEFAULT_PORT);
-    else if (kind == 2) app_status(a, a->pair_channel == AIC_CH_BLUETOOTH
+                              DSC_TRANSPORT_DEFAULT_PORT);
+    else if (kind == 2) app_status(a, a->pair_channel == DSC_CH_BLUETOOTH
                                          ? "正在列出系统已配对的蓝牙设备…" : "正在广播发现同网设备…");
     else if (kind == 3) app_status(a, "正在连接对端…");
     else app_status(a, "正在重试握手…");
@@ -645,23 +645,23 @@ static void app_pair_start(App *a, int kind)
 static void app_pair_unpair(App *a)
 {
     char err[256];
-    aic_pair_record rec;
+    dsc_pair_record rec;
 
     err[0] = '\0';
-    if (aic_pairing_current(a->db, &rec) != AIC_OK) {
+    if (dsc_pairing_current(a->db, &rec) != DSC_OK) {
         app_status(a, "当前没有配对关系");
         return;
     }
-    if (a->ses && aic_session_unpair(a->ses, err, sizeof(err)) == AIC_OK) {
+    if (a->ses && dsc_session_unpair(a->ses, err, sizeof(err)) == DSC_OK) {
         a->pair_msg[0] = '\0';
         app_status(a, "已解除配对：共享密钥已删除，两端本地数据保留");
         app_invalidate(a);
         return;
     }
-    if (aic_pairing_unpair(a->db, rec.peer_id, err, sizeof(err)) == AIC_OK) {
+    if (dsc_pairing_unpair(a->db, rec.peer_id, err, sizeof(err)) == DSC_OK) {
         app_status(a, "已解除配对：共享密钥已删除，两端本地数据保留");
     } else {
-        app_status(a, "解除配对失败：%s", err[0] ? err : aic_strerror(AIC_E_STATE));
+        app_status(a, "解除配对失败：%s", err[0] ? err : dsc_strerror(DSC_E_STATE));
     }
     app_invalidate(a);
 }
@@ -695,17 +695,17 @@ static void w_to_u8(const wchar_t *s, char *out, int cap)
     else out[cap - 1] = 0;
 }
 
-static COLORREF tok(App *a, aic_token t)
+static COLORREF tok(App *a, dsc_token t)
 {
     /* 主题偏好：0 日间 / 1 夜间 / 2 跟随系统（a->system_night 来自系统个人化设置）。 */
-    const aic_theme *th = NULL;
+    const dsc_theme *th = NULL;
     char pref[16];
-    if (aic_setting_get(a->db, AIC_SET_THEME, pref, sizeof(pref)) != AIC_OK) pref[0] = '\0';
+    if (dsc_setting_get(a->db, DSC_SET_THEME, pref, sizeof(pref)) != DSC_OK) pref[0] = '\0';
     int p = 0;
-    if (pref[0] == '1' || aic_str_ieq(pref, "night")) p = 1;
-    else if (pref[0] == '2' || aic_str_ieq(pref, "system")) p = 2;
-    th = aic_theme_resolve(p, a->system_night);
-    unsigned int v = aic_theme_color(th, t);
+    if (pref[0] == '1' || dsc_str_ieq(pref, "night")) p = 1;
+    else if (pref[0] == '2' || dsc_str_ieq(pref, "system")) p = 2;
+    th = dsc_theme_resolve(p, a->system_night);
+    unsigned int v = dsc_theme_color(th, t);
     return RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
 }
 
@@ -767,10 +767,10 @@ static void app_invalidate(App *a) { if (a->hwnd) InvalidateRect(a->hwnd, NULL, 
 
 static void app_begin_anim(App *a, int kind, int dur_ms)
 {
-    if (aic_setting_get_int(a->db, AIC_SET_MOTION, 1) == 0) return;   /* 减少动态效果 */
+    if (dsc_setting_get_int(a->db, DSC_SET_MOTION, 1) == 0) return;   /* 减少动态效果 */
     a->anim_on = 1;
     a->anim_kind = kind;
-    a->anim_start = aic_now_ms();
+    a->anim_start = dsc_now_ms();
     a->anim_dur = dur_ms > 0 ? dur_ms : 1;
     app_invalidate(a);
 }
@@ -781,7 +781,7 @@ static void app_status(App *a, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(a->status, sizeof(a->status), fmt, ap);
     va_end(ap);
-    a->status_until = aic_now_ms() + 6000;
+    a->status_until = dsc_now_ms() + 6000;
     app_invalidate(a);
 }
 
@@ -791,33 +791,33 @@ static void app_toast(App *a, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(a->toast, sizeof(a->toast), fmt, ap);
     va_end(ap);
-    a->toast_until = aic_now_ms() + 2200;
+    a->toast_until = dsc_now_ms() + 2200;
     app_invalidate(a);
 }
 
 
 /* ---------- 同步入队（§16.4：实体变更后把增量事件交给发件箱） ---------- */
 /* 只有已配对才入队；未配对或链路断开时事件留在发件箱，恢复后按 event_id 续传。 */
-static void app_publish(App *a, aic_sync_entity entity, aic_sync_op op, const char *entity_id)
+static void app_publish(App *a, dsc_sync_entity entity, dsc_sync_op op, const char *entity_id)
 {
     char err[256];
     int rc;
 
     if (!a || !a->db || !a->ses || !entity_id || !*entity_id) return;
-    if (!aic_session_is_paired(a->ses)) return;
+    if (!dsc_session_is_paired(a->ses)) return;
     err[0] = '\0';
-    rc = aic_session_publish(a->ses, entity, op, entity_id, err, sizeof(err));
-    if (rc == AIC_OK) {
+    rc = dsc_session_publish(a->ses, entity, op, entity_id, err, sizeof(err));
+    if (rc == DSC_OK) {
         app_invalidate(a);
-    } else if (rc != AIC_E_DISABLED) {
-        DLOG("publish %s/%s %s 失败：%d %s", aic_sync_entity_name(entity),
-             aic_sync_op_name(op), entity_id, rc, err);
+    } else if (rc != DSC_E_DISABLED) {
+        DLOG("publish %s/%s %s 失败：%d %s", dsc_sync_entity_name(entity),
+             dsc_sync_op_name(op), entity_id, rc, err);
     }
 }
 
 static void app_publish_setting(App *a, const char *key)
 {
-    app_publish(a, AIC_ENT_SETTING, AIC_OP_UPDATE, key);
+    app_publish(a, DSC_ENT_SETTING, DSC_OP_UPDATE, key);
 }
 /* ---------- 数据目录 / 数据库 / 引擎 ---------- */
 static void demo_reply_preview(App *a, char *out, size_t cap)
@@ -829,23 +829,23 @@ static void demo_reply_preview(App *a, char *out, size_t cap)
 }
 
 /* 离线演示传输：按 SSE 协议切片喂给解析器，不碰网络（产品裁决：不发真实 HTTP）。 */
-static aic_llm_err demo_post(void *ud, const char *url, const char *api_key,
-                             const char *body, aic_sse_parser *parser,
-                             aic_llm_event_fn fn, void *cb_ud, volatile int *cancel,
+static dsc_llm_err demo_post(void *ud, const char *url, const char *api_key,
+                             const char *body, dsc_sse_parser *parser,
+                             dsc_llm_event_fn fn, void *cb_ud, volatile int *cancel,
                              char *err, size_t errlen)
 {
     App *a = (App *)ud;
     (void)url; (void)body;
     if (!api_key || !api_key[0]) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "尚未配置 API Key，请先到设置里填写");
-        return AIC_LLM_E_AUTH;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "尚未配置 API Key，请先到设置里填写");
+        return DSC_LLM_E_AUTH;
     }
     char reply[700];
     demo_reply_preview(a, reply, sizeof(reply));
     size_t total = strlen(reply);
     size_t start = 0;
     for (int i = 1; i <= 3; i++) {
-        if (cancel && *cancel) return AIC_LLM_E_CANCEL;
+        if (cancel && *cancel) return DSC_LLM_E_CANCEL;
         size_t end = total * (size_t)i / 3;
         if (end > total) end = total;
         char piece[400];
@@ -860,7 +860,7 @@ static aic_llm_err demo_post(void *ud, const char *url, const char *api_key,
         sb_append(&chunk, "data: {\"choices\":[{\"delta\":{\"content\":");
         jw_escape_into(&chunk, piece);
         sb_append(&chunk, "}}]}\n\n");
-        aic_sse_feed(parser, chunk.data, chunk.len, fn, cb_ud);
+        dsc_sse_feed(parser, chunk.data, chunk.len, fn, cb_ud);
         sb_free(&chunk);
     }
     {
@@ -869,81 +869,81 @@ static aic_llm_err demo_post(void *ud, const char *url, const char *api_key,
         sb_append(&tail, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
                          "\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":");
         char num[32];
-        snprintf(num, sizeof(num), "%d", (int)(aic_utf8_length(reply) * 2));
+        snprintf(num, sizeof(num), "%d", (int)(dsc_utf8_length(reply) * 2));
         sb_append(&tail, num);
         sb_append(&tail, "}}\n\ndata: [DONE]\n\n");
-        aic_sse_feed(parser, tail.data, tail.len, fn, cb_ud);
+        dsc_sse_feed(parser, tail.data, tail.len, fn, cb_ud);
         sb_free(&tail);
     }
-    return AIC_LLM_OK;
+    return DSC_LLM_OK;
 }
 
 /* 连通性校验：离线模式下只要 Key 非空即视为可用（明确说明不发请求）。 */
-static aic_llm_err demo_probe(void *ud, const char *url, const char *api_key,
+static dsc_llm_err demo_probe(void *ud, const char *url, const char *api_key,
                               char *err, size_t errlen)
 {
     (void)ud; (void)url;
     if (!api_key || !api_key[0]) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "API Key 为空");
-        return AIC_LLM_E_AUTH;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "API Key 为空");
+        return DSC_LLM_E_AUTH;
     }
-    return AIC_LLM_OK;
+    return DSC_LLM_OK;
 }
 
 static int app_open_db(App *a)
 {
     char dbdir[600], dbp[700], bkp[600];
-    aic_path_join(dbdir, sizeof(dbdir), a->root, "db");
-    aic_path_join(dbp, sizeof(dbp), dbdir, "aic.db");
-    aic_path_join(bkp, sizeof(bkp), a->root, "backups");
+    dsc_path_join(dbdir, sizeof(dbdir), a->root, "db");
+    dsc_path_join(dbp, sizeof(dbp), dbdir, "dsc.db");
+    dsc_path_join(bkp, sizeof(bkp), a->root, "backups");
 
-    int rc = aic_db_open(dbp, &a->db);
-    if (rc != AIC_OK) return rc;
+    int rc = dsc_db_open(dbp, &a->db);
+    if (rc != DSC_OK) return rc;
     int from = 0, to = 0;
-    rc = aic_db_migrate(a->db, dbp, bkp, &from, &to);
-    if (rc != AIC_OK) return rc;
-    return AIC_OK;
+    rc = dsc_db_migrate(a->db, dbp, bkp, &from, &to);
+    if (rc != DSC_OK) return rc;
+    return DSC_OK;
 }
 
 static void app_load_chat(App *a)
 {
     if (!a->db) return;
-    aic_conversation conv;
+    dsc_conversation conv;
     memset(&conv, 0, sizeof(conv));
     int rc;
-    if (aic_router_mode(a->router) == AIC_MODE_QA) {
-        const char *tid = aic_router_thread(a->router);
+    if (dsc_router_mode(a->router) == DSC_MODE_QA) {
+        const char *tid = dsc_router_thread(a->router);
         if (!tid || !tid[0]) {
             a->msg_n = 0;
-            aic_xfree(a->msgs);
+            dsc_xfree(a->msgs);
             a->msgs = NULL;
             a->conv_id[0] = '\0';
             return;
         }
-        rc = aic_conv_get(a->db, tid, &conv);
+        rc = dsc_conv_get(a->db, tid, &conv);
     } else {
         char model[64];
-        if (aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, model, sizeof(model)) != AIC_OK || !model[0])
-            aic_strlcpy_utf8(model, sizeof(model), AIC_MODEL_FLASH);
-        rc = aic_conv_ensure_chat(a->db, model, NULL, &conv);
+        if (dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, model, sizeof(model)) != DSC_OK || !model[0])
+            dsc_strlcpy_utf8(model, sizeof(model), DSC_MODEL_FLASH);
+        rc = dsc_conv_ensure_chat(a->db, model, NULL, &conv);
     }
-    if (rc != AIC_OK) {
+    if (rc != DSC_OK) {
         a->msg_n = 0;
-        aic_xfree(a->msgs);
+        dsc_xfree(a->msgs);
         a->msgs = NULL;
         a->conv_id[0] = '\0';
         return;
     }
-    aic_strlcpy_utf8(a->conv_id, sizeof(a->conv_id), conv.id);
-    aic_strlcpy_utf8(a->conv_title, sizeof(a->conv_title), conv.title);
+    dsc_strlcpy_utf8(a->conv_id, sizeof(a->conv_id), conv.id);
+    dsc_strlcpy_utf8(a->conv_title, sizeof(a->conv_title), conv.title);
 
-    aic_xfree(a->msgs);
+    dsc_xfree(a->msgs);
     a->msgs = NULL;
     a->msg_n = 0;
     a->msg_has_more = 0;
     a->msg_oldest_seq = 0;
     /* 技术设计 13.3：只加载最近一页，向上按需再翻，避免万条消息一次性进内存。 */
-    if (aic_msg_page(a->db, conv.id, 0, MSG_PAGE_SIZE, &a->msgs, &a->msg_n) != AIC_OK) {
+    if (dsc_msg_page(a->db, conv.id, 0, MSG_PAGE_SIZE, &a->msgs, &a->msg_n) != DSC_OK) {
         a->msg_n = 0;
         return;
     }
@@ -951,40 +951,40 @@ static void app_load_chat(App *a)
         a->msg_oldest_seq = a->msgs[0].seq;
         a->msg_has_more = app_has_older(a, a->msg_oldest_seq);
     }
-    aic_persona per;
+    dsc_persona per;
     memset(&per, 0, sizeof(per));
-    if (aic_persona_ensure_default(a->db, &per) == AIC_OK) {
-        aic_strlcpy_utf8(a->persona_name, sizeof(a->persona_name), per.name);
-        aic_persona_free(&per);
+    if (dsc_persona_ensure_default(a->db, &per) == DSC_OK) {
+        dsc_strlcpy_utf8(a->persona_name, sizeof(a->persona_name), per.name);
+        dsc_persona_free(&per);
     }
 }
 
 /* 是否还有更早的一页（技术设计 13.3）。 */
 static int app_has_older(App *a, long long before_seq)
 {
-    aic_message *one = NULL;
+    dsc_message *one = NULL;
     size_t n = 0;
     int rc;
     if (!a->db || !a->conv_id[0] || before_seq <= 1) return 0;
-    rc = aic_msg_page(a->db, a->conv_id, before_seq, 1, &one, &n);
-    if (one) aic_msg_free_array(one, n);
-    return (rc == AIC_OK && n > 0) ? 1 : 0;
+    rc = dsc_msg_page(a->db, a->conv_id, before_seq, 1, &one, &n);
+    if (one) dsc_msg_free_array(one, n);
+    return (rc == DSC_OK && n > 0) ? 1 : 0;
 }
 
 /* 向上翻一页：把更早的一页拼到当前列表前面（技术设计 13.3）。 */
 static void app_load_older(App *a)
 {
-    aic_message *older = NULL;
+    dsc_message *older = NULL;
     size_t on = 0;
-    aic_message *all;
+    dsc_message *all;
     if (!a->db || !a->msg_has_more || a->msg_oldest_seq <= 1) return;
-    if (aic_msg_page(a->db, a->conv_id, a->msg_oldest_seq, MSG_PAGE_SIZE, &older, &on) != AIC_OK) return;
+    if (dsc_msg_page(a->db, a->conv_id, a->msg_oldest_seq, MSG_PAGE_SIZE, &older, &on) != DSC_OK) return;
     if (on == 0) { a->msg_has_more = 0; return; }
-    all = (aic_message *)aic_xcalloc(a->msg_n + on, sizeof(aic_message));
-    memcpy(all, older, on * sizeof(aic_message));
-    if (a->msgs && a->msg_n) memcpy(all + on, a->msgs, a->msg_n * sizeof(aic_message));
-    aic_xfree(older);
-    aic_xfree(a->msgs);
+    all = (dsc_message *)dsc_xcalloc(a->msg_n + on, sizeof(dsc_message));
+    memcpy(all, older, on * sizeof(dsc_message));
+    if (a->msgs && a->msg_n) memcpy(all + on, a->msgs, a->msg_n * sizeof(dsc_message));
+    dsc_xfree(older);
+    dsc_xfree(a->msgs);
     a->msgs = all;
     a->msg_n += on;
     a->msg_oldest_seq = a->msgs[0].seq;
@@ -994,13 +994,13 @@ static void app_load_older(App *a)
 
 static void app_reload_threads(App *a)
 {
-    aic_conversation *arr = NULL;
+    dsc_conversation *arr = NULL;
     size_t n = 0;
     int rc = a->search[0]
-             ? aic_conv_search(a->db, AIC_MODE_QA, a->search, &arr, &n)
-             : aic_conv_list(a->db, AIC_MODE_QA, &arr, &n);
-    if (rc != AIC_OK) return;
-    if (a->threads) aic_conv_free(a->threads, a->thread_n);
+             ? dsc_conv_search(a->db, DSC_MODE_QA, a->search, &arr, &n)
+             : dsc_conv_list(a->db, DSC_MODE_QA, &arr, &n);
+    if (rc != DSC_OK) return;
+    if (a->threads) dsc_conv_free(a->threads, a->thread_n);
     a->threads = arr;
     a->thread_n = n;
 }
@@ -1018,14 +1018,14 @@ static void app_rebuild_fragment(App *a)
 
     if (!a->eng) return;
     cite[0] = '\0';
-    if (aic_setting_get(a->db, AIC_SET_KB_CITE, cite, sizeof(cite)) != AIC_OK) cite[0] = '\0';
+    if (dsc_setting_get(a->db, DSC_SET_KB_CITE, cite, sizeof(cite)) != DSC_OK) cite[0] = '\0';
     sb_init(&frag);
-    if (aic_plugin_build_fragment(a->db, &frag, NULL, 0) != AIC_OK) sb_reset(&frag);
+    if (dsc_plugin_build_fragment(a->db, &frag, NULL, 0) != DSC_OK) sb_reset(&frag);
     if (cite[0]) {
         if (sb_cstr(&frag)[0]) sb_append(&frag, "\n\n");
         sb_append(&frag, cite);
     }
-    aic_engine_set_plugin_fragment(a->eng, sb_cstr(&frag));
+    dsc_engine_set_plugin_fragment(a->eng, sb_cstr(&frag));
     sb_free(&frag);
 }
 
@@ -1035,7 +1035,7 @@ static void app_kb_refresh(App *a)
     char err[256];
     if (a->kb) return;
     err[0] = '\0';
-    if (aic_kb_load(&a->kb, err, sizeof(err)) != AIC_OK) {
+    if (dsc_kb_load(&a->kb, err, sizeof(err)) != DSC_OK) {
         a->kb = NULL;
         app_status(a, "内置知识库载入失败：%s", err[0] ? err : "数据损坏");
     }
@@ -1045,27 +1045,27 @@ static void app_kb_open(App *a, const char *article_id)
 {
     app_kb_refresh(a);
     if (!a->kb) return;
-    if (!article_id || !article_id[0] || !aic_kb_find(a->kb, article_id)) {
+    if (!article_id || !article_id[0] || !dsc_kb_find(a->kb, article_id)) {
         app_status(a, "知识库里没有这一篇");
         return;
     }
-    aic_strlcpy_utf8(a->kb_article, sizeof(a->kb_article), article_id);
+    dsc_strlcpy_utf8(a->kb_article, sizeof(a->kb_article), article_id);
     a->kb_para = -1;
     a->scroll[1] = 0;
-    aic_kb_recent_push(a->db, article_id);
+    dsc_kb_recent_push(a->db, article_id);
 }
 
 /* ---------- 错误中心（FR-34 §9.4） ---------- */
 static const char *g_err_cats[] = {
-    AIC_ERR_NETWORK, AIC_ERR_QUOTA, AIC_ERR_RATE_LIMIT, AIC_ERR_PARSE,
-    AIC_ERR_CREDENTIAL, AIC_ERR_CAPABILITY, AIC_ERR_STORAGE, AIC_ERR_OTHER
+    DSC_ERR_NETWORK, DSC_ERR_QUOTA, DSC_ERR_RATE_LIMIT, DSC_ERR_PARSE,
+    DSC_ERR_CREDENTIAL, DSC_ERR_CAPABILITY, DSC_ERR_STORAGE, DSC_ERR_OTHER
 };
 
 static int g_err_cat_n = (int)(sizeof(g_err_cats) / sizeof(g_err_cats[0]));
 
 static void app_err_reload(App *a)
 {
-    aic_error_filter f;
+    dsc_error_filter f;
     int cap = (int)(sizeof(a->err_rows) / sizeof(a->err_rows[0]));
 
     memset(&f, 0, sizeof(f));
@@ -1073,7 +1073,7 @@ static void app_err_reload(App *a)
     f.limit = cap;
     memset(a->err_rows, 0, sizeof(a->err_rows));
     a->err_n = 0;
-    if (aic_error_query(a->db, &f, a->err_rows, cap, &a->err_n) != AIC_OK) a->err_n = 0;
+    if (dsc_error_query(a->db, &f, a->err_rows, cap, &a->err_n) != DSC_OK) a->err_n = 0;
     if (a->err_n > cap) a->err_n = cap;
 }
 
@@ -1082,13 +1082,13 @@ static void app_err_reload(App *a)
  *   - 设备图片：在设备权限页选一个图片文件，注入时只给名称与大小，原图不上传；
  *   - 已安装软件：从注册表卸载项里挑一条，只给这一个名字，不给完整清单；
  *   - 本地文件：选单个文件，注入前读文本片段，不递归、不传原始文件。
- * 位置与天气在桌面端没有可用来源：返回 AIC_E_STATE（能力已授权也不算错），
+ * 位置与天气在桌面端没有可用来源：返回 DSC_E_STATE（能力已授权也不算错），
  * 由错误中心写一条 capability.unavailable，主对话继续。 */
 static int cap_none(char *buf, size_t cap, void *ud)
 {
     (void)ud;
     if (buf && cap) buf[0] = '\0';
-    return AIC_E_STATE;
+    return DSC_E_STATE;
 }
 
 static int cap_media_text(char *buf, size_t cap, void *ud)
@@ -1097,12 +1097,12 @@ static int cap_media_text(char *buf, size_t cap, void *ud)
     int64_t size = 0;
     (void)ud;
     sel[0] = '\0';
-    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "media.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
-        return AIC_E_STATE;
-    if (aic_file_size(sel, &size) != AIC_OK) return AIC_E_STATE;
+    if (dsc_setting_get(g_app.db, DSC_SET_CAP_PREFIX "media.selected", sel, sizeof(sel)) != DSC_OK || !sel[0])
+        return DSC_E_STATE;
+    if (dsc_file_size(sel, &size) != DSC_OK) return DSC_E_STATE;
     snprintf(buf, cap, "用户选中的图片：%s（约 %lld KB；原始图片不上传，只记名称与大小）",
-             aic_path_basename(sel), (long long)(size / 1024));
-    return AIC_OK;
+             dsc_path_basename(sel), (long long)(size / 1024));
+    return DSC_OK;
 }
 
 static int cap_apps_text(char *buf, size_t cap, void *ud)
@@ -1110,10 +1110,10 @@ static int cap_apps_text(char *buf, size_t cap, void *ud)
     char sel[160];
     (void)ud;
     sel[0] = '\0';
-    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
-        return AIC_E_STATE;
-    aic_strlcpy_utf8(buf, cap, sel);
-    return AIC_OK;
+    if (dsc_setting_get(g_app.db, DSC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != DSC_OK || !sel[0])
+        return DSC_E_STATE;
+    dsc_strlcpy_utf8(buf, cap, sel);
+    return DSC_OK;
 }
 
 static int cap_files_text(char *buf, size_t cap, void *ud)
@@ -1123,18 +1123,18 @@ static int cap_files_text(char *buf, size_t cap, void *ud)
     int rc;
     (void)ud;
     sel[0] = '\0';
-    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "files.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
-        return AIC_E_STATE;
+    if (dsc_setting_get(g_app.db, DSC_SET_CAP_PREFIX "files.selected", sel, sizeof(sel)) != DSC_OK || !sel[0])
+        return DSC_E_STATE;
     sb_init(&text);
-    rc = aic_cap_read_text_file(g_app.db, sel, &text);
-    if (rc == AIC_OK) aic_strlcpy_utf8(buf, cap, sb_cstr(&text));
+    rc = dsc_cap_read_text_file(g_app.db, sel, &text);
+    if (rc == DSC_OK) dsc_strlcpy_utf8(buf, cap, sb_cstr(&text));
     sb_free(&text);
     return rc;
 }
 
 static void app_cap_provider_install(App *a)
 {
-    aic_cap_provider p;
+    dsc_cap_provider p;
     memset(&p, 0, sizeof(p));
     p.time_now = NULL;          /* 时间用本地时钟真实现（capability.c 内置，不依赖平台） */
     p.location = cap_none;
@@ -1143,7 +1143,7 @@ static void app_cap_provider_install(App *a)
     p.apps_pick = cap_apps_text;
     p.files_pick = cap_files_text;
     p.ud = a;
-    aic_cap_set_provider(&p);
+    dsc_cap_set_provider(&p);
 }
 
 /* 已安装软件：只读取卸载项里的 DisplayName，最多取 40 条给用户挑一条。 */
@@ -1167,8 +1167,8 @@ static int cap_enum_reg(char (*names)[128], int cap, HKEY root, const char *path
         namelen = (DWORD)sizeof(name);
         if (RegQueryValueExA(sk, "DisplayName", NULL, &type, (LPBYTE)name, &namelen) == ERROR_SUCCESS &&
             type == REG_SZ && name[0]) {
-            for (int i = 0; i < n; i++) if (aic_str_ieq(names[i], name)) { dup = 1; break; }
-            if (!dup) { aic_strlcpy_utf8(names[n], 128, name); n++; }
+            for (int i = 0; i < n; i++) if (dsc_str_ieq(names[i], name)) { dup = 1; break; }
+            if (!dup) { dsc_strlcpy_utf8(names[n], 128, name); n++; }
         }
         RegCloseKey(sk);
     }
@@ -1193,55 +1193,55 @@ static int app_enum_apps(App *a)
 static void app_setup_engine(App *a)
 {
     if (!a->eng) {
-        if (aic_engine_create(a->db, &a->eng) != AIC_OK) return;
+        if (dsc_engine_create(a->db, &a->eng) != DSC_OK) return;
     }
-    if (a->offline_demo || !aic_http_available()) {
-        aic_llm_transport tr;
+    if (a->offline_demo || !dsc_http_available()) {
+        dsc_llm_transport tr;
         memset(&tr, 0, sizeof(tr));
         tr.ud = a;
         tr.post_stream = demo_post;
         tr.probe = demo_probe;
-        aic_engine_set_transport(a->eng, tr);
-        DLOG("transport=demo offline=%d http=%d", a->offline_demo, aic_http_available());
+        dsc_engine_set_transport(a->eng, tr);
+        DLOG("transport=demo offline=%d http=%d", a->offline_demo, dsc_http_available());
     } else {
-        aic_engine_set_transport(a->eng, aic_win_http_transport());
+        dsc_engine_set_transport(a->eng, dsc_win_http_transport());
         DLOG("transport=winhttp");
     }
 
-    char url[AIC_LLM_URL_MAX];
-    if (aic_setting_get(a->db, AIC_SET_CRED_ENDPOINT, url, sizeof(url)) != AIC_OK || !url[0])
-        aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
-    aic_engine_set_endpoint(a->eng, url);
+    char url[DSC_LLM_URL_MAX];
+    if (dsc_setting_get(a->db, DSC_SET_CRED_ENDPOINT, url, sizeof(url)) != DSC_OK || !url[0])
+        dsc_strlcpy_utf8(url, sizeof(url), DSC_LLM_MODEL_DEFAULT_URL);
+    dsc_engine_set_endpoint(a->eng, url);
 
     char key[512];
     key[0] = '\0';
     char err[256];
-    if (aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, key, sizeof(key),
-                      err, sizeof(err)) == AIC_OK) {
-        aic_engine_set_api_key(a->eng, key);
+    if (dsc_cred_load(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, key, sizeof(key),
+                      err, sizeof(err)) == DSC_OK) {
+        dsc_engine_set_api_key(a->eng, key);
     } else {
-        aic_engine_set_api_key(a->eng, "");
+        dsc_engine_set_api_key(a->eng, "");
     }
-    aic_secure_zero(key, sizeof(key));
+    dsc_secure_zero(key, sizeof(key));
 
     char model[64];
-    if (aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, model, sizeof(model)) != AIC_OK || !model[0])
-        aic_strlcpy_utf8(model, sizeof(model), AIC_MODEL_FLASH);
-    aic_engine_set_model_override(a->eng, model);
-    aic_engine_set_context_messages(a->eng, aic_setting_get_int(a->db, AIC_SET_CONTEXT_N,
-                                                               AIC_CONTEXT_MESSAGES_DEFAULT));
-    aic_engine_set_stream_cb(a->eng, on_stream_delta, a);
+    if (dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, model, sizeof(model)) != DSC_OK || !model[0])
+        dsc_strlcpy_utf8(model, sizeof(model), DSC_MODEL_FLASH);
+    dsc_engine_set_model_override(a->eng, model);
+    dsc_engine_set_context_messages(a->eng, dsc_setting_get_int(a->db, DSC_SET_CONTEXT_N,
+                                                               DSC_CONTEXT_MESSAGES_DEFAULT));
+    dsc_engine_set_stream_cb(a->eng, on_stream_delta, a);
 
     /* FR-34：错误中心明细写 <数据根>/errors；FR-36：记忆条目记来源端；
      * FR-35：能力取值按用途展示，平台函数在 app_cap_provider_install 里注入。 */
-    aic_engine_set_data_root(a->eng, a->root);
+    dsc_engine_set_data_root(a->eng, a->root);
     {
         char dev[40];
-        if (aic_device_id(a->db, dev, sizeof(dev)) == AIC_OK)
-            aic_engine_set_origin_device(a->eng, dev);
+        if (dsc_device_id(a->db, dev, sizeof(dev)) == DSC_OK)
+            dsc_engine_set_origin_device(a->eng, dev);
     }
-    aic_engine_set_memory_enabled(a->eng, 1);
-    aic_engine_set_capability_enabled(a->eng, 1);
+    dsc_engine_set_memory_enabled(a->eng, 1);
+    dsc_engine_set_capability_enabled(a->eng, 1);
     app_cap_provider_install(a);
     app_rebuild_fragment(a);
 }
@@ -1272,8 +1272,8 @@ static void fld(App *a, const char *label, const char *buf, int multiline, int i
     if (a->field_n >= (int)(sizeof(a->fields) / sizeof(a->fields[0]))) return;
     Field *fl = &a->fields[a->field_n];
     memset(fl, 0, sizeof(*fl));
-    aic_strlcpy_utf8(fl->label, sizeof(fl->label), label ? label : "");
-    if (buf) aic_strlcpy_utf8(fl->buf, sizeof(fl->buf), buf);
+    dsc_strlcpy_utf8(fl->label, sizeof(fl->label), label ? label : "");
+    if (buf) dsc_strlcpy_utf8(fl->buf, sizeof(fl->buf), buf);
     fl->multiline = multiline ? 1 : 0;
     fl->id = id;
     a->field_n++;
@@ -1282,8 +1282,8 @@ static void fld(App *a, const char *label, const char *buf, int multiline, int i
 /* 技术设计 6.4：改动未保存时要先确认，避免点错把输入丢掉。 */
 static void app_try_close(App *a)
 {
-    if (a->overlay != AIC_OV_NONE && a->form_dirty) {
-        app_set_overlay(a, AIC_OV_CONFIRM, "放弃未保存的修改？");
+    if (a->overlay != DSC_OV_NONE && a->form_dirty) {
+        app_set_overlay(a, DSC_OV_CONFIRM, "放弃未保存的修改？");
         a->confirm_action = FORM_DISCARD;
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "这个表单里有还没保存的修改，关闭后这些修改会丢弃。确认放弃吗？");
@@ -1295,17 +1295,17 @@ static void app_try_close(App *a)
 
 static void app_close_overlay(App *a)
 {
-    a->overlay = AIC_OV_NONE;
+    a->overlay = DSC_OV_NONE;
     a->field_n = 0;
     a->field_focus = -1;
     a->confirm_action = 0;
     a->quit_confirm = 0;
     a->overlay_text[0] = '\0';
-    aic_router_close_overlay(a->router);
+    dsc_router_close_overlay(a->router);
     app_invalidate(a);
 }
 
-static void app_set_overlay(App *a, aic_overlay_kind kind, const char *title)
+static void app_set_overlay(App *a, dsc_overlay_kind kind, const char *title)
 {
     /* 打开新浮层视为一次新的编辑会话，脏标记从干净开始。 */
     a->form_dirty = 0;
@@ -1313,23 +1313,23 @@ static void app_set_overlay(App *a, aic_overlay_kind kind, const char *title)
     a->field_n = 0;
     a->field_focus = -1;
     a->confirm_action = FORM_NONE;
-    aic_strlcpy_utf8(a->overlay_title, sizeof(a->overlay_title), title ? title : "");
+    dsc_strlcpy_utf8(a->overlay_title, sizeof(a->overlay_title), title ? title : "");
     a->overlay_text[0] = '\0';
-    aic_router_open_overlay(a->router, kind);
-    app_begin_anim(a, 3, aic_motion_default().overlay_ms);
+    dsc_router_open_overlay(a->router, kind);
+    app_begin_anim(a, 3, dsc_motion_default().overlay_ms);
 }
 
 /* ---------- 文字度量 ---------- */
 static int measure_text(HDC dc, HFONT f, const char *utf8, int width, int *out_w)
 {
-    wchar_t *w = (wchar_t *)aic_xmalloc(sizeof(wchar_t) * 16384);
+    wchar_t *w = (wchar_t *)dsc_xmalloc(sizeof(wchar_t) * 16384);
     RECT rc;
     u8_to_w(utf8 ? utf8 : "", w, 16384);
     rc.left = 0; rc.top = 0; rc.right = width; rc.bottom = 0;
     HGDIOBJ old = SelectObject(dc, f);
     DrawTextW(dc, w, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     SelectObject(dc, old);
-    aic_xfree(w);
+    dsc_xfree(w);
     if (out_w) *out_w = rc.right - rc.left;
     return rc.bottom - rc.top;
 }
@@ -1338,12 +1338,12 @@ static int measure_text(HDC dc, HFONT f, const char *utf8, int width, int *out_w
 static void draw_pill(App *a, HDC dc, RECT rc, const char *label, int id, int primary)
 {
     if (primary) {
-        fill_round(dc, rc, 8, tok(a, AIC_TOK_PRIMARY));
+        fill_round(dc, rc, 8, tok(a, DSC_TOK_PRIMARY));
         draw_text(dc, a->font_ui, label, rc, RGB(255, 255, 255),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
-        stroke_round(dc, rc, 8, tok(a, AIC_TOK_DIVIDER), 1);
-        draw_text(dc, a->font_ui, label, rc, tok(a, AIC_TOK_TEXT),
+        stroke_round(dc, rc, 8, tok(a, DSC_TOK_DIVIDER), 1);
+        draw_text(dc, a->font_ui, label, rc, tok(a, DSC_TOK_TEXT),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     reg(rc, id);
@@ -1357,12 +1357,12 @@ static void draw_row(App *a, HDC dc, RECT *y, const char *label, const char *val
     RECT dl = {rr.left + 16, rr.bottom - 1, rr.right, rr.bottom};
     HBRUSH b;
 
-    draw_text(dc, a->font_ui, label, lr, tok(a, AIC_TOK_TEXT),
+    draw_text(dc, a->font_ui, label, lr, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (value && value[0])
-        draw_text(dc, a->font_small, value, vr, tok(a, AIC_TOK_TEXT_SECONDARY),
+        draw_text(dc, a->font_small, value, vr, tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    b = CreateSolidBrush(tok(a, AIC_TOK_DIVIDER));
+    b = CreateSolidBrush(tok(a, DSC_TOK_DIVIDER));
     FillRect(dc, &dl, b);
     DeleteObject(b);
     if (id) reg(rr, id);
@@ -1374,27 +1374,27 @@ static void paint_nav(App *a, HDC dc, RECT client)
 {
     RECT nav = {client.left, client.top, client.left + NAV_W, client.bottom};
     RECT sep = {nav.right - 1, nav.top, nav.right, nav.bottom};
-    HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_CARD_BG));
+    HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_CARD_BG));
     int y = nav.top + PAD;
-    int active_tab = (int)aic_router_tab(a->router);
-    int is_chat_mode = aic_router_mode(a->router) == AIC_MODE_CHAT;
+    int active_tab = (int)dsc_router_tab(a->router);
+    int is_chat_mode = dsc_router_mode(a->router) == DSC_MODE_CHAT;
 
     FillRect(dc, &nav, b);
     DeleteObject(b);
-    b = CreateSolidBrush(tok(a, AIC_TOK_DIVIDER));
+    b = CreateSolidBrush(tok(a, DSC_TOK_DIVIDER));
     FillRect(dc, &sep, b);
     DeleteObject(b);
 
-    for (int i = 0; i < (int)AIC_TAB_COUNT; i++) {
+    for (int i = 0; i < (int)DSC_TAB_COUNT; i++) {
         RECT r = {nav.left + 8, y, nav.right - 8, y + 56};
         int on = is_chat_mode && active_tab == i;
-        if (on) fill_round(dc, r, 10, tok(a, AIC_TOK_PAGE_BG));
-        draw_text(dc, on ? a->font_bold : a->font_ui, aic_tab_name((aic_tab)i), r,
-                  on ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_TEXT_SECONDARY),
+        if (on) fill_round(dc, r, 10, tok(a, DSC_TOK_PAGE_BG));
+        draw_text(dc, on ? a->font_bold : a->font_ui, dsc_tab_name((dsc_tab)i), r,
+                  on ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        if (aic_router_badge(a->router, (aic_tab)i) > 0) {
+        if (dsc_router_badge(a->router, (dsc_tab)i) > 0) {
             RECT br = {r.right - 24, r.top + 8, r.right - 8, r.top + 24};
-            fill_round(dc, br, 8, tok(a, AIC_TOK_ACCENT));
+            fill_round(dc, br, 8, tok(a, DSC_TOK_ACCENT));
         }
         reg(r, ACT_NAV_ME + i);
         y += 64;
@@ -1405,7 +1405,7 @@ static void paint_nav(App *a, HDC dc, RECT client)
         draw_pill(a, dc, r, is_chat_mode ? "问答模式" : "聊天模式", ACT_MODE_SWITCH, 0);
         r.top = nav.bottom - 20;
         draw_text(dc, a->font_small, is_chat_mode ? "当前：聊天" : "当前：问答", r,
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_CENTER | DT_TOP | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_CENTER | DT_TOP | DT_SINGLELINE);
     }
 }
 
@@ -1518,8 +1518,8 @@ static int msg_draw(App *a, HDC dc, int top, int left, int right, const char *tx
             RECT panel = {left, y, right, y + bh};
             RECT tr;
             RECT cp;
-            fill_round(dc, panel, 8, tok(a, AIC_TOK_PAGE_BG));
-            stroke_round(dc, panel, 8, tok(a, AIC_TOK_DIVIDER), 1);
+            fill_round(dc, panel, 8, tok(a, DSC_TOK_PAGE_BG));
+            stroke_round(dc, panel, 8, tok(a, DSC_TOK_DIVIDER), 1);
             tr.left = panel.left + 10;
             tr.right = panel.right - 10;
             tr.top = panel.top + 8;
@@ -1549,15 +1549,15 @@ static void date_label(const char *iso, char *out, size_t cap)
     char today[32], yday[32];
     out[0] = '\0';
     if (!iso || strlen(iso) < 10) return;
-    aic_ms_to_iso8601(aic_now_ms(), today);
-    aic_ms_to_iso8601(aic_now_ms() - 86400000LL, yday);
-    if (strncmp(iso, today, 10) == 0) { aic_strlcpy_utf8(out, cap, "今天"); return; }
-    if (strncmp(iso, yday, 10) == 0) { aic_strlcpy_utf8(out, cap, "昨天"); return; }
+    dsc_ms_to_iso8601(dsc_now_ms(), today);
+    dsc_ms_to_iso8601(dsc_now_ms() - 86400000LL, yday);
+    if (strncmp(iso, today, 10) == 0) { dsc_strlcpy_utf8(out, cap, "今天"); return; }
+    if (strncmp(iso, yday, 10) == 0) { dsc_strlcpy_utf8(out, cap, "昨天"); return; }
     {
         char d[11];
         memcpy(d, iso, 10);
         d[10] = '\0';
-        aic_strlcpy_utf8(out, cap, d);
+        dsc_strlcpy_utf8(out, cap, d);
     }
 }
 
@@ -1591,30 +1591,30 @@ static void paint_messages(App *a, HDC dc, RECT area)
             br0.right = br0.left + tw0;
             br0.top = area.top + 8;
             br0.bottom = br0.top + hh0;
-            fill_round(dc, br0, 12, tok(a, AIC_TOK_CARD_BG));
-            stroke_round(dc, br0, 12, tok(a, AIC_TOK_PRIMARY), 1);
+            fill_round(dc, br0, 12, tok(a, DSC_TOK_CARD_BG));
+            stroke_round(dc, br0, 12, tok(a, DSC_TOK_PRIMARY), 1);
             msg_draw(a, dc, br0.top + 10, br0.left + 12, br0.right - 12, live0, bubble_max - 24,
-                     -1, tok(a, AIC_TOK_TEXT));
+                     -1, tok(a, DSC_TOK_TEXT));
         } else {
             RECT r = {area.left, area.top + 40, area.right, area.top + 70};
             draw_text(dc, a->font_ui,
-                      aic_router_mode(a->router) == AIC_MODE_QA
+                      dsc_router_mode(a->router) == DSC_MODE_QA
                           ? "这个会话还没有消息。输入内容开始一次问答。"
                           : "还没有消息。说点什么开始今天的聊天吧。",
-                      r, tok(a, AIC_TOK_TEXT_SECONDARY), DT_CENTER | DT_TOP | DT_SINGLELINE);
+                      r, tok(a, DSC_TOK_TEXT_SECONDARY), DT_CENTER | DT_TOP | DT_SINGLELINE);
         }
         return;
     }
 
     cap = n > MSG_CAP ? MSG_CAP : n;
     start_idx = n - cap;
-    hs = (int *)aic_xmalloc(sizeof(int) * (size_t)cap);
-    seps = (int *)aic_xmalloc(sizeof(int) * (size_t)cap);
-    gaps = (int *)aic_xmalloc(sizeof(int) * (size_t)cap);
+    hs = (int *)dsc_xmalloc(sizeof(int) * (size_t)cap);
+    seps = (int *)dsc_xmalloc(sizeof(int) * (size_t)cap);
+    gaps = (int *)dsc_xmalloc(sizeof(int) * (size_t)cap);
 
     for (i = 0; i < cap; i++) {
-        aic_message *m = &a->msgs[start_idx + i];
-        const char *txt = m->recalled ? AIC_RECALL_NOTICE : (m->content ? m->content : "");
+        dsc_message *m = &a->msgs[start_idx + i];
+        const char *txt = m->recalled ? DSC_RECALL_NOTICE : (m->content ? m->content : "");
         int w = 0;
         hs[i] = msg_height(dc, a, txt, bubble_max - 24, &w);
         if (hs[i] < 40) hs[i] = 40;
@@ -1625,8 +1625,8 @@ static void paint_messages(App *a, HDC dc, RECT area)
     for (i = 0; i < cap; i++) {
         int same_role = 0;
         if (i + 1 < cap) {
-            aic_message *x = &a->msgs[start_idx + i];
-            aic_message *z = &a->msgs[start_idx + i + 1];
+            dsc_message *x = &a->msgs[start_idx + i];
+            dsc_message *z = &a->msgs[start_idx + i + 1];
             same_role = (strcmp(x->role, z->role) == 0) && same_date(x->created_at, z->created_at);
         }
         gaps[i] = same_role ? 4 : 10;
@@ -1651,8 +1651,8 @@ static void paint_messages(App *a, HDC dc, RECT area)
     y = area.bottom - 6 - total + a->scroll[2];
 
     for (i = 0; i < cap; i++) {
-        aic_message *m = &a->msgs[start_idx + i];
-        const char *txt = m->recalled ? AIC_RECALL_NOTICE : (m->content ? m->content : "");
+        dsc_message *m = &a->msgs[start_idx + i];
+        const char *txt = m->recalled ? DSC_RECALL_NOTICE : (m->content ? m->content : "");
         int h = hs[i];
         int idx = start_idx + i;
         int is_user = strcmp(m->role, "user") == 0;
@@ -1663,7 +1663,7 @@ static void paint_messages(App *a, HDC dc, RECT area)
             RECT sr = {area.left, y + 4, area.right, y + seps[i] - 2};
             date_label(m->created_at, lbl, sizeof(lbl));
             if (lbl[0])
-                draw_text(dc, a->font_small, lbl, sr, tok(a, AIC_TOK_TEXT_SECONDARY),
+                draw_text(dc, a->font_small, lbl, sr, tok(a, DSC_TOK_TEXT_SECONDARY),
                           DT_CENTER | DT_TOP | DT_SINGLELINE);
         }
         y += seps[i];
@@ -1671,14 +1671,14 @@ static void paint_messages(App *a, HDC dc, RECT area)
         if (y + h >= area.top && y <= area.bottom) {
             if (is_sys) {
                 RECT tr = {area.left + 24, y, area.right - 24, y + h};
-                draw_text(dc, a->font_small, txt, tr, tok(a, AIC_TOK_TEXT_SECONDARY),
+                draw_text(dc, a->font_small, txt, tr, tok(a, DSC_TOK_TEXT_SECONDARY),
                           DT_CENTER | DT_TOP | DT_WORDBREAK);
             } else {
                 int tw = 0;
                 RECT br;
                 COLORREF fg = is_user ? RGB(255, 255, 255)
-                                      : (m->recalled ? tok(a, AIC_TOK_TEXT_SECONDARY)
-                                                     : tok(a, AIC_TOK_TEXT));
+                                      : (m->recalled ? tok(a, DSC_TOK_TEXT_SECONDARY)
+                                                     : tok(a, DSC_TOK_TEXT));
                 msg_height(dc, a, txt, bubble_max - 24, &tw);
                 tw += 24;
                 if (tw < 72) tw = 72;
@@ -1691,13 +1691,13 @@ static void paint_messages(App *a, HDC dc, RECT area)
                 }
                 br.top = y;
                 br.bottom = y + h;
-                fill_round(dc, br, 12, is_user ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_CARD_BG));
-                if (!is_user) stroke_round(dc, br, 12, tok(a, AIC_TOK_DIVIDER), 1);
+                fill_round(dc, br, 12, is_user ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_CARD_BG));
+                if (!is_user) stroke_round(dc, br, 12, tok(a, DSC_TOK_DIVIDER), 1);
                 msg_draw(a, dc, br.top + 10, br.left + 12, br.right - 12, txt, bubble_max - 24,
                          idx, fg);
                 if (m->edited_at[0] && !m->recalled) {
                     RECT er = {br.left + 12, br.bottom - 18, br.right - 12, br.bottom - 2};
-                    draw_text(dc, a->font_small, "已修改", er, tok(a, AIC_TOK_TEXT_SECONDARY),
+                    draw_text(dc, a->font_small, "已修改", er, tok(a, DSC_TOK_TEXT_SECONDARY),
                               DT_RIGHT | DT_BOTTOM | DT_SINGLELINE);
                 }
                 reg(br, ACT_MSG_BASE + idx);
@@ -1720,16 +1720,16 @@ static void paint_messages(App *a, HDC dc, RECT area)
         br.top = y;
         br.bottom = y + hh;
         if (br.bottom >= area.top && br.top <= area.bottom) {
-            fill_round(dc, br, 12, tok(a, AIC_TOK_CARD_BG));
-            stroke_round(dc, br, 12, tok(a, AIC_TOK_PRIMARY), 1);
+            fill_round(dc, br, 12, tok(a, DSC_TOK_CARD_BG));
+            stroke_round(dc, br, 12, tok(a, DSC_TOK_PRIMARY), 1);
             msg_draw(a, dc, br.top + 10, br.left + 12, br.right - 12, live, bubble_max - 24, -1,
-                     tok(a, AIC_TOK_TEXT));
+                     tok(a, DSC_TOK_TEXT));
         }
     }
 
-    aic_xfree(hs);
-    aic_xfree(seps);
-    aic_xfree(gaps);
+    dsc_xfree(hs);
+    dsc_xfree(seps);
+    dsc_xfree(gaps);
 }
 
 static void paint_input(App *a, HDC dc, RECT area)
@@ -1739,8 +1739,8 @@ static void paint_input(App *a, HDC dc, RECT area)
     RECT tr;
     RECT hint = {area.left + 20, area.bottom - 20, area.right - 120, area.bottom - 2};
 
-    fill_round(dc, box, 10, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, box, 10, tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, box, 10, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, box, 10, tok(a, DSC_TOK_DIVIDER), 1);
 
     tr.left = box.left + 12;
     tr.right = box.right - 12;
@@ -1749,16 +1749,16 @@ static void paint_input(App *a, HDC dc, RECT area)
 
     if (a->draft_len == 0) {
         draw_text(dc, a->font_ui, "写下你想说的话，Enter 发送", tr,
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else {
-        draw_text(dc, a->font_ui, a->draft, tr, tok(a, AIC_TOK_TEXT),
+        draw_text(dc, a->font_ui, a->draft, tr, tok(a, DSC_TOK_TEXT),
                   DT_LEFT | DT_TOP | DT_WORDBREAK);
         if (a->input_focus && a->caret_on) {
             int w = 0;
             int n = (int)measure_text(dc, a->font_ui, a->draft, tr.right - tr.left, &w);
             RECT cr = {tr.left + (w > 0 ? w : 0), tr.top, tr.left + (w > 0 ? w : 0) + 1,
                        tr.top + (n > 0 ? n : 16)};
-            HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_TEXT));
+            HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_TEXT));
             FillRect(dc, &cr, b);
             DeleteObject(b);
         }
@@ -1770,10 +1770,10 @@ static void paint_input(App *a, HDC dc, RECT area)
     {
         char line[256];
         snprintf(line, sizeof(line), "%s · 已输入 %d 字 · 上下文 %d 条",
-                 aic_router_mode(a->router) == AIC_MODE_CHAT ? "聊天模式 · 单会话" : "问答模式 · 多会话",
-                 (int)aic_utf8_length(a->draft),
-                 aic_setting_get_int(a->db, AIC_SET_CONTEXT_N, AIC_CONTEXT_MESSAGES_DEFAULT));
-        draw_text(dc, a->font_small, line, hint, tok(a, AIC_TOK_TEXT_SECONDARY),
+                 dsc_router_mode(a->router) == DSC_MODE_CHAT ? "聊天模式 · 单会话" : "问答模式 · 多会话",
+                 (int)dsc_utf8_length(a->draft),
+                 dsc_setting_get_int(a->db, DSC_SET_CONTEXT_N, DSC_CONTEXT_MESSAGES_DEFAULT));
+        draw_text(dc, a->font_small, line, hint, tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
     }
 }
@@ -1787,11 +1787,11 @@ static void paint_chat(App *a, HDC dc, RECT content)
     RECT info = {content.right - 132, header.top + 14, content.right - 20, header.top + 46};
     RECT area = {content.left, header.bottom + 4, content.right, content.bottom - INPUT_H - 8};
     RECT inarea = {content.left, content.bottom - INPUT_H, content.right, content.bottom};
-    HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_DIVIDER));
+    HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_DIVIDER));
     const char *t = a->conv_title[0] ? a->conv_title : "聊天";
     char subline[256];
 
-    if (aic_router_mode(a->router) == AIC_MODE_QA) {
+    if (dsc_router_mode(a->router) == DSC_MODE_QA) {
         RECT back = {content.left + 8, header.top + 14, content.left + 76, header.top + 46};
         draw_pill(a, dc, back, "列表", ACT_QA_BACK, 0);
         title.left = content.left + 88;
@@ -1801,18 +1801,18 @@ static void paint_chat(App *a, HDC dc, RECT content)
     {
         /* AI 头像（技术设计 6.4）：选了头像就画成圆形，没选则不占位。 */
         char rel[600] = {0};
-        int base = (aic_router_mode(a->router) == AIC_MODE_QA) ? content.left + 88 : header.left + 20;
-        aic_setting_get(a->db, "persona.avatar", rel, sizeof(rel));
+        int base = (dsc_router_mode(a->router) == DSC_MODE_QA) ? content.left + 88 : header.left + 20;
+        dsc_setting_get(a->db, "persona.avatar", rel, sizeof(rel));
         if (rel[0]) {
             char full[900];
-            aic_path_join(full, sizeof(full), a->root, rel);
-            if (aic_path_exists(full)) {
+            dsc_path_join(full, sizeof(full), a->root, rel);
+            if (dsc_path_exists(full)) {
                 RECT av = {base, header.top + 18, base + 28, header.top + 46};
                 HRGN clip = CreateEllipticRgn(av.left, av.top, av.right, av.bottom);
-                HBRUSH bg = CreateSolidBrush(tok(a, AIC_TOK_PRIMARY));
+                HBRUSH bg = CreateSolidBrush(tok(a, DSC_TOK_PRIMARY));
                 SelectClipRgn(dc, clip);
                 FillRect(dc, &av, bg);
-                aic_avatar_draw(dc, a->root, rel, av.left, av.top, 28);
+                dsc_avatar_draw(dc, a->root, rel, av.left, av.top, 28);
                 SelectClipRgn(dc, NULL);
                 DeleteObject(bg);
                 DeleteObject(clip);
@@ -1821,15 +1821,15 @@ static void paint_chat(App *a, HDC dc, RECT content)
             }
         }
     }
-    draw_text(dc, a->font_title, t, title, tok(a, AIC_TOK_TEXT),
+    draw_text(dc, a->font_title, t, title, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     snprintf(subline, sizeof(subline), "人设：%s · 模型：%s",
              a->persona_name[0] ? a->persona_name : "默认陪伴人设",
-             aic_llm_model_or_default(
-                 aic_setting_get_str(a->db, AIC_SET_MODEL_DEFAULT, AIC_MODEL_FLASH, NULL, 0)
-                     ? aic_setting_get_str(a->db, AIC_SET_MODEL_DEFAULT, AIC_MODEL_FLASH, NULL, 0)
-                     : AIC_MODEL_FLASH)->name);
-    draw_text(dc, a->font_small, subline, sub, tok(a, AIC_TOK_TEXT_SECONDARY),
+             dsc_llm_model_or_default(
+                 dsc_setting_get_str(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_FLASH, NULL, 0)
+                     ? dsc_setting_get_str(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_FLASH, NULL, 0)
+                     : DSC_MODEL_FLASH)->name);
+    draw_text(dc, a->font_small, subline, sub, tok(a, DSC_TOK_TEXT_SECONDARY),
               DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     draw_pill(a, dc, info, "AI 信息", ACT_AI_INFO, 0);
     {
@@ -1838,12 +1838,12 @@ static void paint_chat(App *a, HDC dc, RECT content)
     }
     {
         /* 撤回 / 修改后的短时撤销入口（技术设计 9.2）。 */
-        if (a->undo_msg[0] && aic_now_ms() <= a->undo_until && a->msg_n > 0) {
+        if (a->undo_msg[0] && dsc_now_ms() <= a->undo_until && a->msg_n > 0) {
             RECT undo = {content.right - 348, header.top + 14, content.right - 256, header.top + 46};
             draw_pill(a, dc, undo, "撤销", ACT_UNDO, 0);
         }
     }
-    if (aic_router_mode(a->router) == AIC_MODE_QA && a->conv_id[0]) {
+    if (dsc_router_mode(a->router) == DSC_MODE_QA && a->conv_id[0]) {
         RECT ren = {content.right - 448, header.top + 14, content.right - 356, header.top + 46};
         draw_pill(a, dc, ren, "改名", ACT_QA_RENAME, 0);
     }
@@ -1853,7 +1853,7 @@ static void paint_chat(App *a, HDC dc, RECT content)
 
     {
         /* §9.4：错误只走输入区上方的非侵入状态条，不进聊天框、也不挤占消息本身。 */
-        int unread = aic_error_unread(a->db);
+        int unread = dsc_error_unread(a->db);
         if (unread > 0) {
             RECT bar;
             char txt[160];
@@ -1863,12 +1863,12 @@ static void paint_chat(App *a, HDC dc, RECT content)
             bar.bottom = inarea.top - 8;
             bar.top = bar.bottom - 28;
             area.bottom = bar.top - 6;
-            fill_round(dc, bar, 8, tok(a, AIC_TOK_CARD_BG));
-            stroke_round(dc, bar, 8, tok(a, AIC_TOK_DIVIDER), 1);
+            fill_round(dc, bar, 8, tok(a, DSC_TOK_CARD_BG));
+            stroke_round(dc, bar, 8, tok(a, DSC_TOK_DIVIDER), 1);
             snprintf(txt, sizeof(txt), "有 %d 条运行错误未查看，点这里进错误中心", unread);
             draw_text(dc, a->font_small, txt,
                       (RECT){bar.left + 12, bar.top, bar.right - 12, bar.bottom},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             reg(bar, ACT_ROW_ERROR);
         }
     }
@@ -1884,7 +1884,7 @@ static void paint_chat(App *a, HDC dc, RECT content)
 /* ---------- 「我」 ---------- */
 static void paint_me(App *a, HDC dc, RECT content)
 {
-    aic_profile p;
+    dsc_profile p;
     RECT y = content;
     RECT avatar;
     HBRUSH b;
@@ -1892,22 +1892,22 @@ static void paint_me(App *a, HDC dc, RECT content)
     char line[640];
 
     memset(&p, 0, sizeof(p));
-    aic_profile_get(a->db, &p);
+    dsc_profile_get(a->db, &p);
 
     y.left += PAD + 8;
     y.right -= PAD + 8;
     y.top += 8;
 
     draw_text(dc, a->font_title, "我", (RECT){y.left, y.top, y.right, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 56;
 
     avatar.left = y.left;
     avatar.top = y.top;
     avatar.right = y.left + 72;
     avatar.bottom = y.top + 72;
-    b = CreateSolidBrush(tok(a, AIC_TOK_PRIMARY));
-    pen = CreatePen(PS_SOLID, 1, tok(a, AIC_TOK_PRIMARY));
+    b = CreateSolidBrush(tok(a, DSC_TOK_PRIMARY));
+    pen = CreatePen(PS_SOLID, 1, tok(a, DSC_TOK_PRIMARY));
     {
         HGDIOBJ ob = SelectObject(dc, b);
         HGDIOBJ op = SelectObject(dc, pen);
@@ -1922,19 +1922,19 @@ static void paint_me(App *a, HDC dc, RECT content)
         int drew = 0;
         if (p.avatar_path[0]) {
             char ap[900];
-            aic_path_join(ap, sizeof(ap), a->root, p.avatar_path);
-            if (aic_path_exists(ap))
-                drew = (aic_avatar_draw(dc, a->root, p.avatar_path, avatar.left, avatar.top, 72) == 1);
+            dsc_path_join(ap, sizeof(ap), a->root, p.avatar_path);
+            if (dsc_path_exists(ap))
+                drew = (dsc_avatar_draw(dc, a->root, p.avatar_path, avatar.left, avatar.top, 72) == 1);
         }
         if (drew) {
             /* 头像图片已绘制，不再叠加首字。 */
         } else {
         char one[8];
         if (p.name[0]) {
-            aic_strlcpy_utf8(one, sizeof(one), p.name);
-            aic_utf8_truncate_chars(one, 1);
+            dsc_strlcpy_utf8(one, sizeof(one), p.name);
+            dsc_utf8_truncate_chars(one, 1);
         } else {
-            aic_strlcpy_utf8(one, sizeof(one), "我");
+            dsc_strlcpy_utf8(one, sizeof(one), "我");
         }
         draw_text(dc, a->font_title, one, avatar, RGB(255, 255, 255),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1945,11 +1945,11 @@ static void paint_me(App *a, HDC dc, RECT content)
         RECT nr = {avatar.right + 16, avatar.top + 8, y.right, avatar.top + 40};
         RECT sr = {avatar.right + 16, avatar.top + 38, y.right, avatar.top + 64};
         draw_text(dc, a->font_title, p.name[0] ? p.name : "未设置昵称", nr,
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         snprintf(line, sizeof(line), "%s · %s · %s",
                  p.gender[0] ? p.gender : "未设置", p.birthday[0] ? p.birthday : "生日未填",
                  p.occupation[0] ? p.occupation : "职业未填");
-        draw_text(dc, a->font_small, line, sr, tok(a, AIC_TOK_TEXT_SECONDARY),
+        draw_text(dc, a->font_small, line, sr, tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     y.top += 88;
@@ -1972,21 +1972,21 @@ static void paint_me(App *a, HDC dc, RECT content)
     y.top += 16;
     {
         RECT r = {y.left, y.top, y.right, y.top + 80};
-        fill_round(dc, r, 10, tok(a, AIC_TOK_CARD_BG));
+        fill_round(dc, r, 10, tok(a, DSC_TOK_CARD_BG));
         draw_text(dc, a->font_small,
                   "用户资料会作为变量写进提示词：{user_name} {user_gender} {user_birthday} "
                   "{user_occupation} {user_extra_note}，未填写的替换为空串。",
                   (RECT){r.left + 14, r.top + 10, r.right - 14, r.bottom - 10},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     }
 }
 
 /* ---------- 设置 ---------- */
 static void paint_settings(App *a, HDC dc, RECT content)
 {
-    aic_guide_state gs;
-    aic_persona per;
-    aic_plugin *plgs = NULL;
+    dsc_guide_state gs;
+    dsc_persona per;
+    dsc_plugin *plgs = NULL;
     size_t plg_n = 0;
     RECT y = content;
     char v[160];
@@ -2000,13 +2000,13 @@ static void paint_settings(App *a, HDC dc, RECT content)
     if (a->page_advanced) { paint_advanced(a, dc, content); return; }
     if (a->page_pair) { paint_pair(a, dc, content); return; }
 
-    aic_guide_state_get(a->db, &gs);
+    dsc_guide_state_get(a->db, &gs);
     memset(&per, 0, sizeof(per));
-    aic_persona_ensure_default(a->db, &per);
-    aic_plugin_list(a->db, -1, &plgs, &plg_n);
-    aic_setting_get(a->db, AIC_SET_THEME, theme, sizeof(theme));
-    aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, model, sizeof(model));
-    has_key = aic_engine_has_key(a->eng);
+    dsc_persona_ensure_default(a->db, &per);
+    dsc_plugin_list(a->db, -1, &plgs, &plg_n);
+    dsc_setting_get(a->db, DSC_SET_THEME, theme, sizeof(theme));
+    dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, model, sizeof(model));
+    has_key = dsc_engine_has_key(a->eng);
 
     y.left += PAD + 8;
     y.right -= PAD + 8;
@@ -2022,19 +2022,19 @@ static void paint_settings(App *a, HDC dc, RECT content)
     y.top += 8 - a->scroll[1];
 
     draw_text(dc, a->font_title, "设置", (RECT){y.left, y.top, y.right, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 52;
 
     snprintf(v, sizeof(v), "%s", per.name);
     draw_row(a, dc, &y, "提示词与人设", v, ACT_AI_INFO);
 
-    if (theme[0] == '1' || aic_str_ieq(theme, "night")) aic_strlcpy_utf8(v, sizeof(v), "夜间");
-    else if (theme[0] == '2' || aic_str_ieq(theme, "system")) aic_strlcpy_utf8(v, sizeof(v), "跟随系统");
-    else aic_strlcpy_utf8(v, sizeof(v), "日光");
+    if (theme[0] == '1' || dsc_str_ieq(theme, "night")) dsc_strlcpy_utf8(v, sizeof(v), "夜间");
+    else if (theme[0] == '2' || dsc_str_ieq(theme, "system")) dsc_strlcpy_utf8(v, sizeof(v), "跟随系统");
+    else dsc_strlcpy_utf8(v, sizeof(v), "日光");
     draw_row(a, dc, &y, "页面配色", v, ACT_ROW_THEME);
 
     draw_row(a, dc, &y, "模型",
-             aic_llm_model_or_default(model[0] ? model : AIC_MODEL_FLASH)->name, ACT_ROW_MODEL);
+             dsc_llm_model_or_default(model[0] ? model : DSC_MODEL_FLASH)->name, ACT_ROW_MODEL);
 
     draw_row(a, dc, &y, "API Key", has_key ? "已配置（系统安全存储）" : "未配置", ACT_ROW_KEY);
     draw_row(a, dc, &y, "余额与用量", "查看本地账本", ACT_ROW_BALANCE);
@@ -2043,13 +2043,13 @@ static void paint_settings(App *a, HDC dc, RECT content)
 
     /* 第 16 章：实时同步与配对管理（§7.2 设置项的两行）。 */
     draw_row(a, dc, &y, "实时同步",
-             aic_sync_realtime_enabled(a->db) ? "已开启" : "已暂停", ACT_ROW_SYNC);
+             dsc_sync_realtime_enabled(a->db) ? "已开启" : "已暂停", ACT_ROW_SYNC);
     {
-        aic_pair_record rec;
-        if (aic_pairing_current(a->db, &rec) == AIC_OK)
+        dsc_pair_record rec;
+        if (dsc_pairing_current(a->db, &rec) == DSC_OK)
             snprintf(v, sizeof(v), "已配对：%s", rec.peer_name[0] ? rec.peer_name : rec.peer_id);
         else
-            aic_strlcpy_utf8(v, sizeof(v), "未配对，生成配对码");
+            dsc_strlcpy_utf8(v, sizeof(v), "未配对，生成配对码");
         draw_row(a, dc, &y, "配对管理", v, ACT_ROW_PAIR);
     }
 
@@ -2072,46 +2072,46 @@ static void paint_settings(App *a, HDC dc, RECT content)
     app_kb_refresh(a);
     if (a->kb)
         snprintf(v, sizeof(v), "%d 篇 · %d 组 · 书签 %d", a->kb->article_n,
-                 aic_kb_group_count(a->kb), aic_kb_bookmark_count(a->db));
+                 dsc_kb_group_count(a->kb), dsc_kb_bookmark_count(a->db));
     else
-        aic_strlcpy_utf8(v, sizeof(v), "知识包未载入");
+        dsc_strlcpy_utf8(v, sizeof(v), "知识包未载入");
     draw_row(a, dc, &y, "内置知识库", v, ACT_ROW_KB);
     {
         int granted = 0;
         int ci;
-        int cap_n = (int)aic_cap_count();
+        int cap_n = (int)dsc_cap_count();
         for (ci = 0; ci < cap_n; ci++) {
-            const char *k = aic_cap_kind_at(ci);
-            if (k && aic_cap_is_granted(a->db, k)) granted++;
+            const char *k = dsc_cap_kind_at(ci);
+            if (k && dsc_cap_is_granted(a->db, k)) granted++;
         }
         snprintf(v, sizeof(v), "已授权 %d / %d 项", granted, cap_n);
     }
     draw_row(a, dc, &y, "设备权限", v, ACT_ROW_CAP);
     {
-        int unread = aic_error_unread(a->db);
+        int unread = dsc_error_unread(a->db);
         if (unread > 0) snprintf(v, sizeof(v), "%d 条未查看", unread);
-        else aic_strlcpy_utf8(v, sizeof(v), "无未读");
+        else dsc_strlcpy_utf8(v, sizeof(v), "无未读");
     }
     draw_row(a, dc, &y, "错误中心", v, ACT_ROW_ERROR);
     draw_row(a, dc, &y, "减少动态效果",
-             aic_setting_get_int(a->db, AIC_SET_MOTION, 1) == 0 ? "开启" : "关闭", ACT_ROW_MOTION);
-    draw_row(a, dc, &y, "关于", "Sai " APP_VERSION, ACT_ROW_ABOUT);
+             dsc_setting_get_int(a->db, DSC_SET_MOTION, 1) == 0 ? "开启" : "关闭", ACT_ROW_MOTION);
+    draw_row(a, dc, &y, "关于", "DSC " APP_VERSION, ACT_ROW_ABOUT);
 
     y.top += PAD;
     draw_text(dc, a->font_small,
               "凭证只写入系统安全存储（Windows 凭据管理器），界面与日志不出现明文；"
               "导出包不包含凭证。",
               (RECT){y.left + 4, y.top, y.right - 4, y.top + 60},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
 
-    aic_persona_free(&per);
-    if (plgs) aic_plugin_free_array(plgs, plg_n);
+    dsc_persona_free(&per);
+    if (plgs) dsc_plugin_free_array(plgs, plg_n);
 }
 
 /* ---------- 问答模式：会话列表 ---------- */
 static void paint_qa(App *a, HDC dc, RECT content)
 {
-    const char *tid = aic_router_thread(a->router);
+    const char *tid = dsc_router_thread(a->router);
     RECT y = content;
     RECT search;
     RECT other;
@@ -2126,7 +2126,7 @@ static void paint_qa(App *a, HDC dc, RECT content)
     y.top += 8;
 
     draw_text(dc, a->font_title, "问答会话", (RECT){y.left, y.top, y.right - 220, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     other.left = y.right - 200;
     other.top = y.top + 8;
     other.right = y.right - 120;
@@ -2141,11 +2141,11 @@ static void paint_qa(App *a, HDC dc, RECT content)
     search.top = y.top;
     search.right = y.right;
     search.bottom = y.top + 40;
-    fill_round(dc, search, 10, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, search, 10, tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, search, 10, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, search, 10, tok(a, DSC_TOK_DIVIDER), 1);
     draw_text(dc, a->font_ui, a->search[0] ? a->search : "搜索会话标题…",
               (RECT){search.left + 12, search.top, search.right - 12, search.bottom},
-              a->search[0] ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+              a->search[0] ? tok(a, DSC_TOK_TEXT) : tok(a, DSC_TOK_TEXT_SECONDARY),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     reg(search, ACT_QA_SEARCH);
     y.top += 52;
@@ -2153,7 +2153,7 @@ static void paint_qa(App *a, HDC dc, RECT content)
     if (a->thread_n == 0) {
         draw_text(dc, a->font_ui, a->search[0] ? "没有匹配的会话。" : "还没有问答会话，点右上角新建一个。",
                   (RECT){y.left + 4, y.top + 12, y.right - 4, y.top + 44},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_SINGLELINE);
         return;
     }
 
@@ -2164,17 +2164,17 @@ static void paint_qa(App *a, HDC dc, RECT content)
         char sub[128];
         if (a->threads[i].pinned)
             fill_round(dc, (RECT){rr.left, rr.top, rr.left + 4, rr.top + 64}, 0,
-                       tok(a, AIC_TOK_ACCENT));
+                       tok(a, DSC_TOK_ACCENT));
         draw_text(dc, a->font_ui,
                   a->threads[i].title[0] ? a->threads[i].title : "未命名会话", t1,
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         snprintf(sub, sizeof(sub), "%s · %lld 条消息", a->threads[i].updated_at,
                  a->threads[i].last_seq);
-        draw_text(dc, a->font_small, sub, t2, tok(a, AIC_TOK_TEXT_SECONDARY),
+        draw_text(dc, a->font_small, sub, t2, tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         {
             RECT dl = {rr.left, rr.bottom - 1, rr.right, rr.bottom};
-            HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_DIVIDER));
+            HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_DIVIDER));
             FillRect(dc, &dl, b);
             DeleteObject(b);
         }
@@ -2194,7 +2194,7 @@ static void paint_overlay(App *a, HDC dc, RECT client)
     RECT panel;
     RECT tr;
 
-    if (a->overlay == AIC_OV_NONE) return;
+    if (a->overlay == DSC_OV_NONE) return;
 
     for (int i = 0; i < a->field_n; i++) field_h += a->fields[i].multiline ? 112 : 68;
 
@@ -2202,12 +2202,12 @@ static void paint_overlay(App *a, HDC dc, RECT client)
     /* 面板高度按正文实测行数算，正文短也不会留空、正文长也不会压住底部按钮。 */
     {
         int th = 0;
-        if (a->overlay_text[0] && a->overlay != AIC_OV_GUIDE) {
+        if (a->overlay_text[0] && a->overlay != DSC_OV_GUIDE) {
             th = measure_text(dc, a->font_ui, a->overlay_text, w - 40, NULL);
             if (th > 240) th = 240;
         }
         bottom = y + 62 + th + field_h
-                 + (a->overlay == AIC_OV_GUIDE ? AIC_GUIDE_STEP_COUNT * 46 + 40 : 0) + 88;
+                 + (a->overlay == DSC_OV_GUIDE ? DSC_GUIDE_STEP_COUNT * 46 + 40 : 0) + 88;
     }
     if (a->confirm_action == FORM_EXPORT) bottom += 48;
     if (a->confirm_action == FORM_PERSONA) bottom += 48;
@@ -2218,36 +2218,36 @@ static void paint_overlay(App *a, HDC dc, RECT client)
     panel.right = x + w;
     panel.bottom = bottom;
 
-    fill_round(dc, panel, 14, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, panel, 14, tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, panel, 14, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, panel, 14, tok(a, DSC_TOK_DIVIDER), 1);
 
     draw_text(dc, a->font_title, a->overlay_title,
               (RECT){panel.left + 20, panel.top + 12, panel.right - 20, panel.top + 46},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     tr.left = panel.left + 20;
     tr.right = panel.right - 20;
     tr.top = panel.top + 50;
     tr.bottom = tr.top + 44;
 
-    if (a->overlay == AIC_OV_GUIDE) {
-        const aic_guide_step *steps = aic_guide_steps();
-        aic_guide_state gs;
-        aic_guide_state_get(a->db, &gs);
-        for (int i = 0; i < AIC_GUIDE_STEP_COUNT; i++) {
+    if (a->overlay == DSC_OV_GUIDE) {
+        const dsc_guide_step *steps = dsc_guide_steps();
+        dsc_guide_state gs;
+        dsc_guide_state_get(a->db, &gs);
+        for (int i = 0; i < DSC_GUIDE_STEP_COUNT; i++) {
             RECT r = {tr.left, tr.top, tr.right, tr.top + 42};
             char label[256];
             snprintf(label, sizeof(label), "%s %s",
                      gs.completed[i] ? "[已完成]" : (gs.skipped[i] ? "[已跳过]" : "[待完成]"),
                      steps[i].title);
             if (gs.completed[i] || gs.skipped[i])
-                fill_round(dc, r, 8, tok(a, AIC_TOK_PAGE_BG));
+                fill_round(dc, r, 8, tok(a, DSC_TOK_PAGE_BG));
             draw_text(dc, a->font_ui, label,
                       (RECT){r.left + 12, r.top, r.right - 12, r.top + 22},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             draw_text(dc, a->font_small, steps[i].done_when,
                       (RECT){r.left + 12, r.top + 20, r.right - 12, r.bottom},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             reg(r, ACT_GUIDE_ITEM_BASE + i);
             tr.top += 46;
         }
@@ -2265,23 +2265,23 @@ static void paint_overlay(App *a, HDC dc, RECT client)
         if (h > 240) h = 240;
         draw_text(dc, a->font_ui, a->overlay_text,
                   (RECT){tr.left, tr.top, tr.right, tr.top + h},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         tr.top += h + 12;
     }
 
     if (a->confirm_action == FORM_PLUGIN) {
         for (size_t i = 0; i < a->plug_n && tr.top < panel.bottom - 96; i++) {
-            aic_plugin *pl = &a->plugs[i];
+            dsc_plugin *pl = &a->plugs[i];
             RECT row = {tr.left, tr.top, tr.right, tr.top + 44};
             RECT tg = {row.right - 168, row.top + 6, row.right - 92, row.top + 38};
             RECT up = {row.right - 84, row.top + 6, row.right, row.top + 38};
             char label[256];
-            fill_round(dc, row, 8, tok(a, AIC_TOK_PAGE_BG));
+            fill_round(dc, row, 8, tok(a, DSC_TOK_PAGE_BG));
             snprintf(label, sizeof(label), "%s  v%s%s", pl->name, pl->version,
                      pl->enabled ? "（已启用）" : "（已禁用）");
             draw_text(dc, a->font_ui, label,
                       (RECT){row.left + 12, row.top + 4, tg.left - 8, row.bottom - 4},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             draw_pill(a, dc, tg, pl->enabled ? "禁用" : "启用",
                       ACT_PLUGIN_TOGGLE_BASE + (int)i, 0);
             draw_pill(a, dc, up, "更新", ACT_PLUGIN_UPDATE_BASE + (int)i, 0);
@@ -2290,7 +2290,7 @@ static void paint_overlay(App *a, HDC dc, RECT client)
         if (a->plug_n == 0) {
             draw_text(dc, a->font_small, "还没有安装插件。先用「导入插件」选择一个 plugin.json。",
                       (RECT){tr.left, tr.top, tr.right, tr.top + 24},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             tr.top += 28;
         }
     }
@@ -2300,18 +2300,18 @@ static void paint_overlay(App *a, HDC dc, RECT client)
             RECT row = {tr.left, tr.top, tr.right, tr.top + 40};
             RECT bt = {row.right - 108, row.top + 4, row.right, row.top + 36};
             char lab[96];
-            fill_round(dc, row, 8, tok(a, AIC_TOK_PAGE_BG));
+            fill_round(dc, row, 8, tok(a, DSC_TOK_PAGE_BG));
             snprintf(lab, sizeof(lab), "v%d    %s", a->ver_num[i], a->ver_time[i]);
             draw_text(dc, a->font_ui, lab,
                       (RECT){row.left + 12, row.top, bt.left - 8, row.bottom},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             draw_pill(a, dc, bt, "回退", ACT_PERSONA_ROLLBACK_BASE + i, 0);
             tr.top += 46;
         }
         if (a->ver_n == 0) {
             draw_text(dc, a->font_small, "还没有历史版本。",
                       (RECT){tr.left, tr.top, tr.right, tr.top + 24},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             tr.top += 28;
         }
     }
@@ -2321,14 +2321,14 @@ static void paint_overlay(App *a, HDC dc, RECT client)
         int bh = fl->multiline ? 88 : 36;
         RECT lab = {tr.left, tr.top, tr.right, tr.top + 22};
         RECT box = {tr.left, tr.top + 22, tr.right, tr.top + 22 + bh};
-        draw_text(dc, a->font_small, fl->label, lab, tok(a, AIC_TOK_TEXT_SECONDARY),
+        draw_text(dc, a->font_small, fl->label, lab, tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        fill_round(dc, box, 8, tok(a, AIC_TOK_PAGE_BG));
+        fill_round(dc, box, 8, tok(a, DSC_TOK_PAGE_BG));
         stroke_round(dc, box, 8,
-                     a->field_focus == i ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_DIVIDER), 1);
+                     a->field_focus == i ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_DIVIDER), 1);
         draw_text(dc, a->font_ui, fl->buf[0] ? fl->buf : "（空）",
                   (RECT){box.left + 10, box.top + 4, box.right - 10, box.bottom - 4},
-                  fl->buf[0] ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+                  fl->buf[0] ? tok(a, DSC_TOK_TEXT) : tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_TOP | DT_WORDBREAK);
         reg(box, ACT_FIELD_BASE + i);
         tr.top += fl->multiline ? 112 : 68;
@@ -2340,7 +2340,7 @@ static void paint_overlay(App *a, HDC dc, RECT client)
         RECT b2 = {panel.left + 152, fy, panel.left + 272, fy + 36};
         RECT b3 = {panel.right - 120, fy, panel.right - 20, fy + 36};
 
-        if (a->overlay == AIC_OV_GUIDE) return;
+        if (a->overlay == DSC_OV_GUIDE) return;
 
         switch (a->confirm_action) {
         case FORM_PERSONA: {
@@ -2350,10 +2350,10 @@ static void paint_overlay(App *a, HDC dc, RECT client)
             RECT r3 = {panel.left + 276, fy - 44, panel.left + 392, fy - 8};
             RECT r4 = {panel.left + 400, fy - 44, panel.left + 500, fy - 8};
             char cur[64] = {0};
-            aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, cur, sizeof(cur));
+            dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, cur, sizeof(cur));
             draw_pill(a, dc, r1, "AI 头像", ACT_AI_AVATAR, 0);
-            draw_pill(a, dc, r2, "Flash", ACT_AI_MODEL_FLASH, aic_str_ieq(cur, AIC_MODEL_FLASH));
-            draw_pill(a, dc, r3, "Pro", ACT_AI_MODEL_PRO, aic_str_ieq(cur, AIC_MODEL_PRO));
+            draw_pill(a, dc, r2, "Flash", ACT_AI_MODEL_FLASH, dsc_str_ieq(cur, DSC_MODEL_FLASH));
+            draw_pill(a, dc, r3, "Pro", ACT_AI_MODEL_PRO, dsc_str_ieq(cur, DSC_MODEL_PRO));
             draw_pill(a, dc, r4, "版本回退", ACT_AI_VERSIONS, 0);
             draw_pill(a, dc, b1, "保存", ACT_FIELD_SAVE, 1);
             draw_pill(a, dc, b3, "取消", ACT_FIELD_CANCEL, 0);
@@ -2435,7 +2435,7 @@ static void paint(App *a, HDC dc, RECT client)
 {
     /* 动效：模式切换与三栏切换只做位移淡入，不重排内容。 */
     int dx = 0;
-    long long now = aic_now_ms();
+    long long now = dsc_now_ms();
     RECT content;
 
     if (a->anim_on) {
@@ -2451,36 +2451,36 @@ static void paint(App *a, HDC dc, RECT client)
     a->caret_on = ((now / 500) % 2) == 0;
 
     {
-        HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_PAGE_BG));
+        HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_PAGE_BG));
         FillRect(dc, &client, b);
         DeleteObject(b);
     }
     hit_clear();
 
     /* FR-30：首次启动先走 API Key 配置，再选默认模式，之后才出现三栏主界面。 */
-    if (aic_router_state(a->router) == AIC_ST_CREDENTIAL_CHECK ||
-        aic_router_state(a->router) == AIC_ST_CREDENTIAL_SETUP) {
+    if (dsc_router_state(a->router) == DSC_ST_CREDENTIAL_CHECK ||
+        dsc_router_state(a->router) == DSC_ST_CREDENTIAL_SETUP) {
         paint_credential(a, dc, client);
         paint_overlay(a, dc, client);
         return;
     }
-    if (aic_router_state(a->router) == AIC_ST_MODE_SELECT) {
+    if (dsc_router_state(a->router) == DSC_ST_MODE_SELECT) {
         paint_mode_select(a, dc, client);
         paint_overlay(a, dc, client);
         return;
     }
-    if (aic_router_state(a->router) == AIC_ST_FIRST_RUN ||
-        aic_router_state(a->router) == AIC_ST_WIZARD) {
+    if (dsc_router_state(a->router) == DSC_ST_FIRST_RUN ||
+        dsc_router_state(a->router) == DSC_ST_WIZARD) {
         RECT t = {client.left + 40, client.top + 80, client.right - 40, client.top + 130};
         RECT d = {client.left + 40, client.top + 130, client.right - 40, client.top + 260};
         RECT b1 = {client.left + 40, client.top + 280, client.left + 220, client.top + 320};
         RECT b2 = {client.left + 236, client.top + 280, client.left + 396, client.top + 320};
-        draw_text(dc, a->font_title, "欢迎使用 Sai", t, tok(a, AIC_TOK_TEXT),
+        draw_text(dc, a->font_title, "欢迎使用 DSC", t, tok(a, DSC_TOK_TEXT),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         draw_text(dc, a->font_ui,
                   "首次启动需要做几件事：选择默认模式、填入 DeepSeek API Key、"
                   "设置一个陪伴人设。这些都可以稍后在设置里改，新手引导随时能重看。",
-                  d, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  d, tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         draw_pill(a, dc, b1, "开始设置", ACT_ROW_KEY, 1);
         draw_pill(a, dc, b2, "先看看", ACT_GUIDE_VIEW, 0);
         paint_overlay(a, dc, client);
@@ -2498,17 +2498,17 @@ static void paint(App *a, HDC dc, RECT client)
         /* 内容区裁剪：超出可视区域的滚动内容不会溢到导航栏或状态栏上。 */
         int saved = SaveDC(dc);
         if (saved) IntersectClipRect(dc, content.left, content.top, content.right, content.bottom);
-        switch (aic_router_state(a->router)) {
-        case AIC_ST_QA_READY:
-        case AIC_ST_QA_LIST:
-        case AIC_ST_QA_THREAD:
+        switch (dsc_router_state(a->router)) {
+        case DSC_ST_QA_READY:
+        case DSC_ST_QA_LIST:
+        case DSC_ST_QA_THREAD:
             paint_qa(a, dc, content);
             break;
-        case AIC_ST_CHAT_TAB:
-        case AIC_ST_CHAT_READY:
-            switch (aic_router_tab(a->router)) {
-            case AIC_TAB_ME:       paint_me(a, dc, content); break;
-            case AIC_TAB_SETTINGS: paint_settings(a, dc, content); break;
+        case DSC_ST_CHAT_TAB:
+        case DSC_ST_CHAT_READY:
+            switch (dsc_router_tab(a->router)) {
+            case DSC_TAB_ME:       paint_me(a, dc, content); break;
+            case DSC_TAB_SETTINGS: paint_settings(a, dc, content); break;
             default:               paint_chat(a, dc, content); break;
             }
             break;
@@ -2522,12 +2522,12 @@ static void paint(App *a, HDC dc, RECT client)
     /* 状态栏 */
     if (a->status[0] && now < a->status_until) {
         RECT sb = {client.left + NAV_W, client.bottom - 24, client.right, client.bottom};
-        HBRUSH b = CreateSolidBrush(tok(a, AIC_TOK_CARD_BG));
+        HBRUSH b = CreateSolidBrush(tok(a, DSC_TOK_CARD_BG));
         FillRect(dc, &sb, b);
         DeleteObject(b);
         draw_text(dc, a->font_small, a->status,
                   (RECT){sb.left + 16, sb.top, sb.right - 16, sb.bottom},
-                  tok(a, AIC_TOK_TEXT_SECONDARY),
+                  tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
@@ -2535,7 +2535,7 @@ static void paint(App *a, HDC dc, RECT client)
     if (a->toast[0] && now < a->toast_until) {
         int tw = 320;
         RECT r = {client.right - tw - 24, client.bottom - 110, client.right - 24, client.bottom - 70};
-        fill_round(dc, r, 10, tok(a, AIC_TOK_PRIMARY));
+        fill_round(dc, r, 10, tok(a, DSC_TOK_PRIMARY));
         draw_text(dc, a->font_ui, a->toast, r, RGB(255, 255, 255),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
@@ -2591,7 +2591,7 @@ static int pick_file(HWND hwnd, const wchar_t *filter, wchar_t *out, int cap)
 typedef struct ResultMsg {
     int                rc;
     char               err[256];
-    aic_engine_result  res;
+    dsc_engine_result  res;
 } ResultMsg;
 
 typedef struct SendJob {
@@ -2602,18 +2602,18 @@ static void on_stream_delta(void *ud, const char *delta)
 {
     App *a = (App *)ud;
     if (!delta || !delta[0]) return;
-    char *copy = aic_strdup(delta);
+    char *copy = dsc_strdup(delta);
     if (!copy) return;
-    if (!PostMessageA(a->hwnd, WM_APP_DELTA, 0, (LPARAM)copy)) aic_xfree(copy);
+    if (!PostMessageA(a->hwnd, WM_APP_DELTA, 0, (LPARAM)copy)) dsc_xfree(copy);
 }
 
 static DWORD WINAPI send_worker(LPVOID param)
 {
     App *a = &g_app;
     SendJob *job = (SendJob *)param;
-    ResultMsg *rm = (ResultMsg *)aic_xcalloc(1, sizeof(ResultMsg));
-    rm->rc = aic_engine_send(a->eng, a->conv_id, job->text, &rm->res, rm->err, sizeof(rm->err));
-    aic_xfree(job);
+    ResultMsg *rm = (ResultMsg *)dsc_xcalloc(1, sizeof(ResultMsg));
+    rm->rc = dsc_engine_send(a->eng, a->conv_id, job->text, &rm->res, rm->err, sizeof(rm->err));
+    dsc_xfree(job);
     PostMessageA(a->hwnd, WM_APP_DONE, 0, (LPARAM)rm);
     return 0;
 }
@@ -2622,21 +2622,21 @@ static int app_start_worker(App *a, const char *text)
 {
     if (InterlockedExchange(&a->sending, 1) != 0) {
         app_status(a, "上一条还在生成，请先停止或稍候");
-        return AIC_E_BUSY;
+        return DSC_E_BUSY;
     }
-    SendJob *job = (SendJob *)aic_xcalloc(1, sizeof(SendJob));
-    aic_strlcpy_utf8(job->text, sizeof(job->text), text);
+    SendJob *job = (SendJob *)dsc_xcalloc(1, sizeof(SendJob));
+    dsc_strlcpy_utf8(job->text, sizeof(job->text), text);
     a->stream_len = 0;
     a->stream_text[0] = '\0';
     HANDLE th = CreateThread(NULL, 0, send_worker, job, 0, NULL);
     if (!th) {
         InterlockedExchange(&a->sending, 0);
-        aic_xfree(job);
+        dsc_xfree(job);
         app_status(a, "无法创建发送线程");
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
     CloseHandle(th);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* 简易 Markdown：去掉代码围栏标记与 ** / 反引号，保留纯文本（代码块用等宽字体单独画）。 */
@@ -2663,11 +2663,11 @@ static void app_send(App *a)
         app_status(a, "请先输入内容");
         return;
     }
-    aic_strlcpy_utf8(text, sizeof(text), a->draft);
+    dsc_strlcpy_utf8(text, sizeof(text), a->draft);
     a->draft[0] = '\0';
     a->draft_len = 0;
-    if (app_start_worker(a, text) != AIC_OK) {
-        aic_strlcpy_utf8(a->draft, sizeof(a->draft), text);
+    if (app_start_worker(a, text) != DSC_OK) {
+        dsc_strlcpy_utf8(a->draft, sizeof(a->draft), text);
         a->draft_len = (int)strlen(a->draft);
     } else {
         a->scroll[2] = 0;
@@ -2679,9 +2679,9 @@ static void app_send(App *a)
 static DWORD WINAPI regen_worker(LPVOID param)
 {
     App *a = &g_app;
-    ResultMsg *rm = (ResultMsg *)aic_xcalloc(1, sizeof(ResultMsg));
+    ResultMsg *rm = (ResultMsg *)dsc_xcalloc(1, sizeof(ResultMsg));
     char old_id[40];
-    rm->rc = aic_engine_regenerate(a->eng, a->conv_id, old_id, sizeof(old_id), &rm->res,
+    rm->rc = dsc_engine_regenerate(a->eng, a->conv_id, old_id, sizeof(old_id), &rm->res,
                                    rm->err, sizeof(rm->err));
     (void)param;
     PostMessageA(a->hwnd, WM_APP_DONE, 0, (LPARAM)rm);
@@ -2712,26 +2712,26 @@ static void app_on_done(App *a, ResultMsg *rm)
 {
     InterlockedExchange(&a->sending, 0);
     if (!rm) return;
-    if (rm->rc == AIC_OK) {
+    if (rm->rc == DSC_OK) {
         app_load_chat(a);
         a->scroll[2] = 0;
         app_status(a, "已收到回复：输入 %lld / 输出 %lld tokens",
                    (long long)rm->res.prompt_tokens, (long long)rm->res.completion_tokens);
-        aic_guide_mark(a->db, "first_chat", 0);
+        dsc_guide_mark(a->db, "first_chat", 0);
         /* 新消息是本端产生的实体变更，交给发件箱（§16.4 / FR-27）。 */
-        app_publish(a, AIC_ENT_MESSAGE, AIC_OP_CREATE, rm->res.user_msg_id);
-        app_publish(a, AIC_ENT_MESSAGE, AIC_OP_CREATE, rm->res.assistant_msg_id);
-    } else if (rm->rc == AIC_E_TIMEOUT || rm->rc == AIC_E_BUSY) {
+        app_publish(a, DSC_ENT_MESSAGE, DSC_OP_CREATE, rm->res.user_msg_id);
+        app_publish(a, DSC_ENT_MESSAGE, DSC_OP_CREATE, rm->res.assistant_msg_id);
+    } else if (rm->rc == DSC_E_TIMEOUT || rm->rc == DSC_E_BUSY) {
         app_status(a, "生成已停止");
         app_load_chat(a);
-    } else if (rm->rc == AIC_E_AUTH) {
+    } else if (rm->rc == DSC_E_AUTH) {
         app_status(a, "发送失败：%s", rm->err[0] ? rm->err : "API Key 不可用");
         app_toast(a, "请先在设置里配置 API Key");
     } else {
-        app_status(a, "发送失败：%s", rm->err[0] ? rm->err : aic_strerror(rm->rc));
+        app_status(a, "发送失败：%s", rm->err[0] ? rm->err : dsc_strerror(rm->rc));
     }
-    aic_engine_result_free(&rm->res);
-    aic_xfree(rm);
+    dsc_engine_result_free(&rm->res);
+    dsc_xfree(rm);
     a->stream_len = 0;
     a->stream_text[0] = '\0';
     app_invalidate(a);
@@ -2742,12 +2742,12 @@ static void app_on_done(App *a, ResultMsg *rm)
 
 typedef struct IoMsg {
     int kind;   /* 0=JSON 1=Markdown 2=纯文本 3=导入 */
-    aic_export_scope sc;   /* 导出范围与是否含头像（技术设计 8.1） */
+    dsc_export_scope sc;   /* 导出范围与是否含头像（技术设计 8.1） */
     int rc;
     char path[900];
     char err[512];
-    aic_import_preview pv;
-    aic_import_result rs;
+    dsc_import_preview pv;
+    dsc_import_result rs;
 } IoMsg;
 
 static DWORD WINAPI io_worker(LPVOID param)
@@ -2758,16 +2758,16 @@ static DWORD WINAPI io_worker(LPVOID param)
     if (m->kind == 3) {
         memset(&m->pv, 0, sizeof(m->pv));
         memset(&m->rs, 0, sizeof(m->rs));
-        m->rc = aic_transfer_preview(a->db, m->path, &m->pv, m->err, sizeof(m->err));
-        if (m->rc == AIC_OK)
-            m->rc = aic_transfer_import(a->db, m->path, AIC_CONFLICT_SKIP, &m->rs,
+        m->rc = dsc_transfer_preview(a->db, m->path, &m->pv, m->err, sizeof(m->err));
+        if (m->rc == DSC_OK)
+            m->rc = dsc_transfer_import(a->db, m->path, DSC_CONFLICT_SKIP, &m->rs,
                                         m->err, sizeof(m->err));
     } else if (m->kind == 1) {
-        m->rc = aic_export_write_markdown_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
+        m->rc = dsc_export_write_markdown_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
     } else if (m->kind == 2) {
-        m->rc = aic_export_write_text_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
+        m->rc = dsc_export_write_text_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
     } else {
-        m->rc = aic_export_write_json_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
+        m->rc = dsc_export_write_json_ex(a->db, -1, &m->sc, m->path, m->err, sizeof(m->err));
     }
     PostMessageA(a->hwnd, WM_APP_IO, 0, (LPARAM)m);
     return 0;
@@ -2777,32 +2777,32 @@ static int app_start_io(App *a, IoMsg *m)
 {
     HANDLE th = CreateThread(NULL, 0, io_worker, m, 0, NULL);
     if (!th) {
-        aic_xfree(m);
+        dsc_xfree(m);
         app_status(a, "无法创建线程，操作已取消");
-        return AIC_E_NOMEM;
+        return DSC_E_NOMEM;
     }
     CloseHandle(th);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 static void app_on_io(App *a, IoMsg *m)
 {
     if (!m) return;
-    if (m->rc != AIC_OK) {
+    if (m->rc != DSC_OK) {
         if (m->kind == 3)
-            app_status(a, "导入失败（已回滚）：%s", m->err[0] ? m->err : aic_strerror(m->rc));
+            app_status(a, "导入失败（已回滚）：%s", m->err[0] ? m->err : dsc_strerror(m->rc));
         else
-            app_status(a, "导出失败：%s", m->err[0] ? m->err : aic_strerror(m->rc));
+            app_status(a, "导出失败：%s", m->err[0] ? m->err : dsc_strerror(m->rc));
         app_toast(a, m->kind == 3 ? "导入未完成" : "导出未完成");
-        aic_xfree(m);
+        dsc_xfree(m);
         app_invalidate(a);
         return;
     }
     if (m->kind == 3) {
         app_reload_threads(a);
         app_load_chat(a);
-        aic_guide_mark(a->db, "record_transfer", 0);
-        app_set_overlay(a, AIC_OV_CONFIRM, "导入完成");
+        dsc_guide_mark(a->db, "record_transfer", 0);
+        app_set_overlay(a, DSC_OV_CONFIRM, "导入完成");
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "文件内的会话 %d 个、消息 %d 条；冲突会话 %d 个、冲突消息 %d 条。\n"
                  "本次结果：会话新增 %d / 覆盖 %d / 跳过 %d / 改名 %d，"
@@ -2816,12 +2816,12 @@ static void app_on_io(App *a, IoMsg *m)
         app_status(a, "导入完成：新增 %d 个会话 / %d 条消息",
                    (int)m->rs.conv_added, (int)m->rs.msg_added);
     } else {
-        aic_guide_mark(a->db, "record_transfer", 0);
+        dsc_guide_mark(a->db, "record_transfer", 0);
         app_status(a, "导出成功：%s", m->path);
         app_toast(a, "已导出到 exports 目录");
         app_close_overlay(a);
     }
-    aic_xfree(m);
+    dsc_xfree(m);
     app_invalidate(a);
 }
 
@@ -2832,27 +2832,27 @@ static void app_export(App *a, int kind)
     char ts[32];
     IoMsg *m;
 
-    aic_path_join(dir, sizeof(dir), a->root, "exports");
-    aic_mkdir_p(dir);
-    aic_now_iso8601(ts);
+    dsc_path_join(dir, sizeof(dir), a->root, "exports");
+    dsc_mkdir_p(dir);
+    dsc_now_iso8601(ts);
     for (char *q = ts; *q; q++)
         if (*q == ':' || *q == '.') *q = '-';
-    snprintf(name, sizeof(name), "Sai_%s_%s_v1.%s",
-             aic_router_mode(a->router) == AIC_MODE_QA ? "qa" : "chat", ts,
+    snprintf(name, sizeof(name), "DSC_%s_%s_v1.%s",
+             dsc_router_mode(a->router) == DSC_MODE_QA ? "qa" : "chat", ts,
              kind == 0 ? "json" : (kind == 1 ? "md" : "txt"));
 
-    m = (IoMsg *)aic_xcalloc(1, sizeof(IoMsg));
+    m = (IoMsg *)dsc_xcalloc(1, sizeof(IoMsg));
     m->kind = kind;
     m->sc.scope = a->export_scope;
     m->sc.conv_id = a->conv_id;
     m->sc.include_avatars = a->export_avatars;
     m->sc.root = a->root;
     if (a->export_scope == 2) {
-        m->sc.to_ms = aic_now_ms();
+        m->sc.to_ms = dsc_now_ms();
         m->sc.from_ms = m->sc.to_ms - 7LL * 24 * 3600 * 1000;
     }
-    aic_path_join(m->path, sizeof(m->path), dir, name);
-    if (app_start_io(a, m) != AIC_OK) return;
+    dsc_path_join(m->path, sizeof(m->path), dir, name);
+    if (app_start_io(a, m) != DSC_OK) return;
     app_status(a, "正在导出（后台线程）…");
     app_invalidate(a);
 }
@@ -2863,10 +2863,10 @@ static void app_import(App *a)
     IoMsg *m;
 
     if (!pick_file(a->hwnd, L"记录文件 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
-    m = (IoMsg *)aic_xcalloc(1, sizeof(IoMsg));
+    m = (IoMsg *)dsc_xcalloc(1, sizeof(IoMsg));
     m->kind = 3;
     w_to_u8(wf, m->path, sizeof(m->path));
-    if (app_start_io(a, m) != AIC_OK) return;
+    if (app_start_io(a, m) != DSC_OK) return;
     app_status(a, "正在导入（后台线程，失败自动回滚）…");
     app_invalidate(a);
 }
@@ -2894,9 +2894,9 @@ static void app_avatar_pick(App *a)
     char path[2048];
     char rel[256];
     char err[512] = {0};
-    aic_profile pr;
+    dsc_profile pr;
 
-    if (!aic_avatar_available()) {
+    if (!dsc_avatar_available()) {
         app_status(a, "当前环境不支持图片处理（GDI+ 不可用）");
         return;
     }
@@ -2904,14 +2904,14 @@ static void app_avatar_pick(App *a)
                    wf, 1024))
         return;
     w_to_u8(wf, path, sizeof(path));
-    if (aic_avatar_import(path, a->root, rel, sizeof(rel), err, sizeof(err)) != AIC_OK) {
+    if (dsc_avatar_import(path, a->root, rel, sizeof(rel), err, sizeof(err)) != DSC_OK) {
         app_status(a, "头像导入失败：%s", err[0] ? err : "未知错误");
         return;
     }
     memset(&pr, 0, sizeof(pr));
-    aic_profile_get(a->db, &pr);
-    aic_strlcpy_utf8(pr.avatar_path, sizeof(pr.avatar_path), rel);
-    if (aic_profile_set(a->db, &pr, err, sizeof(err)) != AIC_OK) {
+    dsc_profile_get(a->db, &pr);
+    dsc_strlcpy_utf8(pr.avatar_path, sizeof(pr.avatar_path), rel);
+    if (dsc_profile_set(a->db, &pr, err, sizeof(err)) != DSC_OK) {
         app_status(a, "保存头像路径失败：%s", err[0] ? err : "未知错误");
         return;
     }
@@ -2930,15 +2930,15 @@ typedef struct TextMsg {
 
 static void balance_endpoint(App *a, char *out, size_t cap)
 {
-    char url[AIC_LLM_URL_MAX];
-    if (aic_setting_get(a->db, AIC_SET_CRED_ENDPOINT, url, sizeof(url)) != AIC_OK || !url[0])
-        aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
+    char url[DSC_LLM_URL_MAX];
+    if (dsc_setting_get(a->db, DSC_SET_CRED_ENDPOINT, url, sizeof(url)) != DSC_OK || !url[0])
+        dsc_strlcpy_utf8(url, sizeof(url), DSC_LLM_MODEL_DEFAULT_URL);
     const char *slash = strstr(url, "/chat/");
     if (slash) {
         size_t base = (size_t)(slash - url);
         if (base + 13 >= cap) base = cap - 14;
         memcpy(out, url, base);
-        aic_strlcpy_utf8(out + base, cap - base, "/user/balance");
+        dsc_strlcpy_utf8(out + base, cap - base, "/user/balance");
     } else {
         snprintf(out, cap, "https://api.deepseek.com/user/balance");
     }
@@ -2947,7 +2947,7 @@ static void balance_endpoint(App *a, char *out, size_t cap)
 static DWORD WINAPI bal_worker(LPVOID param)
 {
     App *a = &g_app;
-    TextMsg *tm = (TextMsg *)aic_xcalloc(1, sizeof(TextMsg));
+    TextMsg *tm = (TextMsg *)dsc_xcalloc(1, sizeof(TextMsg));
     char url[512];
     char key[512];
     char err[256] = {0};
@@ -2957,31 +2957,31 @@ static DWORD WINAPI bal_worker(LPVOID param)
 
     balance_endpoint(a, url, sizeof(url));
     key[0] = '\0';
-    if (aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, key, sizeof(key), err,
-                      sizeof(err)) != AIC_OK || !key[0]) {
-        tm->rc = AIC_E_AUTH;
-        aic_strlcpy_utf8(tm->text, sizeof(tm->text), "尚未配置 API Key");
+    if (dsc_cred_load(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, key, sizeof(key), err,
+                      sizeof(err)) != DSC_OK || !key[0]) {
+        tm->rc = DSC_E_AUTH;
+        dsc_strlcpy_utf8(tm->text, sizeof(tm->text), "尚未配置 API Key");
     } else {
-        tm->rc = aic_http_get_json(url, key, &body, &status, err, sizeof(err));
-        if (tm->rc == AIC_OK && body) {
-            aic_llm_balance bal;
+        tm->rc = dsc_http_get_json(url, key, &body, &status, err, sizeof(err));
+        if (tm->rc == DSC_OK && body) {
+            dsc_llm_balance bal;
             char perr[128] = {0};
             memset(&bal, 0, sizeof(bal));
-            if (aic_llm_balance_parse(body, strlen(body), &bal, perr, sizeof(perr)) == AIC_OK) {
+            if (dsc_llm_balance_parse(body, strlen(body), &bal, perr, sizeof(perr)) == DSC_OK) {
                 char cost[48];
-                aic_llm_format_micros(bal.available_micros, cost, sizeof(cost));
+                dsc_llm_format_micros(bal.available_micros, cost, sizeof(cost));
                 snprintf(tm->text, sizeof(tm->text),
                          "账户接口：可用余额 %s，未出账 %lld 微元；本地账本累计见用量面板。",
                          cost, (long long)bal.pending_micros);
             } else {
-                tm->rc = AIC_E_FORMAT;
-                aic_strlcpy_utf8(tm->text, sizeof(tm->text), perr);
+                tm->rc = DSC_E_FORMAT;
+                dsc_strlcpy_utf8(tm->text, sizeof(tm->text), perr);
             }
-            if (body) aic_xfree(body);
+            if (body) dsc_xfree(body);
         } else {
             snprintf(tm->text, sizeof(tm->text), "余额查询失败（HTTP %d）：%s", status, err);
         }
-        aic_secure_zero(key, sizeof(key));
+        dsc_secure_zero(key, sizeof(key));
     }
     PostMessageA(a->hwnd, WM_APP_BAL, 0, (LPARAM)tm);
     return 0;
@@ -2997,30 +2997,30 @@ static void app_balance_refresh(App *a)
 static void app_on_bal(App *a, TextMsg *tm)
 {
     if (!tm) return;
-    if (tm->rc == AIC_OK) {
-        a->bal.queried_ms = aic_now_ms();
-        aic_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "账户接口");
+    if (tm->rc == DSC_OK) {
+        a->bal.queried_ms = dsc_now_ms();
+        dsc_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "账户接口");
         a->bal.stale = 0;
         a->bal.valid = 1;
     } else {
-        aic_llm_balance_keep_last(&a->bal, &a->bal, aic_now_ms());
+        dsc_llm_balance_keep_last(&a->bal, &a->bal, dsc_now_ms());
         a->bal.valid = 0;
-        aic_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "上次结果");
+        dsc_strlcpy_utf8(a->bal.source, sizeof(a->bal.source), "上次结果");
     }
     {
-        aic_usage_summary sum;
+        dsc_usage_summary sum;
         memset(&sum, 0, sizeof(sum));
-        aic_usage_summary_get(a->db, 0, &sum);
+        dsc_usage_summary_get(a->db, 0, &sum);
         a->bal.local_used_micros = sum.cost_micros;
-        if (a->bal.valid && aic_llm_balance_below(&a->bal,
-                aic_setting_get_int(a->db, AIC_SET_BALANCE_ALERT, 0))) {
+        if (a->bal.valid && dsc_llm_balance_below(&a->bal,
+                dsc_setting_get_int(a->db, DSC_SET_BALANCE_ALERT, 0))) {
             a->bal.below_alert = 1;
-            aic_notify(a->hwnd, "余额偏低", "账户余额已低于告警阈值，请到设置里查看用量");
+            dsc_notify(a->hwnd, "余额偏低", "账户余额已低于告警阈值，请到设置里查看用量");
         }
     }
     app_status(a, "%s", tm->text);
     app_toast(a, tm->text);
-    aic_xfree(tm);
+    dsc_xfree(tm);
     app_invalidate(a);
 }
 
@@ -3028,10 +3028,10 @@ static void app_on_bal(App *a, TextMsg *tm)
 static int upd_manifest_path(App *a, char *out, size_t cap)
 {
     char dir[600];
-    aic_path_join(dir, sizeof(dir), a->root, "updates");
-    aic_mkdir_p(dir);
-    aic_path_join(out, cap, dir, "manifest.json");
-    return aic_path_exists(out) ? AIC_OK : AIC_E_NOTFOUND;
+    dsc_path_join(dir, sizeof(dir), a->root, "updates");
+    dsc_mkdir_p(dir);
+    dsc_path_join(out, cap, dir, "manifest.json");
+    return dsc_path_exists(out) ? DSC_OK : DSC_E_NOTFOUND;
 }
 
 static void app_check_update(App *a, int user_initiated)
@@ -3039,44 +3039,44 @@ static void app_check_update(App *a, int user_initiated)
     char mf[900];
     char *data = NULL;
     size_t len = 0;
-    aic_update_manifest m;
-    aic_update_plan plan;
+    dsc_update_manifest m;
+    dsc_update_plan plan;
     char err[512] = {0};
     char skip[64];
     int rc;
 
-    a->upd_last_check = aic_now_ms();
-    aic_setting_set_int(a->db, "update.last_check_ms", (long long)a->upd_last_check);
-    if (upd_manifest_path(a, mf, sizeof(mf)) != AIC_OK) {
+    a->upd_last_check = dsc_now_ms();
+    dsc_setting_set_int(a->db, "update.last_check_ms", (long long)a->upd_last_check);
+    if (upd_manifest_path(a, mf, sizeof(mf)) != DSC_OK) {
         if (user_initiated) app_update(a); /* 没有清单：展示更新链路说明与数据保护规则 */
         return;
     }
-    if (aic_file_read_all(mf, &data, &len) != AIC_OK) {
+    if (dsc_file_read_all(mf, &data, &len) != DSC_OK) {
         if (user_initiated) app_status(a, "读取更新清单失败");
         return;
     }
     memset(&m, 0, sizeof(m));
-    rc = aic_update_parse_manifest(data, len, &m, err, sizeof(err));
-    aic_xfree(data);
-    if (rc != AIC_OK) {
-        if (user_initiated) app_status(a, "更新清单不可用：%s", err[0] ? err : aic_strerror(rc));
+    rc = dsc_update_parse_manifest(data, len, &m, err, sizeof(err));
+    dsc_xfree(data);
+    if (rc != DSC_OK) {
+        if (user_initiated) app_status(a, "更新清单不可用：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     skip[0] = '\0';
-    aic_setting_get(a->db, "update.skip_version", skip, sizeof(skip));
+    dsc_setting_get(a->db, "update.skip_version", skip, sizeof(skip));
     memset(&plan, 0, sizeof(plan));
-    aic_update_make_plan(&m, APP_VERSION, skip, &plan);
-    if (plan.status == AIC_UPD_UP_TO_DATE || plan.status == AIC_UPD_SKIPPED) {
+    dsc_update_make_plan(&m, APP_VERSION, skip, &plan);
+    if (plan.status == DSC_UPD_UP_TO_DATE || plan.status == DSC_UPD_SKIPPED) {
         if (user_initiated) app_status(a, "已是最新版本（%s）", APP_VERSION);
         return;
     }
-    if (plan.status != AIC_UPD_AVAILABLE) {
+    if (plan.status != DSC_UPD_AVAILABLE) {
         if (user_initiated) app_status(a, "当前版本过低，需要整包安装");
         return;
     }
     a->upd = m;
     a->upd_available = 1;
-    app_set_overlay(a, AIC_OV_UPDATE, "发现新版本");
+    app_set_overlay(a, DSC_OV_UPDATE, "发现新版本");
     a->confirm_action = FORM_UPDATE;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "当前版本 %s，可用版本 %s（渠道 %s，发布于 %s）%s。\n\n"
@@ -3087,50 +3087,50 @@ static void app_check_update(App *a, int user_initiated)
              m.notes[0] ? m.notes : "（无）");
     if (!a->notified_update) {
         a->notified_update = 1;
-        aic_notify(a->hwnd, "Sai 有新版本", m.version);
+        dsc_notify(a->hwnd, "DSC 有新版本", m.version);
     }
 }
 
-/* 把 aic_http_download 适配成更新模块要求的下载回调（断点续传由 resume=1 打开）。 */
+/* 把 dsc_http_download 适配成更新模块要求的下载回调（断点续传由 resume=1 打开）。 */
 static int dl_http(void *ud, const char *url, const char *dst, long long max, char *err,
                    size_t errlen)
 {
     (void)ud;
-    return aic_http_download(url, dst, max, 1, NULL, NULL, NULL, err, errlen);
+    return dsc_http_download(url, dst, max, 1, NULL, NULL, NULL, err, errlen);
 }
 
 static DWORD WINAPI upd_worker(LPVOID param)
 {
     App *a = &g_app;
-    TextMsg *tm = (TextMsg *)aic_xcalloc(1, sizeof(TextMsg));
+    TextMsg *tm = (TextMsg *)dsc_xcalloc(1, sizeof(TextMsg));
     char dir[600];
     char bdir[600];
     char dst[900];
     char appdir[700];
     char exe[700];
     char err[512] = {0};
-    aic_update_manifest m = a->upd;
+    dsc_update_manifest m = a->upd;
     (void)param;
 
-    aic_path_join(dir, sizeof(dir), a->root, "updates");
-    aic_mkdir_p(dir);
-    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
-    aic_mkdir_p(bdir);
-    aic_path_join(dst, sizeof(dst), dir, "pkg.download");
+    dsc_path_join(dir, sizeof(dir), a->root, "updates");
+    dsc_mkdir_p(dir);
+    dsc_path_join(bdir, sizeof(bdir), a->root, "backups");
+    dsc_mkdir_p(bdir);
+    dsc_path_join(dst, sizeof(dst), dir, "pkg.download");
 
     GetModuleFileNameA(NULL, exe, sizeof(exe));
-    aic_strlcpy_utf8(appdir, sizeof(appdir), exe);
+    dsc_strlcpy_utf8(appdir, sizeof(appdir), exe);
     {
         char *bar = strrchr(appdir, '\\');
         if (bar) *bar = '\0';
     }
     app_status(a, "正在下载更新包…");
-    tm->rc = aic_update_run_install(&m, dst, dl_http, NULL, 1, appdir, bdir, NULL,
+    tm->rc = dsc_update_run_install(&m, dst, dl_http, NULL, 1, appdir, bdir, NULL,
                                     err, sizeof(err));
-    if (tm->rc == AIC_OK)
-        snprintf(tm->text, sizeof(tm->text), "更新完成：%s，请重新启动 Sai。", m.version);
+    if (tm->rc == DSC_OK)
+        snprintf(tm->text, sizeof(tm->text), "更新完成：%s，请重新启动 DSC。", m.version);
     else
-        snprintf(tm->text, sizeof(tm->text), "更新未完成：%s", err[0] ? err : aic_strerror(tm->rc));
+        snprintf(tm->text, sizeof(tm->text), "更新未完成：%s", err[0] ? err : dsc_strerror(tm->rc));
     PostMessageA(a->hwnd, WM_APP_UPD, 0, (LPARAM)tm);
     return 0;
 }
@@ -3152,8 +3152,8 @@ static void app_on_upd(App *a, TextMsg *tm)
     if (!tm) return;
     app_status(a, "%s", tm->text);
     app_toast(a, tm->text);
-    if (tm->rc == AIC_OK) a->upd_available = 0;
-    aic_xfree(tm);
+    if (tm->rc == DSC_OK) a->upd_available = 0;
+    dsc_xfree(tm);
     app_invalidate(a);
 }
 
@@ -3164,49 +3164,49 @@ static void app_backup_now(App *a)
     char zip[900];
     char dbp[800];
     char ts[32];
-    aic_backup_info info;
+    dsc_backup_info info;
     char err[512] = {0};
     int rc;
 
-    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
-    aic_mkdir_p(bdir);
-    aic_now_iso8601(ts);
-    snprintf(zip, sizeof(zip), "%s\\sai-backup-%s.zip", bdir, ts);
+    dsc_path_join(bdir, sizeof(bdir), a->root, "backups");
+    dsc_mkdir_p(bdir);
+    dsc_now_iso8601(ts);
+    snprintf(zip, sizeof(zip), "%s\\dsc-backup-%s.zip", bdir, ts);
     {
         char *q = zip + strlen(bdir) + 1;
         for (char *r = q; *r; r++)
             if (*r == ':' || *r == '.') *r = '-';
     }
-    aic_path_join(dbp, sizeof(dbp), a->root, "db\\aic.db");
+    dsc_path_join(dbp, sizeof(dbp), a->root, "db\\dsc.db");
     memset(&info, 0, sizeof(info));
-    rc = aic_backup_create(a->root, dbp, APP_VERSION, zip, &info, err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "备份失败：%s", err[0] ? err : aic_strerror(rc));
-        aic_log_error("backup_create", rc, err);
+    rc = dsc_backup_create(a->root, dbp, APP_VERSION, zip, &info, err, sizeof(err));
+    if (rc != DSC_OK) {
+        app_status(a, "备份失败：%s", err[0] ? err : dsc_strerror(rc));
+        dsc_log_error("backup_create", rc, err);
         return;
     }
     app_status(a, "备份完成：%s（%d 个文件，%lld 字节）", zip, info.file_count,
                (long long)info.total_bytes);
-    app_begin_anim(a, 3, aic_motion_default().overlay_ms);
+    app_begin_anim(a, 3, dsc_motion_default().overlay_ms);
 }
 
 static void app_backup_restore(App *a)
 {
     char bdir[700];
     char zip[900];
-    aic_backup_info info;
+    dsc_backup_info info;
     char err[512] = {0};
     int rc;
 
-    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
+    dsc_path_join(bdir, sizeof(bdir), a->root, "backups");
     zip[0] = '\0';
-    if (aic_backup_latest(bdir, zip, sizeof(zip), &info, err, sizeof(err)) != AIC_OK) {
+    if (dsc_backup_latest(bdir, zip, sizeof(zip), &info, err, sizeof(err)) != DSC_OK) {
         app_status(a, "没有可恢复的备份：%s", err[0] ? err : "backups/ 为空");
         return;
     }
-    rc = aic_backup_restore(zip, a->root, err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "恢复失败：%s", err[0] ? err : aic_strerror(rc));
+    rc = dsc_backup_restore(zip, a->root, err, sizeof(err));
+    if (rc != DSC_OK) {
+        app_status(a, "恢复失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     app_load_chat(a);
@@ -3219,8 +3219,8 @@ static void app_backup_clean(App *a)
     char bdir[700];
     int removed = 0;
     char err[512] = {0};
-    aic_path_join(bdir, sizeof(bdir), a->root, "backups");
-    if (aic_backup_clean(bdir, 3, &removed, err, sizeof(err)) != AIC_OK) {
+    dsc_path_join(bdir, sizeof(bdir), a->root, "backups");
+    if (dsc_backup_clean(bdir, 3, &removed, err, sizeof(err)) != DSC_OK) {
         app_status(a, "清理失败：%s", err[0] ? err : "未知错误");
         return;
     }
@@ -3231,17 +3231,17 @@ static void app_backup_clean(App *a)
 static void app_plugin_panel(App *a)
 {
     char root[700];
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     size_t n = 0;
 
-    aic_path_join(root, sizeof(root), a->root, "plugins");
-    aic_mkdir_p(root);
-    if (aic_plugin_list(a->db, -1, &arr, &n) != AIC_OK) n = 0;
-    if (a->plugs) aic_plugin_free_array(a->plugs, a->plug_n);
+    dsc_path_join(root, sizeof(root), a->root, "plugins");
+    dsc_mkdir_p(root);
+    if (dsc_plugin_list(a->db, -1, &arr, &n) != DSC_OK) n = 0;
+    if (a->plugs) dsc_plugin_free_array(a->plugs, a->plug_n);
     a->plugs = arr;
     a->plug_n = n;
 
-    app_set_overlay(a, AIC_OV_CONFIRM, "插件");
+    app_set_overlay(a, DSC_OV_CONFIRM, "插件");
     a->confirm_action = FORM_PLUGIN;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "已安装 %d 个插件，启用 %d 个。插件跑在独立进程里，超时或无响应会被宿主终止并禁用；"
@@ -3262,20 +3262,20 @@ static void app_plugin_panel_call(App *a)
     int rc;
 
     GetModuleFileNameA(NULL, exe, sizeof(exe));
-    aic_strlcpy_utf8(dir, sizeof(dir), exe);
+    dsc_strlcpy_utf8(dir, sizeof(dir), exe);
     {
         char *bar = strrchr(dir, '\\');
         if (bar) *bar = '\0';
     }
-    aic_path_join(host, sizeof(host), dir, "aic_plugin_host.exe");
+    dsc_path_join(host, sizeof(host), dir, "dsc_plugin_host.exe");
     a->plugin_panel[0] = '\0';
-    rc = aic_plugin_call_point(a->db, host, "ui.panel", "describe", "{}", a->plugin_panel,
+    rc = dsc_plugin_call_point(a->db, host, "ui.panel", "describe", "{}", a->plugin_panel,
                                sizeof(a->plugin_panel), err, sizeof(err));
     a->plugin_panel_n = 1;
-    if (rc != AIC_OK) {
+    if (rc != DSC_OK) {
         snprintf(a->overlay_text, sizeof(a->overlay_text), "扩展点调用失败：%s",
-                 err[0] ? err : aic_strerror(rc));
-        app_status(a, "扩展点调用失败：%s", err[0] ? err : aic_strerror(rc));
+                 err[0] ? err : dsc_strerror(rc));
+        app_status(a, "扩展点调用失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     snprintf(a->overlay_text, sizeof(a->overlay_text),
@@ -3289,13 +3289,13 @@ static void app_plugin_toggle(App *a, size_t idx)
     char err[512] = {0};
     int rc;
     if (idx >= a->plug_n) return;
-    rc = aic_plugin_set_enabled(a->db, a->plugs[idx].id, a->plugs[idx].enabled ? 0 : 1, err,
+    rc = dsc_plugin_set_enabled(a->db, a->plugs[idx].id, a->plugs[idx].enabled ? 0 : 1, err,
                                 sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "切换插件状态失败：%s", err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        app_status(a, "切换插件状态失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
-    app_publish(a, AIC_ENT_PLUGIN, AIC_OP_UPDATE, a->plugs[idx].id);
+    app_publish(a, DSC_ENT_PLUGIN, DSC_OP_UPDATE, a->plugs[idx].id);
     app_plugin_panel(a);
     app_status(a, "已切换插件「%s」", a->plugs[idx].name);
 }
@@ -3305,22 +3305,22 @@ static void app_plugin_update(App *a, size_t idx)
     wchar_t wf[1024];
     char path[2048];
     char root[700];
-    aic_plugin plg;
+    dsc_plugin plg;
     char err[512] = {0};
     int rc;
 
     if (idx >= a->plug_n) return;
     if (!pick_file(a->hwnd, L"插件清单 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
     w_to_u8(wf, path, sizeof(path));
-    aic_path_join(root, sizeof(root), a->root, "plugins");
+    dsc_path_join(root, sizeof(root), a->root, "plugins");
     memset(&plg, 0, sizeof(plg));
-    rc = aic_plugin_update(a->db, root, path, &plg, err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "插件更新失败：%s", err[0] ? err : aic_strerror(rc));
+    rc = dsc_plugin_update(a->db, root, path, &plg, err, sizeof(err));
+    if (rc != DSC_OK) {
+        app_status(a, "插件更新失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     app_status(a, "插件「%s」已更新到 %s", plg.name, plg.version);
-    aic_plugin_free(&plg);
+    dsc_plugin_free(&plg);
     app_plugin_panel(a);
 }
 
@@ -3331,29 +3331,29 @@ static void app_plugin_import(App *a)
     char path[2048];
     char *text = NULL;
     size_t len = 0;
-    aic_plugin_manifest mf;
+    dsc_plugin_manifest mf;
     char err[512] = {0};
-    aic_plugin exist;
+    dsc_plugin exist;
 
     if (!pick_file(a->hwnd, L"插件清单 (*.json)\0*.json\0所有文件\0*.*\0\0", wf, 1024)) return;
     w_to_u8(wf, path, sizeof(path));
-    if (aic_file_read_all(path, &text, &len) != AIC_OK || !text) {
+    if (dsc_file_read_all(path, &text, &len) != DSC_OK || !text) {
         app_status(a, "读取插件清单失败：%s", path);
         return;
     }
     memset(&mf, 0, sizeof(mf));
-    if (aic_plugin_parse_manifest(text, len, &mf, err, sizeof(err)) != AIC_OK) {
-        aic_xfree(text);
+    if (dsc_plugin_parse_manifest(text, len, &mf, err, sizeof(err)) != DSC_OK) {
+        dsc_xfree(text);
         app_status(a, "插件清单不合法：%s", err[0] ? err : "格式错误");
         return;
     }
-    aic_xfree(text);
-    aic_strlcpy_utf8(a->plugin_pending, sizeof(a->plugin_pending), path);
+    dsc_xfree(text);
+    dsc_strlcpy_utf8(a->plugin_pending, sizeof(a->plugin_pending), path);
     a->plugin_pending_overwrite = 0;
     memset(&exist, 0, sizeof(exist));
-    if (aic_plugin_get(a->db, mf.id, &exist) == AIC_OK) a->plugin_pending_overwrite = 1;
+    if (dsc_plugin_get(a->db, mf.id, &exist) == DSC_OK) a->plugin_pending_overwrite = 1;
 
-    app_set_overlay(a, AIC_OV_CONFIRM, "安装插件");
+    app_set_overlay(a, DSC_OV_CONFIRM, "安装插件");
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "来源：本地文件（%s）\n"
              "名称：%s\n"
@@ -3378,40 +3378,40 @@ static void app_plugin_import(App *a)
 static void app_plugin_import_confirm(App *a)
 {
     char root[700];
-    aic_plugin plg;
+    dsc_plugin plg;
     char err[512] = {0};
     int rc;
 
     if (!a->plugin_pending[0]) return;
-    aic_path_join(root, sizeof(root), a->root, "plugins");
+    dsc_path_join(root, sizeof(root), a->root, "plugins");
     memset(&plg, 0, sizeof(plg));
-    rc = aic_plugin_install_ex(a->db, root, a->plugin_pending, "file",
+    rc = dsc_plugin_install_ex(a->db, root, a->plugin_pending, "file",
                               a->plugin_pending_overwrite, &plg, err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "插件安装失败：%s", err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        app_status(a, "插件安装失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
-    aic_guide_mark(a->db, "plugin_import", 0);
+    dsc_guide_mark(a->db, "plugin_import", 0);
     /* 只同步清单，插件二进制不参与同步（§16.4）。 */
-    app_publish(a, AIC_ENT_PLUGIN, AIC_OP_CREATE, plg.id);
+    app_publish(a, DSC_ENT_PLUGIN, DSC_OP_CREATE, plg.id);
     app_status(a, "插件「%s」已安装（默认未启用）", plg.name);
     app_toast(a, "插件已安装，可在设置里启用");
-    aic_plugin_free(&plg);
+    dsc_plugin_free(&plg);
     a->plugin_pending[0] = '\0';
 }
 
 static void app_balance(App *a)
 {
-    aic_usage_summary sum;
+    dsc_usage_summary sum;
     char cost[48];
     memset(&sum, 0, sizeof(sum));
-    aic_usage_summary_get(a->db, 0, &sum);
-    aic_llm_format_micros(sum.cost_micros, cost, sizeof(cost));
+    dsc_usage_summary_get(a->db, 0, &sum);
+    dsc_llm_format_micros(sum.cost_micros, cost, sizeof(cost));
 
-    app_set_overlay(a, AIC_OV_CONFIRM, "余额与用量");
+    app_set_overlay(a, DSC_OV_CONFIRM, "余额与用量");
     if (a->bal_valid) {
         char avail[48];
-        aic_llm_format_micros(a->bal.available_micros, avail, sizeof(avail));
+        dsc_llm_format_micros(a->bal.available_micros, avail, sizeof(avail));
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "账户接口余额（来源：%s）：可用 %s"
                  "%s%s\n\n"
@@ -3432,7 +3432,7 @@ static void app_balance(App *a)
                  "低于阈值时通知，并在设置页显示横幅。",
                  sum.requests, sum.prompt_tokens, sum.completion_tokens, cost);
     }
-    aic_guide_mark(a->db, "balance_query", 0);
+    dsc_guide_mark(a->db, "balance_query", 0);
 }
 
 static void app_update(App *a)
@@ -3441,19 +3441,19 @@ static void app_update(App *a)
     char mf[800];
     char *data = NULL;
     size_t len = 0;
-    aic_update_manifest m;
-    aic_update_plan plan;
+    dsc_update_manifest m;
+    dsc_update_plan plan;
     char err[512] = {0};
     int rc;
 
-    aic_path_join(dir, sizeof(dir), a->root, "updates");
-    aic_mkdir_p(dir);
-    aic_path_join(mf, sizeof(mf), dir, "manifest.json");
+    dsc_path_join(dir, sizeof(dir), a->root, "updates");
+    dsc_mkdir_p(dir);
+    dsc_path_join(mf, sizeof(mf), dir, "manifest.json");
 
-    app_set_overlay(a, AIC_OV_UPDATE, "更新设置");
+    app_set_overlay(a, DSC_OV_UPDATE, "更新设置");
     a->confirm_action = FORM_UPDATE;
 
-    if (!aic_path_exists(mf)) {
+    if (!dsc_path_exists(mf)) {
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "当前没有更新清单（%s 不存在）。\n\n"
                  "更新链路为：解析清单 → 版本比较 → 下载（可注入）→ 校验大小与 SHA-256 → "
@@ -3463,31 +3463,31 @@ static void app_update(App *a)
                  mf);
         return;
     }
-    rc = aic_file_read_all(mf, &data, &len);
-    if (rc != AIC_OK) {
+    rc = dsc_file_read_all(mf, &data, &len);
+    if (rc != DSC_OK) {
         snprintf(a->overlay_text, sizeof(a->overlay_text), "读取更新清单失败：%s",
-                 aic_strerror(rc));
+                 dsc_strerror(rc));
         return;
     }
     memset(&m, 0, sizeof(m));
-    rc = aic_update_parse_manifest(data, len, &m, err, sizeof(err));
-    aic_xfree(data);
-    if (rc != AIC_OK) {
+    rc = dsc_update_parse_manifest(data, len, &m, err, sizeof(err));
+    dsc_xfree(data);
+    if (rc != DSC_OK) {
         snprintf(a->overlay_text, sizeof(a->overlay_text), "更新清单不可用：%s",
-                 err[0] ? err : aic_strerror(rc));
+                 err[0] ? err : dsc_strerror(rc));
         return;
     }
     memset(&plan, 0, sizeof(plan));
-    aic_update_make_plan(&m, APP_VERSION, "", &plan);
+    dsc_update_make_plan(&m, APP_VERSION, "", &plan);
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "当前版本 %s，清单版本 %s（渠道 %s，发布于 %s）。\n"
              "判定：%s%s\n安装包：%s（%lld 字节）\nSHA-256：%s\n\n更新说明：%s",
              APP_VERSION, m.version, m.channel[0] ? m.channel : "stable",
              m.released_at,
-             plan.status == AIC_UPD_UP_TO_DATE ? "已是最新" :
-             plan.status == AIC_UPD_AVAILABLE ? "有新版本可用" :
-             plan.status == AIC_UPD_TOO_OLD ? "当前版本过低，需要整包安装" :
-             plan.status == AIC_UPD_SKIPPED ? "该版本已被跳过" : "清单无效",
+             plan.status == DSC_UPD_UP_TO_DATE ? "已是最新" :
+             plan.status == DSC_UPD_AVAILABLE ? "有新版本可用" :
+             plan.status == DSC_UPD_TOO_OLD ? "当前版本过低，需要整包安装" :
+             plan.status == DSC_UPD_SKIPPED ? "该版本已被跳过" : "清单无效",
              plan.mandatory ? "（强制更新）" : "",
              m.url, m.size, m.sha256, m.notes);
 }
@@ -3499,35 +3499,35 @@ static void app_update_test(App *a)
     char dst[800];
     char *data = NULL;
     size_t len = 0;
-    aic_update_manifest m;
+    dsc_update_manifest m;
     char err[512] = {0};
     int rc;
 
-    aic_path_join(dir, sizeof(dir), a->root, "updates");
-    aic_path_join(mf, sizeof(mf), dir, "manifest.json");
-    aic_path_join(dst, sizeof(dst), dir, "pkg.download");
+    dsc_path_join(dir, sizeof(dir), a->root, "updates");
+    dsc_path_join(mf, sizeof(mf), dir, "manifest.json");
+    dsc_path_join(dst, sizeof(dst), dir, "pkg.download");
 
-    if (!aic_path_exists(mf)) {
+    if (!dsc_path_exists(mf)) {
         app_status(a, "没有更新清单，先放一份 %s", mf);
         return;
     }
-    if (aic_file_read_all(mf, &data, &len) != AIC_OK) {
+    if (dsc_file_read_all(mf, &data, &len) != DSC_OK) {
         app_status(a, "读取更新清单失败");
         return;
     }
     memset(&m, 0, sizeof(m));
-    rc = aic_update_parse_manifest(data, len, &m, err, sizeof(err));
-    aic_xfree(data);
-    if (rc != AIC_OK) {
-        app_status(a, "清单不可用：%s", err[0] ? err : aic_strerror(rc));
+    rc = dsc_update_parse_manifest(data, len, &m, err, sizeof(err));
+    dsc_xfree(data);
+    if (rc != DSC_OK) {
+        app_status(a, "清单不可用：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     memset(err, 0, sizeof(err));
-    rc = aic_update_run(&m, dst, aic_update_download_local_copy, NULL, 1, 1, err, sizeof(err));
-    if (rc == AIC_OK) {
+    rc = dsc_update_run(&m, dst, dsc_update_download_local_copy, NULL, 1, 1, err, sizeof(err));
+    if (rc == DSC_OK) {
         app_status(a, "更新自检通过：下载与校验（大小 / SHA-256）一致，未执行安装");
     } else {
-        app_status(a, "更新自检未通过：%s", err[0] ? err : aic_strerror(rc));
+        app_status(a, "更新自检未通过：%s", err[0] ? err : dsc_strerror(rc));
     }
 }
 
@@ -3536,24 +3536,24 @@ static void app_data(App *a)
     char dbp[800];
     int64_t sz = 0;
     long long msgs = 0;
-    aic_conversation *all = NULL;
+    dsc_conversation *all = NULL;
     size_t all_n = 0;
-    aic_plugin *plgs = NULL;
+    dsc_plugin *plgs = NULL;
     size_t plg_n = 0;
     char human[64] = "未知";
 
-    aic_path_join(dbp, sizeof(dbp), a->root, "db\\aic.db");
-    if (aic_file_size(dbp, &sz) == AIC_OK)
+    dsc_path_join(dbp, sizeof(dbp), a->root, "db\\dsc.db");
+    if (dsc_file_size(dbp, &sz) == DSC_OK)
         snprintf(human, sizeof(human), "%.2f MB", (double)sz / (1024.0 * 1024.0));
-    aic_conv_list(a->db, -1, &all, &all_n);
-    aic_plugin_list(a->db, -1, &plgs, &plg_n);
+    dsc_conv_list(a->db, -1, &all, &all_n);
+    dsc_plugin_list(a->db, -1, &plgs, &plg_n);
     {
-        aic_conversation conv;
+        dsc_conversation conv;
         memset(&conv, 0, sizeof(conv));
-        if (aic_conv_get_chat(a->db, &conv) == AIC_OK) aic_msg_count(a->db, conv.id, &msgs);
+        if (dsc_conv_get_chat(a->db, &conv) == DSC_OK) dsc_msg_count(a->db, conv.id, &msgs);
     }
 
-    app_set_overlay(a, AIC_OV_CONFIRM, "数据管理");
+    app_set_overlay(a, DSC_OV_CONFIRM, "数据管理");
     a->confirm_action = FORM_DATA;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "数据目录：%s\n数据库：%s（%s）\n会话：%d 个（聊天 1 + 问答 %d）；"
@@ -3562,32 +3562,32 @@ static void app_data(App *a)
              "卸载默认保留数据。",
              a->root, dbp, human, (int)all_n,
              (int)(all_n > 0 ? all_n - 1 : 0), (int)plg_n);
-    aic_conv_free(all, all_n);
-    if (plgs) aic_plugin_free_array(plgs, plg_n);
+    dsc_conv_free(all, all_n);
+    if (plgs) dsc_plugin_free_array(plgs, plg_n);
 }
 
 static void app_guide(App *a)
 {
-    app_set_overlay(a, AIC_OV_GUIDE, "新手指南（9 步）");
+    app_set_overlay(a, DSC_OV_GUIDE, "新手指南（9 步）");
 }
 
 static void app_msg_open(App *a, int idx)
 {
-    aic_message *m;
-    int window = aic_setting_get_int(a->db, AIC_SET_RECALL_WINDOW, AIC_RECALL_WINDOW_DEFAULT);
+    dsc_message *m;
+    int window = dsc_setting_get_int(a->db, DSC_SET_RECALL_WINDOW, DSC_RECALL_WINDOW_DEFAULT);
     int can = 0;
 
     if (idx < 0 || (size_t)idx >= a->msg_n) return;
     m = &a->msgs[idx];
-    aic_strlcpy_utf8(a->sel_msg, sizeof(a->sel_msg), m->id);
+    dsc_strlcpy_utf8(a->sel_msg, sizeof(a->sel_msg), m->id);
     if (a->eng && strcmp(m->role, "assistant") == 0)
-        can = aic_engine_can_recall(a->eng, m->id, window);
+        can = dsc_engine_can_recall(a->eng, m->id, window);
 
-    app_set_overlay(a, AIC_OV_CONFIRM, "消息操作");
+    app_set_overlay(a, DSC_OV_CONFIRM, "消息操作");
     a->confirm_action = FORM_MSG;
     {
         /* 预览只取一行，正文太长会盖住底部操作按钮。 */
-        const char *raw = m->recalled ? AIC_RECALL_NOTICE : (m->content ? m->content : "");
+        const char *raw = m->recalled ? DSC_RECALL_NOTICE : (m->content ? m->content : "");
         char one[72];
         size_t k = 0;
         while (raw[k] && k + 1 < sizeof(one) && raw[k] != '\n') {
@@ -3595,8 +3595,8 @@ static void app_msg_open(App *a, int idx)
             k++;
         }
         one[k] = '\0';
-        aic_utf8_truncate_chars(one, 40);
-        if (raw[k]) aic_strlcpy_utf8(one + strlen(one), sizeof(one) - strlen(one), "…");
+        dsc_utf8_truncate_chars(one, 40);
+        if (raw[k]) dsc_strlcpy_utf8(one + strlen(one), sizeof(one) - strlen(one), "…");
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "角色：%s\n时间：%s\n状态：%s\n预览：%s",
                  strcmp(m->role, "user") == 0 ? "用户" : (strcmp(m->role, "system") == 0 ? "系统" : "助手"),
@@ -3612,10 +3612,10 @@ static void app_msg_open(App *a, int idx)
 
 static void app_profile_edit(App *a)
 {
-    aic_profile p;
+    dsc_profile p;
     memset(&p, 0, sizeof(p));
-    aic_profile_get(a->db, &p);
-    app_set_overlay(a, AIC_OV_CONFIRM, "编辑个人信息");
+    dsc_profile_get(a->db, &p);
+    app_set_overlay(a, DSC_OV_CONFIRM, "编辑个人信息");
     a->confirm_action = FORM_PROFILE;
     fld(a, "昵称（最长 40 个字符，写入 {user_name}）", p.name, 0, 0);
     fld(a, "性别（未设置 / 男 / 女 / 其他）", p.gender, 0, 0);
@@ -3628,10 +3628,10 @@ static void app_profile_edit(App *a)
 
 static void app_persona_edit(App *a)
 {
-    aic_persona per;
+    dsc_persona per;
     memset(&per, 0, sizeof(per));
-    aic_persona_ensure_default(a->db, &per);
-    app_set_overlay(a, AIC_OV_AI_INFO, "AI 信息与人设");
+    dsc_persona_ensure_default(a->db, &per);
+    app_set_overlay(a, DSC_OV_AI_INFO, "AI 信息与人设");
     a->confirm_action = FORM_PERSONA;
     fld(a, "人设名称", per.name, 0, 0);
     fld(a, "一句话描述", per.description, 0, 0);
@@ -3639,154 +3639,154 @@ static void app_persona_edit(App *a)
     a->field_focus = 0;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "当前版本 v%d。改动提示词会生成新版本，旧版本保留可回溯。", per.current_version);
-    aic_persona_free(&per);
+    dsc_persona_free(&per);
 }
 
 static void app_key_edit(App *a)
 {
-    app_set_overlay(a, AIC_OV_CONFIRM, "API Key");
+    app_set_overlay(a, DSC_OV_CONFIRM, "API Key");
     a->confirm_action = FORM_KEY;
     fld(a, "DeepSeek API Key（只写入系统安全存储，不写数据库）", "", 0, 0);
     a->field_focus = 0;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
-             "凭证保存在 Windows 凭据管理器（服务名 Sai，账户 api_key）；"
+             "凭证保存在 Windows 凭据管理器（服务名 DSC，账户 api_key）；"
              "界面只显示「已配置 / 未配置」，日志与导出包都不含明文。\n"
              "当前状态：%s",
-             (a->eng && aic_engine_has_key(a->eng)) ? "已配置" : "未配置");
+             (a->eng && dsc_engine_has_key(a->eng)) ? "已配置" : "未配置");
 }
 
 static void app_new_thread(App *a)
 {
-    aic_persona per;
-    aic_conversation conv;
+    dsc_persona per;
+    dsc_conversation conv;
     char model[64] = {0};
     char title[64];
     int rc;
 
     memset(&per, 0, sizeof(per));
-    aic_persona_ensure_default(a->db, &per);
-    aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, model, sizeof(model));
-    if (!model[0]) aic_strlcpy_utf8(model, sizeof(model), AIC_MODEL_FLASH);
+    dsc_persona_ensure_default(a->db, &per);
+    dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, model, sizeof(model));
+    if (!model[0]) dsc_strlcpy_utf8(model, sizeof(model), DSC_MODEL_FLASH);
     {
         char ts[32];
-        aic_now_iso8601(ts);
+        dsc_now_iso8601(ts);
         snprintf(title, sizeof(title), "新会话 %.13s", ts + 11);
     }
 
     memset(&conv, 0, sizeof(conv));
-    rc = aic_conv_create(a->db, AIC_MODE_QA, title, per.id, model, &conv);
-    aic_persona_free(&per);
-    if (rc != AIC_OK) {
-        app_status(a, "新建会话失败：%s", aic_strerror(rc));
+    rc = dsc_conv_create(a->db, DSC_MODE_QA, title, per.id, model, &conv);
+    dsc_persona_free(&per);
+    if (rc != DSC_OK) {
+        app_status(a, "新建会话失败：%s", dsc_strerror(rc));
         return;
     }
-    aic_router_set_thread(a->router, conv.id);
+    dsc_router_set_thread(a->router, conv.id);
     a->scroll[2] = 0;
     app_load_chat(a);
     app_reload_threads(a);
     app_status(a, "已新建问答会话「%s」", conv.title);
-    app_publish(a, AIC_ENT_CONVERSATION, AIC_OP_CREATE, conv.id);
+    app_publish(a, DSC_ENT_CONVERSATION, DSC_OP_CREATE, conv.id);
 }
 
 static void app_save_form(App *a)
 {
     char err[512] = {0};
-    int rc = AIC_OK;
+    int rc = DSC_OK;
 
     switch (a->confirm_action) {
     case FORM_PERSONA: {
-        aic_persona cur;
-        aic_persona out;
+        dsc_persona cur;
+        dsc_persona out;
         memset(&cur, 0, sizeof(cur));
         memset(&out, 0, sizeof(out));
-        aic_persona_ensure_default(a->db, &cur);
-        rc = aic_persona_update(a->db, cur.id, a->fields[0].buf, a->fields[1].buf,
+        dsc_persona_ensure_default(a->db, &cur);
+        rc = dsc_persona_update(a->db, cur.id, a->fields[0].buf, a->fields[1].buf,
                                 a->fields[2].buf, &out);
-        if (rc == AIC_OK) {
-            aic_strlcpy_utf8(a->persona_name, sizeof(a->persona_name), out.name);
+        if (rc == DSC_OK) {
+            dsc_strlcpy_utf8(a->persona_name, sizeof(a->persona_name), out.name);
             app_status(a, "人设已保存（版本 v%d）", out.current_version);
-            aic_guide_mark(a->db, "persona_edit", 0);
-            app_publish(a, AIC_ENT_PERSONA, AIC_OP_UPDATE, out.id);
-            aic_persona_free(&out);
+            dsc_guide_mark(a->db, "persona_edit", 0);
+            app_publish(a, DSC_ENT_PERSONA, DSC_OP_UPDATE, out.id);
+            dsc_persona_free(&out);
         }
-        aic_persona_free(&cur);
+        dsc_persona_free(&cur);
         break;
     }
     case FORM_KEY: {
         const char *k = a->fields[0].buf;
         while (*k == ' ' || *k == '\t') k++;
         if (!*k) {
-            rc = AIC_E_INVAL;
-            aic_strlcpy_utf8(err, sizeof(err), "API Key 不能为空");
+            rc = DSC_E_INVAL;
+            dsc_strlcpy_utf8(err, sizeof(err), "API Key 不能为空");
             break;
         }
-        rc = aic_cred_save(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, k, err, sizeof(err));
-        if (rc == AIC_OK) {
-            aic_setting_set_int(a->db, AIC_SET_CRED_HAS_KEY, 1);
-            aic_engine_set_api_key(a->eng, k);
+        rc = dsc_cred_save(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, k, err, sizeof(err));
+        if (rc == DSC_OK) {
+            dsc_setting_set_int(a->db, DSC_SET_CRED_HAS_KEY, 1);
+            dsc_engine_set_api_key(a->eng, k);
             app_status(a, "API Key 已写入系统安全存储");
-            aic_guide_mark(a->db, "api_key", 0);
+            dsc_guide_mark(a->db, "api_key", 0);
         }
-        aic_secure_zero(a->fields[0].buf, sizeof(a->fields[0].buf));
+        dsc_secure_zero(a->fields[0].buf, sizeof(a->fields[0].buf));
         break;
     }
     case FORM_PROFILE: {
-        aic_profile p;
+        dsc_profile p;
         memset(&p, 0, sizeof(p));
-        aic_profile_get(a->db, &p);
-        aic_strlcpy_utf8(p.name, sizeof(p.name), a->fields[0].buf);
-        aic_strlcpy_utf8(p.gender, sizeof(p.gender), a->fields[1].buf);
-        aic_strlcpy_utf8(p.birthday, sizeof(p.birthday), a->fields[2].buf);
-        aic_strlcpy_utf8(p.occupation, sizeof(p.occupation), a->fields[3].buf);
-        aic_strlcpy_utf8(p.extra_note, sizeof(p.extra_note), a->fields[4].buf);
-        aic_strlcpy_utf8(p.avatar_path, sizeof(p.avatar_path), a->fields[5].buf);
-        rc = aic_profile_set(a->db, &p, err, sizeof(err));
-        if (rc == AIC_OK) {
+        dsc_profile_get(a->db, &p);
+        dsc_strlcpy_utf8(p.name, sizeof(p.name), a->fields[0].buf);
+        dsc_strlcpy_utf8(p.gender, sizeof(p.gender), a->fields[1].buf);
+        dsc_strlcpy_utf8(p.birthday, sizeof(p.birthday), a->fields[2].buf);
+        dsc_strlcpy_utf8(p.occupation, sizeof(p.occupation), a->fields[3].buf);
+        dsc_strlcpy_utf8(p.extra_note, sizeof(p.extra_note), a->fields[4].buf);
+        dsc_strlcpy_utf8(p.avatar_path, sizeof(p.avatar_path), a->fields[5].buf);
+        rc = dsc_profile_set(a->db, &p, err, sizeof(err));
+        if (rc == DSC_OK) {
             app_status(a, "个人信息已保存");
-            aic_guide_mark(a->db, "profile_fill", 0);
-            app_publish(a, AIC_ENT_PROFILE, AIC_OP_UPDATE, "1");
+            dsc_guide_mark(a->db, "profile_fill", 0);
+            app_publish(a, DSC_ENT_PROFILE, DSC_OP_UPDATE, "1");
         }
         break;
     }
     case FORM_RENAME: {
-        rc = aic_conv_update_meta(a->db, a->conv_id, a->fields[0].buf, NULL, NULL);
-        if (rc == AIC_OK) {
-            aic_strlcpy_utf8(a->conv_title, sizeof(a->conv_title), a->fields[0].buf);
+        rc = dsc_conv_update_meta(a->db, a->conv_id, a->fields[0].buf, NULL, NULL);
+        if (rc == DSC_OK) {
+            dsc_strlcpy_utf8(a->conv_title, sizeof(a->conv_title), a->fields[0].buf);
             app_status(a, "会话已重命名为「%s」", a->conv_title);
-            app_publish(a, AIC_ENT_CONVERSATION, AIC_OP_UPDATE, a->conv_id);
+            app_publish(a, DSC_ENT_CONVERSATION, DSC_OP_UPDATE, a->conv_id);
         }
         break;
     }
     case FORM_EDITMSG: {
-        aic_message before_msg;
+        dsc_message before_msg;
         memset(&before_msg, 0, sizeof(before_msg));
-        if (aic_msg_get(a->db, a->sel_msg, &before_msg) == AIC_OK) {
-            aic_strlcpy_utf8(a->undo_msg, sizeof(a->undo_msg), a->sel_msg);
-            aic_strlcpy_utf8(a->undo_prev, sizeof(a->undo_prev),
+        if (dsc_msg_get(a->db, a->sel_msg, &before_msg) == DSC_OK) {
+            dsc_strlcpy_utf8(a->undo_msg, sizeof(a->undo_msg), a->sel_msg);
+            dsc_strlcpy_utf8(a->undo_prev, sizeof(a->undo_prev),
                              before_msg.content ? before_msg.content : "");
             a->undo_kind = 2;
-            a->undo_until = aic_now_ms() + 120000;
-            aic_msg_free(&before_msg);
+            a->undo_until = dsc_now_ms() + 120000;
+            dsc_msg_free(&before_msg);
         }
         if (a->editing_ai) {
             /* FR-36 / §9.2：改 AI 发言不设时间窗，同一事务里按 source_message_id 物理删除旧记忆条目
              * 再重新抽取；失败整体回滚。成功后把 memory_replace 事件发给对端。 */
             int removed = 0;
             int added = 0;
-            rc = aic_engine_edit_ai(a->eng, a->sel_msg, a->fields[0].buf, &removed, &added,
+            rc = dsc_engine_edit_ai(a->eng, a->sel_msg, a->fields[0].buf, &removed, &added,
                                     err, sizeof(err));
-            if (rc == AIC_OK) {
+            if (rc == DSC_OK) {
                 app_load_chat(a);
-                app_publish(a, AIC_ENT_MEMORY, AIC_OP_UPDATE, a->sel_msg);
-                app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
+                app_publish(a, DSC_ENT_MEMORY, DSC_OP_UPDATE, a->sel_msg);
+                app_publish(a, DSC_ENT_MESSAGE, DSC_OP_EDIT, a->sel_msg);
                 app_status(a, "AI 发言已修改，记忆已重建（删旧 %d 条 / 抽新 %d 条）", removed, added);
             }
         } else {
-            rc = aic_engine_edit(a->eng, a->sel_msg, a->fields[0].buf, err, sizeof(err));
-            if (rc == AIC_OK) {
+            rc = dsc_engine_edit(a->eng, a->sel_msg, a->fields[0].buf, err, sizeof(err));
+            if (rc == DSC_OK) {
                 app_load_chat(a);
                 app_status(a, "消息已修改（首次修改会保留原文）");
-                app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
+                app_publish(a, DSC_ENT_MESSAGE, DSC_OP_EDIT, a->sel_msg);
             }
         }
         break;
@@ -3796,8 +3796,8 @@ static void app_save_form(App *a)
         return;
     }
 
-    if (rc != AIC_OK) {
-        app_status(a, "保存失败：%s", err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        app_status(a, "保存失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
     app_close_overlay(a);
@@ -3819,7 +3819,7 @@ static void kb_search_run(App *a)
     a->kb_hit_n = 0;
     memset(a->kb_hits, 0, sizeof(a->kb_hits));
     if (!a->kb_query[0]) { app_status(a, "先输入检索关键词"); return; }
-    a->kb_hit_n = aic_kb_search(a->kb, a->kb_query, &a->kb_hits[0][0],
+    a->kb_hit_n = dsc_kb_search(a->kb, a->kb_query, &a->kb_hits[0][0],
                                 (int)sizeof(a->kb_hits[0]),
                                 (int)(sizeof(a->kb_hits) / sizeof(a->kb_hits[0])), NULL);
     if (a->kb_hit_n <= 0) {
@@ -3846,7 +3846,7 @@ static int app_action_tdd(App *a, int act)
 {
     if (act == ACT_ROW_KB) {
         cap_leave_subpage(a);
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_kb = 1;
         a->scroll[1] = 0;
         a->kb_hit_n = 0;
@@ -3857,16 +3857,16 @@ static int app_action_tdd(App *a, int act)
     }
     if (act == ACT_ROW_ERROR) {
         cap_leave_subpage(a);
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_error = 1;
         a->scroll[1] = 0;
         app_err_reload(a);
-        aic_error_ack_all(a->db);   /* 看过就不再算「未查看」，条目仍留在列表里 */
+        dsc_error_ack_all(a->db);   /* 看过就不再算「未查看」，条目仍留在列表里 */
         return 1;
     }
     if (act == ACT_ROW_CAP) {
         cap_leave_subpage(a);
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_cap = 1;
         a->scroll[1] = 0;
         a->app_n = 0;
@@ -3906,8 +3906,8 @@ static int app_action_tdd(App *a, int act)
     if (act == ACT_KB_SEARCH_GO) { kb_search_run(a); return 1; }
     if (act == ACT_KB_BOOKMARK) {
         int on = 0;
-        if (a->kb_article[0] && aic_kb_bookmark_toggle(a->db, a->kb_article, &on) == AIC_OK) {
-            app_publish_setting(a, AIC_SET_KB_BOOKMARK);
+        if (a->kb_article[0] && dsc_kb_bookmark_toggle(a->db, a->kb_article, &on) == DSC_OK) {
+            app_publish_setting(a, DSC_SET_KB_BOOKMARK);
             app_status(a, on ? "已加入书签" : "已取消书签");
         }
         return 1;
@@ -3917,21 +3917,21 @@ static int app_action_tdd(App *a, int act)
         int rc;
         if (!a->kb || !a->kb_article[0]) return 1;
         sb_init(&cite);
-        rc = aic_kb_cite(a->kb, a->kb_article, a->kb_para < 0 ? 0 : a->kb_para, &cite);
-        if (rc == AIC_OK) {
-            const aic_kb_article *ar = aic_kb_find(a->kb, a->kb_article);
-            aic_setting_set(a->db, AIC_SET_KB_CITE, sb_cstr(&cite));
+        rc = dsc_kb_cite(a->kb, a->kb_article, a->kb_para < 0 ? 0 : a->kb_para, &cite);
+        if (rc == DSC_OK) {
+            const dsc_kb_article *ar = dsc_kb_find(a->kb, a->kb_article);
+            dsc_setting_set(a->db, DSC_SET_KB_CITE, sb_cstr(&cite));
             app_rebuild_fragment(a);
             app_status(a, "已插入引用片段（来自《%s》，只带这一段与来源，不携全文）",
                        ar ? ar->title : "知识库");
         } else {
-            app_status(a, "引用失败：%s", aic_strerror(rc));
+            app_status(a, "引用失败：%s", dsc_strerror(rc));
         }
         sb_free(&cite);
         return 1;
     }
     if (act == ACT_KB_CITE_CLEAR) {
-        aic_setting_del(a->db, AIC_SET_KB_CITE);
+        dsc_setting_del(a->db, DSC_SET_KB_CITE);
         app_rebuild_fragment(a);
         app_status(a, "已清除知识库引用片段，注入区恢复成只含插件扩展点");
         return 1;
@@ -3940,14 +3940,14 @@ static int app_action_tdd(App *a, int act)
     /* 错误中心 */
     if (act == ACT_ERR_BACK) { a->page_error = 0; a->scroll[1] = 0; return 1; }
     if (act == ACT_ERR_ACK) {
-        aic_error_ack_all(a->db);
+        dsc_error_ack_all(a->db);
         app_err_reload(a);
         app_status(a, "已全部标为已查看");
         return 1;
     }
     if (act == ACT_ERR_CLEAR) {
         int removed = 0;
-        aic_error_clear(a->db, 0, &removed);
+        dsc_error_clear(a->db, 0, &removed);
         app_err_reload(a);
         app_status(a, "已清除 %lld 条错误记录（明细文件一并删除）", (long long)removed);
         return 1;
@@ -3958,15 +3958,15 @@ static int app_action_tdd(App *a, int act)
         char err[256];
         int rc;
         snprintf(dir, sizeof(dir), "%s\\exports", a->root);
-        aic_mkdir_p(dir);
+        dsc_mkdir_p(dir);
         snprintf(path, sizeof(path), "%s\\exports\\diagnostic-%lld.json",
-                 a->root, (long long)aic_now_ms());
+                 a->root, (long long)dsc_now_ms());
         err[0] = '\0';
-        rc = aic_error_export_diagnostic(a->db, path, err, sizeof(err));
-        if (rc == AIC_OK)
+        rc = dsc_error_export_diagnostic(a->db, path, err, sizeof(err));
+        if (rc == DSC_OK)
             app_status(a, "诊断包已导出：%s（原始响应已脱敏，不含 API Key）", path);
         else
-            app_status(a, "导出诊断包失败：%s", err[0] ? err : aic_strerror(rc));
+            app_status(a, "导出诊断包失败：%s", err[0] ? err : dsc_strerror(rc));
         return 1;
     }
     if (act >= ACT_ERR_CAT_BASE && act <= ACT_ERR_CAT_BASE + g_err_cat_n) {
@@ -3978,32 +3978,32 @@ static int app_action_tdd(App *a, int act)
     if (act >= ACT_ERR_ACT_BASE && act < ACT_ERR_ACT_BASE + 200) {
         int i = act - ACT_ERR_ACT_BASE;
         if (i >= 0 && i < a->err_n) {
-            const aic_error_entry *er = &a->err_rows[i];
-            int what = aic_error_action_for(er->category);
-            if (what == AIC_ERR_ACT_RETRY) {
+            const dsc_error_entry *er = &a->err_rows[i];
+            int what = dsc_error_action_for(er->category);
+            if (what == DSC_ERR_ACT_RETRY) {
                 a->page_error = 0;
-                aic_router_set_tab(a->router, AIC_TAB_CHAT);
+                dsc_router_set_tab(a->router, DSC_TAB_CHAT);
                 app_status(a, "已回到聊天：原草稿还在输入框，点发送即重试，不产生新的用户消息");
-            } else if (what == AIC_ERR_ACT_BALANCE) {
+            } else if (what == DSC_ERR_ACT_BALANCE) {
                 a->page_error = 0;
                 app_status(a, "在设置页「余额与用量」查看上次结果与过期时间");
-            } else if (what == AIC_ERR_ACT_SETTINGS) {
+            } else if (what == DSC_ERR_ACT_SETTINGS) {
                 a->page_error = 0;
                 app_status(a, "在设置页「API Key」检查凭证；凭证失效不清会话，改完接着发");
-            } else if (what == AIC_ERR_ACT_CAPABILITY) {
+            } else if (what == DSC_ERR_ACT_CAPABILITY) {
                 cap_leave_subpage(a);
                 a->page_cap = 1;
                 a->scroll[1] = 0;
-            } else if (what == AIC_ERR_ACT_DETAIL) {
+            } else if (what == DSC_ERR_ACT_DETAIL) {
                 if (er->detail_path[0])
                     snprintf(a->overlay_text, sizeof(a->overlay_text),
                              "脱敏后的原始响应在数据目录的 %s。诊断包导出会把它一起带走，"
                              "但不会包含 API Key 或完整机器信息。", er->detail_path);
                 else
-                    aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
+                    dsc_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
                                      "这条错误没有保留原始响应。");
                 a->confirm_action = 0;
-                app_set_overlay(a, AIC_OV_CONFIRM, "错误明细");
+                app_set_overlay(a, DSC_OV_CONFIRM, "错误明细");
             }
             a->scroll[1] = 0;
         }
@@ -4018,47 +4018,47 @@ static int app_action_tdd(App *a, int act)
         a->scroll[1] = 0;
         return 1;
     }
-    if (act >= ACT_CAP_TOGGLE_BASE && act < ACT_CAP_TOGGLE_BASE + AIC_CAP_COUNT) {
+    if (act >= ACT_CAP_TOGGLE_BASE && act < ACT_CAP_TOGGLE_BASE + DSC_CAP_COUNT) {
         int i = act - ACT_CAP_TOGGLE_BASE;
-        const char *kind = aic_cap_kind_at(i);
-        aic_cap_status st;
+        const char *kind = dsc_cap_kind_at(i);
+        dsc_cap_status st;
         if (!kind) return 1;
         memset(&st, 0, sizeof(st));
-        aic_cap_status_load(a->db, kind, &st);
+        dsc_cap_status_load(a->db, kind, &st);
         if (st.granted) {
-            int rc = aic_cap_revoke(a->db, kind);
-            if (rc == AIC_OK) app_status(a, "已撤销「%s」授权（对话与同步保持可用）", aic_cap_name(kind));
-            else app_status(a, "撤销失败：%s", aic_strerror(rc));
+            int rc = dsc_cap_revoke(a->db, kind);
+            if (rc == DSC_OK) app_status(a, "已撤销「%s」授权（对话与同步保持可用）", dsc_cap_name(kind));
+            else app_status(a, "撤销失败：%s", dsc_strerror(rc));
         } else {
             char purpose[512];
             int rc;
             purpose[0] = '\0';
-            rc = aic_cap_request(a->db, kind, purpose, sizeof(purpose));
-            if (rc != AIC_OK) { app_status(a, "申请失败：%s", aic_strerror(rc)); return 1; }
+            rc = dsc_cap_request(a->db, kind, purpose, sizeof(purpose));
+            if (rc != DSC_OK) { app_status(a, "申请失败：%s", dsc_strerror(rc)); return 1; }
             /* 申请前先把用途说清楚，再授予（§18）。 */
-            snprintf(a->cap_msg, sizeof(a->cap_msg), "「%s」用途：%s", aic_cap_name(kind),
-                     purpose[0] ? purpose : aic_cap_purpose(kind));
-            rc = aic_cap_grant(a->db, kind, aic_now_ms());
-            if (rc == AIC_OK) app_status(a, "已授予「%s」：%s", aic_cap_name(kind), a->cap_msg);
-            else app_status(a, "授予失败：%s", aic_strerror(rc));
+            snprintf(a->cap_msg, sizeof(a->cap_msg), "「%s」用途：%s", dsc_cap_name(kind),
+                     purpose[0] ? purpose : dsc_cap_purpose(kind));
+            rc = dsc_cap_grant(a->db, kind, dsc_now_ms());
+            if (rc == DSC_OK) app_status(a, "已授予「%s」：%s", dsc_cap_name(kind), a->cap_msg);
+            else app_status(a, "授予失败：%s", dsc_strerror(rc));
         }
         return 1;
     }
     if (act == ACT_CAP_PICK_MEDIA) {
         if (cap_pick_path(a, L"图片 (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0所有文件\0*.*\0\0",
-                          AIC_SET_CAP_PREFIX "media.selected", L"选一张图片（只记名称与大小）"))
+                          DSC_SET_CAP_PREFIX "media.selected", L"选一张图片（只记名称与大小）"))
             app_status(a, "已选中图片：注入时只给名称与大小，原图不上传");
         return 1;
     }
     if (act == ACT_CAP_PICK_FILES) {
         if (cap_pick_path(a, L"文本文件 (*.txt;*.md;*.json;*.log)\0*.txt;*.md;*.json;*.log\0所有文件\0*.*\0\0",
-                          AIC_SET_CAP_PREFIX "files.selected", L"选一个文本文件（只读、不递归）"))
+                          DSC_SET_CAP_PREFIX "files.selected", L"选一个文本文件（只读、不递归）"))
             app_status(a, "已选中文件：只在读取时注入文本片段，不传原始文件");
         return 1;
     }
     if (act == ACT_CAP_PICK_APPS) {
         int n = app_enum_apps(a);
-        if (n <= 0) aic_strlcpy_utf8(a->cap_msg, sizeof(a->cap_msg),
+        if (n <= 0) dsc_strlcpy_utf8(a->cap_msg, sizeof(a->cap_msg),
                                      "没有读到已安装软件列表：可以先允许读取，或直接跳过这一项。");
         else snprintf(a->cap_msg, sizeof(a->cap_msg),
                       "读到 %d 条已安装软件，从下面选一条（只取你选中的这一条，完整清单不上传）", n);
@@ -4067,8 +4067,8 @@ static int app_action_tdd(App *a, int act)
     if (act >= ACT_CAP_APP_BASE && act < ACT_CAP_APP_BASE + 40) {
         int i = act - ACT_CAP_APP_BASE;
         if (i >= 0 && i < a->app_n) {
-            aic_setting_set(a->db, AIC_SET_CAP_PREFIX "apps.selected", a->app_list[i]);
-            app_publish_setting(a, AIC_SET_CAP_PREFIX "apps.selected");
+            dsc_setting_set(a->db, DSC_SET_CAP_PREFIX "apps.selected", a->app_list[i]);
+            app_publish_setting(a, DSC_SET_CAP_PREFIX "apps.selected");
             snprintf(a->cap_msg, sizeof(a->cap_msg), "已选中：%s（注入时只给这一个名字）", a->app_list[i]);
             app_status(a, "已选中「%s」", a->app_list[i]);
         }
@@ -4079,7 +4079,7 @@ static int app_action_tdd(App *a, int act)
 
 static void do_action(App *a, int act)
 {
-    aic_motion mo = aic_motion_default();
+    dsc_motion mo = dsc_motion_default();
 
     if (app_action_tdd(a, act)) { app_invalidate(a); return; }
 
@@ -4087,11 +4087,11 @@ static void do_action(App *a, int act)
     if (act == ACT_CRED_KEY_EDIT) { a->cred_focus = 1; app_invalidate(a); return; }
     if (act == ACT_CRED_SAVE)     { app_cred_save(a); return; }
     if (act == ACT_CRED_DEMO)     { app_cred_demo(a); return; }
-    if (act == ACT_MODE_CHAT)     { app_mode_select(a, AIC_MODE_CHAT); return; }
-    if (act == ACT_MODE_QA)       { app_mode_select(a, AIC_MODE_QA); return; }
+    if (act == ACT_MODE_CHAT)     { app_mode_select(a, DSC_MODE_CHAT); return; }
+    if (act == ACT_MODE_QA)       { app_mode_select(a, DSC_MODE_QA); return; }
     if (act == ACT_ROW_SYNC) {
-        int on = aic_sync_realtime_enabled(a->db) ? 0 : 1;
-        aic_sync_set_realtime(a->db, on);
+        int on = dsc_sync_realtime_enabled(a->db) ? 0 : 1;
+        dsc_sync_set_realtime(a->db, on);
         app_status(a, on ? "实时同步已开启（配对成功后默认开启）"
                          : "实时同步已暂停：只停新事件发送，已入队事件会保留");
         app_invalidate(a);
@@ -4106,8 +4106,8 @@ static void do_action(App *a, int act)
     if (act == ACT_PAIR_CONNECT)   { app_pair_start(a, 3); return; }
     if (act == ACT_PAIR_HANDSHAKE) { app_pair_start(a, 4); return; }
     if (act == ACT_PAIR_TOGGLE) {
-        int on = aic_sync_realtime_enabled(a->db) ? 0 : 1;
-        aic_sync_set_realtime(a->db, on);
+        int on = dsc_sync_realtime_enabled(a->db) ? 0 : 1;
+        dsc_sync_set_realtime(a->db, on);
         app_status(a, on ? "已恢复实时同步" : "已暂停实时同步，事件留在本地队列");
         app_invalidate(a);
         return;
@@ -4115,26 +4115,26 @@ static void do_action(App *a, int act)
     if (act == ACT_PAIR_CONFLICTS) {
         sb cs;
         sb_init(&cs);
-        if (aic_sync_conflicts_json(a->db, &cs) != AIC_OK || !sb_cstr(&cs)[0])
-            aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
+        if (dsc_sync_conflicts_json(a->db, &cs) != DSC_OK || !sb_cstr(&cs)[0])
+            dsc_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
                              "目前没有冲突副本。并发修改按逻辑时钟取较大者，落败方原始实体留副本。");
         else
-            aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text), sb_cstr(&cs));
+            dsc_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text), sb_cstr(&cs));
         sb_free(&cs);
-        app_set_overlay(a, AIC_OV_CONFIRM, "冲突副本");
+        app_set_overlay(a, DSC_OV_CONFIRM, "冲突副本");
         a->confirm_action = 0;
         app_invalidate(a);
         return;
     }
     if (act == ACT_PAIR_UNPAIR) { app_pair_unpair(a); return; }
-    if (act == ACT_PAIR_CH_LAN)   { app_pair_set_channel(a, AIC_CH_LAN); return; }
-    if (act == ACT_PAIR_CH_BT)    { app_pair_set_channel(a, AIC_CH_BLUETOOTH); return; }
+    if (act == ACT_PAIR_CH_LAN)   { app_pair_set_channel(a, DSC_CH_LAN); return; }
+    if (act == ACT_PAIR_CH_BT)    { app_pair_set_channel(a, DSC_CH_BLUETOOTH); return; }
     if (act >= ACT_PAIR_DISCOVER + 100 && act < ACT_PAIR_DISCOVER + 108) {
         int i = act - (ACT_PAIR_DISCOVER + 100);
         if (i >= 0 && i < a->peer_n) {
-            aic_strlcpy_utf8(a->pair_addr_in, sizeof(a->pair_addr_in), a->peers[i].addr);
+            dsc_strlcpy_utf8(a->pair_addr_in, sizeof(a->pair_addr_in), a->peers[i].addr);
             a->pair_focus = 2;
-            if (a->peers[i].channel == AIC_CH_BLUETOOTH) {
+            if (a->peers[i].channel == DSC_CH_BLUETOOTH) {
                 app_status(a, "已填入蓝牙设备 %s（%s），再点「连到该地址并配对」",
                            a->peers[i].name, a->peers[i].addr);
             } else {
@@ -4145,10 +4145,10 @@ static void do_action(App *a, int act)
         return;
     }
 
-    if (act >= ACT_GUIDE_ITEM_BASE && act < ACT_GUIDE_ITEM_BASE + AIC_GUIDE_STEP_COUNT) {
-        const aic_guide_step *steps = aic_guide_steps();
+    if (act >= ACT_GUIDE_ITEM_BASE && act < ACT_GUIDE_ITEM_BASE + DSC_GUIDE_STEP_COUNT) {
+        const dsc_guide_step *steps = dsc_guide_steps();
         int i = act - ACT_GUIDE_ITEM_BASE;
-        aic_guide_mark(a->db, steps[i].id, 0);
+        dsc_guide_mark(a->db, steps[i].id, 0);
         app_status(a, "已记录完成：%s", steps[i].title);
         app_invalidate(a);
         return;
@@ -4156,7 +4156,7 @@ static void do_action(App *a, int act)
     if (act >= ACT_QA_THREAD_BASE && act < ACT_QA_THREAD_BASE + 200) {
         int i = act - ACT_QA_THREAD_BASE;
         if ((size_t)i < a->thread_n) {
-            aic_router_set_thread(a->router, a->threads[i].id);
+            dsc_router_set_thread(a->router, a->threads[i].id);
             app_load_chat(a);
             a->scroll[2] = 0;
             app_invalidate(a);
@@ -4199,7 +4199,7 @@ static void do_action(App *a, int act)
     switch (act) {
     case ACT_STOP:
         if (a->eng && a->sending) {
-            aic_engine_stop(a->eng);
+            dsc_engine_stop(a->eng);
             app_status(a, "已请求停止生成");
         }
         break;
@@ -4207,44 +4207,44 @@ static void do_action(App *a, int act)
         app_regenerate(a);
         break;
     case ACT_NAV_ME:
-        aic_router_set_tab(a->router, AIC_TAB_ME);
+        dsc_router_set_tab(a->router, DSC_TAB_ME);
         app_begin_anim(a, 2, mo.tab_switch_ms);
         break;
     case ACT_NAV_SETTINGS:
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         app_begin_anim(a, 2, mo.tab_switch_ms);
         break;
     case ACT_NAV_CHAT:
-        if (aic_router_mode(a->router) == AIC_MODE_QA) {
-            aic_router_set_thread(a->router, "");
+        if (dsc_router_mode(a->router) == DSC_MODE_QA) {
+            dsc_router_set_thread(a->router, "");
             app_load_chat(a);
-            aic_router_set_tab(a->router, AIC_TAB_CHAT);
+            dsc_router_set_tab(a->router, DSC_TAB_CHAT);
         } else {
-            aic_router_set_tab(a->router, AIC_TAB_CHAT);
+            dsc_router_set_tab(a->router, DSC_TAB_CHAT);
         }
         app_begin_anim(a, 2, mo.tab_switch_ms);
         break;
     case ACT_MODE_SWITCH: {
-        aic_mode target = aic_router_mode(a->router) == AIC_MODE_CHAT ? AIC_MODE_QA : AIC_MODE_CHAT;
-        int rc = aic_router_switch_mode(a->router, target);
-        if (rc != AIC_OK) {
-            app_status(a, "模式切换被忽略（%s）", aic_strerror(rc));
+        dsc_mode target = dsc_router_mode(a->router) == DSC_MODE_CHAT ? DSC_MODE_QA : DSC_MODE_CHAT;
+        int rc = dsc_router_switch_mode(a->router, target);
+        if (rc != DSC_OK) {
+            app_status(a, "模式切换被忽略（%s）", dsc_strerror(rc));
             break;
         }
-        aic_router_finish_switch(a->router);
-        if (target == AIC_MODE_CHAT) aic_router_set_tab(a->router, AIC_TAB_CHAT);
+        dsc_router_finish_switch(a->router);
+        if (target == DSC_MODE_CHAT) dsc_router_set_tab(a->router, DSC_TAB_CHAT);
         app_load_chat(a);
         app_reload_threads(a);
         a->scroll[2] = 0;
         app_begin_anim(a, 1, mo.mode_switch_ms);
-        app_status(a, "已切换到%s", target == AIC_MODE_CHAT ? "聊天模式" : "问答模式");
+        app_status(a, "已切换到%s", target == DSC_MODE_CHAT ? "聊天模式" : "问答模式");
         break;
     }
     case ACT_SEND:
         app_send(a);
         break;
     case ACT_AI_INFO:
-        if (aic_router_mode(a->router) == AIC_MODE_CHAT) {
+        if (dsc_router_mode(a->router) == DSC_MODE_CHAT) {
             app_persona_edit(a);
         } else {
             app_persona_edit(a);
@@ -4258,52 +4258,52 @@ static void do_action(App *a, int act)
         app_status(a, "输入关键词搜索会话标题（Esc 退出搜索）");
         break;
     case ACT_QA_BACK:
-        aic_router_set_thread(a->router, "");
+        dsc_router_set_thread(a->router, "");
         app_load_chat(a);
         app_invalidate(a);
         break;
     case ACT_QA_DELETE: {
         char err[256] = {0};
-        int rc = aic_conv_delete(a->db, a->conv_id);
-        if (rc == AIC_OK) {
-            aic_router_set_thread(a->router, "");
+        int rc = dsc_conv_delete(a->db, a->conv_id);
+        if (rc == DSC_OK) {
+            dsc_router_set_thread(a->router, "");
             app_reload_threads(a);
             app_load_chat(a);
             app_status(a, "会话已删除");
         } else {
-            app_status(a, "删除失败：%s", err[0] ? err : aic_strerror(rc));
+            app_status(a, "删除失败：%s", err[0] ? err : dsc_strerror(rc));
         }
         break;
     }
     case ACT_ROW_THEME: {
         char cur[16] = {0};
         const char *next = "0";
-        aic_setting_get(a->db, AIC_SET_THEME, cur, sizeof(cur));
+        dsc_setting_get(a->db, DSC_SET_THEME, cur, sizeof(cur));
         if (cur[0] == '0' || !cur[0]) next = "1";
         else if (cur[0] == '1') next = "2";
         else next = "0";
-        aic_setting_set(a->db, AIC_SET_THEME, next);
-        app_publish_setting(a, AIC_SET_THEME);
+        dsc_setting_set(a->db, DSC_SET_THEME, next);
+        app_publish_setting(a, DSC_SET_THEME);
         app_status(a, "配色切换为：%s",
                    next[0] == '0' ? "日光" : (next[0] == '1' ? "夜间" : "跟随系统"));
         break;
     }
     case ACT_ROW_MODEL: {
         char cur[64] = {0};
-        aic_setting_get(a->db, AIC_SET_MODEL_DEFAULT, cur, sizeof(cur));
-        if (aic_str_ieq(cur, AIC_MODEL_PRO)) {
-            aic_setting_set(a->db, AIC_SET_MODEL_DEFAULT, AIC_MODEL_FLASH);
-            app_status(a, "默认模型：%s", aic_llm_model_find(AIC_MODEL_FLASH)->name);
+        dsc_setting_get(a->db, DSC_SET_MODEL_DEFAULT, cur, sizeof(cur));
+        if (dsc_str_ieq(cur, DSC_MODEL_PRO)) {
+            dsc_setting_set(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_FLASH);
+            app_status(a, "默认模型：%s", dsc_llm_model_find(DSC_MODEL_FLASH)->name);
         } else {
-            aic_setting_set(a->db, AIC_SET_MODEL_DEFAULT, AIC_MODEL_PRO);
-            app_status(a, "默认模型：%s", aic_llm_model_find(AIC_MODEL_PRO)->name);
+            dsc_setting_set(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_PRO);
+            app_status(a, "默认模型：%s", dsc_llm_model_find(DSC_MODEL_PRO)->name);
         }
         app_setup_engine(a);
         break;
     }
     case ACT_ROW_KEY:      app_key_edit(a); break;
     case ACT_ROW_EXPORT:
-        app_set_overlay(a, AIC_OV_CONFIRM, "导出聊天记录");
+        app_set_overlay(a, DSC_OV_CONFIRM, "导出聊天记录");
         a->confirm_action = FORM_EXPORT;
         snprintf(a->overlay_text, sizeof(a->overlay_text),
                  "导出到 %s\\exports。JSON 可再次导入（含 format/schema_version/checksum）；"
@@ -4316,17 +4316,17 @@ static void do_action(App *a, int act)
     case ACT_ROW_GUIDE:    app_guide(a); break;
     case ACT_ROW_DATA:     app_data(a); break;
     case ACT_ROW_ABOUT:
-        app_set_overlay(a, AIC_OV_CONFIRM, "关于 Sai");
+        app_set_overlay(a, DSC_OV_CONFIRM, "关于 DSC");
         snprintf(a->overlay_text, sizeof(a->overlay_text),
-                 "Sai %s\n核心逻辑用 C 实现（C11），界面层调用平台原生能力；"
+                 "DSC %s\n核心逻辑用 C 实现（C11），界面层调用平台原生能力；"
                  "会话数据格式 Windows 与 Android 完全一致。\n\n"
                  "模型请求走平台自有网络通道（Windows 用 WinHTTP，Android 用 HttpURLConnection），"
                  "API Key 存放在系统安全存储里，不经第三方中转；没有配置 Key 时可用演示模式预览界面。"
                  "更新安装、插件隔离与备份恢复见设置页与操作指南。", APP_VERSION);
         break;
     case ACT_ROW_MOTION: {
-        int on = aic_setting_get_int(a->db, AIC_SET_MOTION, 1);
-        aic_setting_set_int(a->db, AIC_SET_MOTION, on ? 0 : 1);
+        int on = dsc_setting_get_int(a->db, DSC_SET_MOTION, 1);
+        dsc_setting_set_int(a->db, DSC_SET_MOTION, on ? 0 : 1);
         app_status(a, "减少动态效果：%s", on ? "开启（动画瞬时完成）" : "关闭");
         break;
     }
@@ -4367,9 +4367,9 @@ static void do_action(App *a, int act)
         break;
     case ACT_MODEL_FLASH:
     case ACT_MODEL_PRO:
-        aic_setting_set(a->db, AIC_SET_MODEL_DEFAULT,
-                        act == ACT_MODEL_PRO ? AIC_MODEL_PRO : AIC_MODEL_FLASH);
-        app_publish_setting(a, AIC_SET_MODEL_DEFAULT);
+        dsc_setting_set(a->db, DSC_SET_MODEL_DEFAULT,
+                        act == ACT_MODEL_PRO ? DSC_MODEL_PRO : DSC_MODEL_FLASH);
+        app_publish_setting(a, DSC_SET_MODEL_DEFAULT);
         app_setup_engine(a);
         app_close_overlay(a);
         break;
@@ -4403,10 +4403,10 @@ static void do_action(App *a, int act)
         break;
     case ACT_AI_MODEL_FLASH:
     case ACT_AI_MODEL_PRO: {
-        const char *mid = (act == ACT_AI_MODEL_PRO) ? AIC_MODEL_PRO : AIC_MODEL_FLASH;
-        if (a->conv_id[0]) aic_conv_update_meta(a->db, a->conv_id, NULL, mid, NULL);
-        if (a->eng) aic_engine_set_model_override(a->eng, mid);
-        app_status(a, "本会话模型：%s（只影响后续请求）", aic_llm_model_find(mid)->name);
+        const char *mid = (act == ACT_AI_MODEL_PRO) ? DSC_MODEL_PRO : DSC_MODEL_FLASH;
+        if (a->conv_id[0]) dsc_conv_update_meta(a->db, a->conv_id, NULL, mid, NULL);
+        if (a->eng) dsc_engine_set_model_override(a->eng, mid);
+        app_status(a, "本会话模型：%s（只影响后续请求）", dsc_llm_model_find(mid)->name);
         break;
     }
     case ACT_SCOPE_CUR:
@@ -4443,44 +4443,44 @@ static void do_action(App *a, int act)
         app_close_overlay(a);
         break;
     case ACT_GUIDE_RESET:
-        aic_guide_reset(a->db);
+        dsc_guide_reset(a->db);
         app_status(a, "新手指南进度已重置");
         break;
     case ACT_MSG_RECALL: {
         char err[256] = {0};
-        int window = aic_setting_get_int(a->db, AIC_SET_RECALL_WINDOW, AIC_RECALL_WINDOW_DEFAULT);
-        int rc = aic_engine_recall(a->eng, a->sel_msg, window, err, sizeof(err));
-        if (rc == AIC_OK) {
-            aic_strlcpy_utf8(a->undo_msg, sizeof(a->undo_msg), a->sel_msg);
+        int window = dsc_setting_get_int(a->db, DSC_SET_RECALL_WINDOW, DSC_RECALL_WINDOW_DEFAULT);
+        int rc = dsc_engine_recall(a->eng, a->sel_msg, window, err, sizeof(err));
+        if (rc == DSC_OK) {
+            dsc_strlcpy_utf8(a->undo_msg, sizeof(a->undo_msg), a->sel_msg);
             a->undo_kind = 1;
-            a->undo_until = aic_now_ms() + 120000;
+            a->undo_until = dsc_now_ms() + 120000;
             app_load_chat(a);
             app_close_overlay(a);
             app_status(a, "消息已撤回（正文替换为系统提示，不再进入下一次请求）");
             app_toast(a, "已撤回，2 分钟内可在这里恢复");
         } else {
-            app_status(a, "撤回失败：%s", err[0] ? err : aic_strerror(rc));
+            app_status(a, "撤回失败：%s", err[0] ? err : dsc_strerror(rc));
         }
         break;
     }
     case ACT_MSG_EDIT: {
-        aic_message m;
+        dsc_message m;
         memset(&m, 0, sizeof(m));
-        if (aic_msg_get(a->db, a->sel_msg, &m) != AIC_OK) break;
-        a->editing_ai = (strcmp(m.role, aic_role_name(AIC_ROLE_ASSISTANT)) == 0);
+        if (dsc_msg_get(a->db, a->sel_msg, &m) != DSC_OK) break;
+        a->editing_ai = (strcmp(m.role, dsc_role_name(DSC_ROLE_ASSISTANT)) == 0);
         if (a->editing_ai) {
             /* §9.2：改 AI 发言前必须说清它同时改记忆，避免用户以为只改显示。 */
-            app_set_overlay(a, AIC_OV_CONFIRM, "修改 AI 发言（会同步更改 AI 记忆）");
+            app_set_overlay(a, DSC_OV_CONFIRM, "修改 AI 发言（会同步更改 AI 记忆）");
             a->confirm_action = FORM_EDITMSG;
             fld(a, "新的内容（修改将同步更改 AI 记忆：旧记忆条目会被删除并重新抽取）",
                 m.content ? m.content : "", 1, 0);
         } else {
-            app_set_overlay(a, AIC_OV_CONFIRM, "修改消息");
+            app_set_overlay(a, DSC_OV_CONFIRM, "修改消息");
             a->confirm_action = FORM_EDITMSG;
             fld(a, "新的内容（原内容会保留）", m.content ? m.content : "", 1, 0);
         }
         a->field_focus = 0;
-        aic_msg_free(&m);
+        dsc_msg_free(&m);
         break;
     }
     default:
@@ -4504,12 +4504,12 @@ static void app_copy_text(App *a, const char *text)
     if (!OpenClipboard(a->hwnd)) { app_status(a, "打开剪贴板失败，请稍后重试"); return; }
     EmptyClipboard();
     cap = strlen(text) + 2;
-    w = (wchar_t *)aic_xmalloc(cap * sizeof(wchar_t));
+    w = (wchar_t *)dsc_xmalloc(cap * sizeof(wchar_t));
     u8_to_w(text, w, (int)cap);
     n = wcslen(w);
     h = GlobalAlloc(GMEM_MOVEABLE, (n + 1) * sizeof(wchar_t));
     if (!h) {
-        aic_xfree(w);
+        dsc_xfree(w);
         CloseClipboard();
         app_status(a, "剪贴板内存不足");
         return;
@@ -4517,14 +4517,14 @@ static void app_copy_text(App *a, const char *text)
     dst = GlobalLock(h);
     if (!dst) {
         GlobalFree(h);
-        aic_xfree(w);
+        dsc_xfree(w);
         CloseClipboard();
         app_status(a, "剪贴板内存不足");
         return;
     }
     memcpy(dst, w, (n + 1) * sizeof(wchar_t));
     GlobalUnlock(h);
-    aic_xfree(w);
+    dsc_xfree(w);
     if (!SetClipboardData(CF_UNICODETEXT, h)) {
         GlobalFree(h);
         CloseClipboard();
@@ -4537,15 +4537,15 @@ static void app_copy_text(App *a, const char *text)
 
 static void app_copy_message(App *a)
 {
-    aic_message m;
+    dsc_message m;
 
     memset(&m, 0, sizeof(m));
-    if (aic_msg_get(a->db, a->sel_msg, &m) != AIC_OK) {
+    if (dsc_msg_get(a->db, a->sel_msg, &m) != DSC_OK) {
         app_status(a, "消息已不存在");
         return;
     }
-    app_copy_text(a, m.recalled ? AIC_RECALL_NOTICE : (m.content ? m.content : ""));
-    aic_msg_free(&m);
+    app_copy_text(a, m.recalled ? DSC_RECALL_NOTICE : (m.content ? m.content : ""));
+    dsc_msg_free(&m);
     app_close_overlay(a);
 }
 
@@ -4565,31 +4565,31 @@ static void app_undo(App *a)
 {
     int rc;
 
-    if (!a->undo_msg[0] || aic_now_ms() > a->undo_until) {
+    if (!a->undo_msg[0] || dsc_now_ms() > a->undo_until) {
         app_status(a, "撤销窗口已过（默认 2 分钟）");
         return;
     }
-    if (a->undo_kind == 1) rc = aic_msg_unrecall(a->db, a->undo_msg);
-    else if (a->undo_kind == 2) rc = aic_msg_restore(a->db, a->undo_msg);
-    else rc = AIC_E_STATE;
-    if (rc == AIC_OK) {
+    if (a->undo_kind == 1) rc = dsc_msg_unrecall(a->db, a->undo_msg);
+    else if (a->undo_kind == 2) rc = dsc_msg_restore(a->db, a->undo_msg);
+    else rc = DSC_E_STATE;
+    if (rc == DSC_OK) {
         int undo_kind = a->undo_kind;   /* 下面会清零，先留住语义 */
         app_load_chat(a);
         app_status(a, undo_kind == 1 ? "已恢复撤回的消息" : "已恢复修改前的内容");
-        app_publish(a, AIC_ENT_MESSAGE, undo_kind == 1 ? AIC_OP_UPDATE : AIC_OP_EDIT,
+        app_publish(a, DSC_ENT_MESSAGE, undo_kind == 1 ? DSC_OP_UPDATE : DSC_OP_EDIT,
                     a->undo_msg);
         a->undo_msg[0] = 0;
         a->undo_kind = 0;
         a->undo_until = 0;
     } else {
-        app_status(a, "撤销失败：%s", aic_strerror(rc));
+        app_status(a, "撤销失败：%s", dsc_strerror(rc));
     }
 }
 
 static void app_qa_rename(App *a)
 {
     if (!a->conv_id[0]) { app_status(a, "当前没有打开的会话"); return; }
-    app_set_overlay(a, AIC_OV_CONFIRM, "重命名会话");
+    app_set_overlay(a, DSC_OV_CONFIRM, "重命名会话");
     a->confirm_action = FORM_RENAME;
     fld(a, "会话标题（最长 200 个字符）", a->conv_title, 0, 0);
     a->field_focus = 0;
@@ -4599,34 +4599,34 @@ static void app_qa_rename(App *a)
 
 static void app_ai_versions(App *a)
 {
-    aic_persona per;
-    aic_prompt_version *vs = NULL;
+    dsc_persona per;
+    dsc_prompt_version *vs = NULL;
     size_t n = 0;
     int i;
 
     memset(&per, 0, sizeof(per));
-    aic_persona_ensure_default(a->db, &per);
-    aic_persona_versions(a->db, per.id, &vs, &n);
-    aic_strlcpy_utf8(a->ver_persona, sizeof(a->ver_persona), per.id);
+    dsc_persona_ensure_default(a->db, &per);
+    dsc_persona_versions(a->db, per.id, &vs, &n);
+    dsc_strlcpy_utf8(a->ver_persona, sizeof(a->ver_persona), per.id);
     a->ver_n = 0;
     for (i = 0; i < (int)n && i < 8; i++) {
         a->ver_num[i] = vs[i].version;
-        aic_strlcpy_utf8(a->ver_time[i], sizeof(a->ver_time[i]), vs[i].created_at);
+        dsc_strlcpy_utf8(a->ver_time[i], sizeof(a->ver_time[i]), vs[i].created_at);
         a->ver_n = i + 1;
     }
-    if (vs) aic_prompt_version_free_array(vs, n);
-    app_set_overlay(a, AIC_OV_CONFIRM, "提示词版本");
+    if (vs) dsc_prompt_version_free_array(vs, n);
+    app_set_overlay(a, DSC_OV_CONFIRM, "提示词版本");
     a->confirm_action = FORM_VERSIONS;
     snprintf(a->overlay_text, sizeof(a->overlay_text),
              "当前版本 v%d。选一个旧版本回退：回退会用旧版内容生成新版本，历史版本全部保留可回溯。",
              per.current_version);
-    aic_persona_free(&per);
+    dsc_persona_free(&per);
 }
 
 static void app_persona_rollback(App *a, int idx)
 {
-    aic_persona per;
-    aic_prompt_version *vs = NULL;
+    dsc_persona per;
+    dsc_prompt_version *vs = NULL;
     size_t n = 0;
     size_t i;
     int want;
@@ -4635,23 +4635,23 @@ static void app_persona_rollback(App *a, int idx)
     if (idx < 0 || idx >= a->ver_n) return;
     want = a->ver_num[idx];
     memset(&per, 0, sizeof(per));
-    aic_persona_ensure_default(a->db, &per);
-    aic_persona_versions(a->db, per.id, &vs, &n);
+    dsc_persona_ensure_default(a->db, &per);
+    dsc_persona_versions(a->db, per.id, &vs, &n);
     for (i = 0; i < n; i++) {
         if (vs[i].version == want) {
-            aic_persona out;
+            dsc_persona out;
             memset(&out, 0, sizeof(out));
-            if (aic_persona_update(a->db, per.id, per.name, per.description, vs[i].content, &out) == AIC_OK) {
+            if (dsc_persona_update(a->db, per.id, per.name, per.description, vs[i].content, &out) == DSC_OK) {
                 app_status(a, "已回退到 v%d，并生成新版本 v%d", want, out.current_version);
-                aic_persona_free(&out);
+                dsc_persona_free(&out);
                 done = 1;
             }
             break;
         }
     }
     if (!done) app_status(a, "回退失败：找不到该版本的内容");
-    if (vs) aic_prompt_version_free_array(vs, n);
-    aic_persona_free(&per);
+    if (vs) dsc_prompt_version_free_array(vs, n);
+    dsc_persona_free(&per);
     app_ai_versions(a);
 }
 
@@ -4667,12 +4667,12 @@ static void app_ai_avatar_pick(App *a)
                   wf, 900))
         return;
     w_to_u8(wf, src, sizeof(src));
-    rc = aic_avatar_import(src, a->root, rel, sizeof(rel), err, sizeof(err));
-    if (rc != AIC_OK) {
-        app_status(a, "AI 头像处理失败：%s", err[0] ? err : aic_strerror(rc));
+    rc = dsc_avatar_import(src, a->root, rel, sizeof(rel), err, sizeof(err));
+    if (rc != DSC_OK) {
+        app_status(a, "AI 头像处理失败：%s", err[0] ? err : dsc_strerror(rc));
         return;
     }
-    aic_setting_set(a->db, "persona.avatar", rel);
+    dsc_setting_set(a->db, "persona.avatar", rel);
     app_status(a, "AI 头像已更新（压缩到最长边 512 像素）");
 }
 
@@ -4683,7 +4683,7 @@ static const AdvSec g_adv[] = {
     { "一、插件制作",
       "插件是一个目录：plugin.json 清单 + 入口动态库 + 可选资源。清单字段为 id / name / version /"
       " author / entry（相对路径）/ permissions / extension_points，可选 sha256 用于安装前校验入口文件哈希。"
-      " 入口符号为 aic_plugin_call，签名为 int aic_plugin_call(const char *request_json, char *out,"
+      " 入口符号为 dsc_plugin_call，签名为 int dsc_plugin_call(const char *request_json, char *out,"
       " size_t out_cap)，把结果写进 out（UTF-8，NUL 结尾），返回 0 表示成功。仓库里的 plugins/sample_basic 是最小示例。" },
     { "二、扩展点",
       "prompt.fragment：读取插件目录下的 prompt_fragment.txt，按扩展点声明顺序拼进提示词。"
@@ -4762,7 +4762,7 @@ static void paint_advanced(App *a, HDC dc, RECT content)
     y.top += 8 - a->scroll[1];
     draw_text(dc, a->font_title, "进阶指南",
               (RECT){y.left, y.top, y.right - 140, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
               "返回设置", ACT_ROW_ADVANCED, 0);
     y.top += 52;
@@ -4771,42 +4771,42 @@ static void paint_advanced(App *a, HDC dc, RECT content)
         int h2;
         draw_text(dc, a->font_ui, g_adv[i].title,
                   (RECT){y.left, y.top, y.right, y.top + h1},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += h1 + 4;
         h2 = adv_measure(dc, a->font_small, g_adv[i].body, width);
         draw_text(dc, a->font_small, g_adv[i].body,
                   (RECT){y.left, y.top, y.right, y.top + h2},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += h2 + 20;
     }
 }
 
 
 /* ---------- 内置知识库（FR-31 / FR-32 / §17） ---------- */
-static void kb_row_add(aic_db *db, const char *id, const char *label, int kind)
+static void kb_row_add(dsc_db *db, const char *id, const char *label, int kind)
 {
     int slot = g_kb_row_n;
     if (slot >= (int)(sizeof(g_kb_row_id) / sizeof(g_kb_row_id[0]))) return;
     snprintf(g_kb_row_id[slot], sizeof(g_kb_row_id[0]), "%s", id ? id : "");
-    aic_strlcpy_utf8(g_kb_row_label[slot], sizeof(g_kb_row_label[0]), label ? label : "");
+    dsc_strlcpy_utf8(g_kb_row_label[slot], sizeof(g_kb_row_label[0]), label ? label : "");
     g_kb_row_kind[slot] = kind;
-    g_kb_row_bm[slot] = (kind == 1 && db && id && id[0] && aic_kb_bookmark_has(db, id)) ? 1 : 0;
+    g_kb_row_bm[slot] = (kind == 1 && db && id && id[0] && dsc_kb_bookmark_has(db, id)) ? 1 : 0;
     g_kb_row_n++;
 }
 
 /* 书签与最近阅读在设置里是 id 的 JSON 数组（knowledge.c）。 */
-static void kb_rows_from_ids(aic_db *db, const aic_kb *kb, const char *json, const char *section)
+static void kb_rows_from_ids(dsc_db *db, const dsc_kb *kb, const char *json, const char *section)
 {
     jv *arr = NULL;
     size_t i, n;
 
     if (!json || !json[0]) return;
-    if (jv_parse(json, strlen(json), &arr, NULL, 0) != AIC_OK || !arr) return;
+    if (jv_parse(json, strlen(json), &arr, NULL, 0) != DSC_OK || !arr) return;
     n = jv_len(arr);
     if (n > 0) kb_row_add(db, "", section, 0);
     for (i = 0; i < n; i++) {
         const char *id = jv_string(jv_at(arr, i));
-        const aic_kb_article *ar = id ? aic_kb_find(kb, id) : NULL;
+        const dsc_kb_article *ar = id ? dsc_kb_find(kb, id) : NULL;
         if (ar) kb_row_add(db, ar->id, ar->title, 1);
     }
     jv_free(arr);
@@ -4825,38 +4825,38 @@ static void kb_build_rows(App *a)
         snprintf(sec, sizeof(sec), "检索结果（%d）", a->kb_hit_n);
         kb_row_add(a->db, "", sec, 0);
         for (i = 0; i < a->kb_hit_n; i++) {
-            const aic_kb_article *ar = aic_kb_find(a->kb, a->kb_hits[i]);
+            const dsc_kb_article *ar = dsc_kb_find(a->kb, a->kb_hits[i]);
             if (ar) kb_row_add(a->db, ar->id, ar->title, 1);
         }
         return;
     }
 
     sb_init(&list);
-    if (aic_kb_bookmark_list(a->db, &list) == AIC_OK)
+    if (dsc_kb_bookmark_list(a->db, &list) == DSC_OK)
         kb_rows_from_ids(a->db, a->kb, sb_cstr(&list), "书签");
     sb_reset(&list);
-    if (aic_kb_recent_list(a->db, &list) == AIC_OK)
+    if (dsc_kb_recent_list(a->db, &list) == DSC_OK)
         kb_rows_from_ids(a->db, a->kb, sb_cstr(&list), "最近阅读");
     sb_free(&list);
 
-    for (gi = 0; gi < aic_kb_group_count(a->kb); gi++) {
-        const aic_kb_group *g = aic_kb_group_at(a->kb, gi);
+    for (gi = 0; gi < dsc_kb_group_count(a->kb); gi++) {
+        const dsc_kb_group *g = dsc_kb_group_at(a->kb, gi);
         if (!g) continue;
         kb_row_add(a->db, "", g->title, 0);
-        for (i = 0; i < aic_kb_article_count(a->kb, gi); i++) {
-            const aic_kb_article *ar = aic_kb_article_at(a->kb, gi, i);
+        for (i = 0; i < dsc_kb_article_count(a->kb, gi); i++) {
+            const dsc_kb_article *ar = dsc_kb_article_at(a->kb, gi, i);
             if (ar) kb_row_add(a->db, ar->id, ar->title, 1);
         }
     }
 }
 
-/* 段落与示意图节点都要按长度切出来：aic_kb_paragraph 返回的是正文里的一个区间，
+/* 段落与示意图节点都要按长度切出来：dsc_kb_paragraph 返回的是正文里的一个区间，
  * 不以结束符收尾，直接拿去画会把后面几段一起画出来。 */
-static const char *kb_para_text(const aic_kb_article *ar, int i)
+static const char *kb_para_text(const dsc_kb_article *ar, int i)
 {
-    static char buf[AIC_KB_BODY_CAP + 1];
+    static char buf[DSC_KB_BODY_CAP + 1];
     int len = 0;
-    const char *p = aic_kb_paragraph(ar, i, &len);
+    const char *p = dsc_kb_paragraph(ar, i, &len);
     buf[0] = '\0';
     if (!p || len <= 0) return buf;
     if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
@@ -4865,7 +4865,7 @@ static const char *kb_para_text(const aic_kb_article *ar, int i)
     return buf;
 }
 
-static int kb_diagram_count(const aic_kb_article *ar)
+static int kb_diagram_count(const dsc_kb_article *ar)
 {
     const char *p;
     int n = 1;
@@ -4874,7 +4874,7 @@ static int kb_diagram_count(const aic_kb_article *ar)
     return n;
 }
 
-static int kb_diagram_node(const aic_kb_article *ar, int index, char *out, size_t cap)
+static int kb_diagram_node(const dsc_kb_article *ar, int index, char *out, size_t cap)
 {
     const char *p, *nl;
     int i;
@@ -4900,10 +4900,10 @@ static void paint_kb(App *a, HDC dc, RECT content)
 {
     RECT y = content;
     int width, needed = 0, i;
-    const aic_kb_article *ar;
+    const dsc_kb_article *ar;
 
     app_kb_refresh(a);
-    ar = (a->kb && a->kb_article[0]) ? aic_kb_find(a->kb, a->kb_article) : NULL;
+    ar = (a->kb && a->kb_article[0]) ? dsc_kb_find(a->kb, a->kb_article) : NULL;
     if (!ar) kb_build_rows(a);
 
     y.left += PAD + 8;
@@ -4915,7 +4915,7 @@ static void paint_kb(App *a, HDC dc, RECT content)
         for (i = 0; i < g_kb_row_n; i++) needed += (g_kb_row_kind[i] ? 36 : 30);
         if (g_kb_row_n == 0) needed += 40;
     } else {
-        int pc = aic_kb_paragraph_count(ar);
+        int pc = dsc_kb_paragraph_count(ar);
         needed = 52 + 44 + 12 + adv_measure(dc, a->font_small, ar->summary, width) + 20;
         for (i = 0; i < pc; i++)
             needed += adv_measure(dc, a->font_ui, kb_para_text(ar, i), width) + 16;
@@ -4941,33 +4941,33 @@ static void paint_kb(App *a, HDC dc, RECT content)
         char sub[200];
         draw_text(dc, a->font_title, "内置知识库",
                   (RECT){y.left, y.top, y.right - 140, y.top + 44},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
                   "返回设置", ACT_KB_BACK, 0);
         y.top += 52;
 
         if (a->kb)
             snprintf(sub, sizeof(sub), "知识包 v%s · %d 篇 · %d 组 · 书签 %d · 最近阅读 %d",
-                     aic_kb_version(a->kb), a->kb->article_n, aic_kb_group_count(a->kb),
-                     aic_kb_bookmark_count(a->db), aic_kb_recent_count(a->db));
+                     dsc_kb_version(a->kb), a->kb->article_n, dsc_kb_group_count(a->kb),
+                     dsc_kb_bookmark_count(a->db), dsc_kb_recent_count(a->db));
         else
-            aic_strlcpy_utf8(sub, sizeof(sub), "知识包未载入：随包资源缺失或损坏");
+            dsc_strlcpy_utf8(sub, sizeof(sub), "知识包未载入：随包资源缺失或损坏");
         draw_text(dc, a->font_small, sub, (RECT){y.left, y.top, y.right, y.top + 26},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         y.top += 26;
 
         {
             RECT box = {y.left, y.top, y.right - 96, y.top + 44};
             char hint[256];
-            fill_round(dc, box, 8, tok(a, AIC_TOK_CARD_BG));
-            stroke_round(dc, box, 8, a->kb_focus ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_DIVIDER), 1);
+            fill_round(dc, box, 8, tok(a, DSC_TOK_CARD_BG));
+            stroke_round(dc, box, 8, a->kb_focus ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_DIVIDER), 1);
             if (a->kb_query[0])
-                aic_strlcpy_utf8(hint, sizeof(hint), a->kb_query);
+                dsc_strlcpy_utf8(hint, sizeof(hint), a->kb_query);
             else
-                aic_strlcpy_utf8(hint, sizeof(hint), a->kb_focus ? "|" : "检索章节标题或正文关键词");
+                dsc_strlcpy_utf8(hint, sizeof(hint), a->kb_focus ? "|" : "检索章节标题或正文关键词");
             draw_text(dc, a->font_ui, hint,
                       (RECT){box.left + 12, box.top, box.right - 12, box.bottom},
-                      a->kb_query[0] ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+                      a->kb_query[0] ? tok(a, DSC_TOK_TEXT) : tok(a, DSC_TOK_TEXT_SECONDARY),
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             reg(box, ACT_KB_SEARCH_EDIT);
             draw_pill(a, dc, (RECT){y.right - 84, y.top, y.right, y.top + 44},
@@ -4979,7 +4979,7 @@ static void paint_kb(App *a, HDC dc, RECT content)
             if (g_kb_row_kind[i] == 0) {
                 draw_text(dc, a->font_bold, g_kb_row_label[i],
                           (RECT){y.left, y.top, y.right, y.top + 30},
-                          tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                          tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                 y.top += 30;
             } else {
                 RECT rr = {y.left, y.top, y.right, y.top + 36};
@@ -4987,7 +4987,7 @@ static void paint_kb(App *a, HDC dc, RECT content)
                 snprintf(lab, sizeof(lab), "%s%.200s", g_kb_row_bm[i] ? "★ " : "", g_kb_row_label[i]);
                 draw_text(dc, a->font_ui, lab,
                           (RECT){rr.left + 12, rr.top, rr.right - 12, rr.bottom},
-                          tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                          tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                 reg(rr, ACT_KB_ITEM_BASE + i);
                 y.top += 36;
             }
@@ -4995,7 +4995,7 @@ static void paint_kb(App *a, HDC dc, RECT content)
         if (g_kb_row_n == 0) {
             draw_text(dc, a->font_small, "没有可显示的条目：知识包为空，或检索没有命中。",
                       (RECT){y.left, y.top, y.right, y.top + 40},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
             y.top += 40;
         }
         y.top += 14;
@@ -5003,17 +5003,17 @@ static void paint_kb(App *a, HDC dc, RECT content)
                   "章节树随包离线分发，示意图本地存放、不依赖外链；书签与最近阅读只存在本机设置里。"
                   "选中正文段落可插为引用片段，进插件注入区共用同一份上下文预算，片段不携全文。",
                   (RECT){y.left, y.top, y.right, y.top + 52},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         return;
     }
 
     draw_text(dc, a->font_title, ar->title,
               (RECT){y.left, y.top, y.right, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     y.top += 52;
 
     draw_pill(a, dc, (RECT){y.left, y.top, y.left + 108, y.top + 34},
-              aic_kb_bookmark_has(a->db, ar->id) ? "取消书签" : "加入书签",
+              dsc_kb_bookmark_has(a->db, ar->id) ? "取消书签" : "加入书签",
               ACT_KB_BOOKMARK, 0);
     draw_pill(a, dc, (RECT){y.left + 116, y.top, y.left + 236, y.top + 34},
               "引用此段", ACT_KB_CITE, 1);
@@ -5025,22 +5025,22 @@ static void paint_kb(App *a, HDC dc, RECT content)
 
     draw_text(dc, a->font_small, ar->summary,
               (RECT){y.left, y.top, y.right, y.top + adv_measure(dc, a->font_small, ar->summary, width)},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     y.top += adv_measure(dc, a->font_small, ar->summary, width) + 20;
 
     {
-        int pc = aic_kb_paragraph_count(ar);
+        int pc = dsc_kb_paragraph_count(ar);
         for (i = 0; i < pc; i++) {
             const char *para = kb_para_text(ar, i);
             int h = adv_measure(dc, a->font_ui, para, width);
             RECT rr = {y.left - 6, y.top - 4, y.right, y.top + h + 10};
             if (a->kb_para == i) {
-                fill_round(dc, rr, 8, tok(a, AIC_TOK_CARD_BG));
-                stroke_round(dc, rr, 8, tok(a, AIC_TOK_PRIMARY), 1);
+                fill_round(dc, rr, 8, tok(a, DSC_TOK_CARD_BG));
+                stroke_round(dc, rr, 8, tok(a, DSC_TOK_PRIMARY), 1);
             }
             draw_text(dc, a->font_ui, para,
                       (RECT){y.left + 4, y.top, y.right - 4, y.top + h},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
             reg(rr, ACT_KB_PARA_BASE + i);
             y.top += h + 16;
         }
@@ -5048,7 +5048,7 @@ static void paint_kb(App *a, HDC dc, RECT content)
 
     draw_text(dc, a->font_bold, "示意图（本地绘制，节点顺序即讲解顺序）",
               (RECT){y.left, y.top, y.right, y.top + 26},
-              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
     {
         /* 示意图按「节点 + 箭头」画：节点顺序就是讲解顺序，不依赖任何外链图片。 */
@@ -5062,16 +5062,16 @@ static void paint_kb(App *a, HDC dc, RECT content)
             nr.right = y.right - 24;
             nr.top = y.top;
             nr.bottom = y.top + 34;
-            fill_round(dc, nr, 8, tok(a, AIC_TOK_CARD_BG));
-            stroke_round(dc, nr, 8, tok(a, AIC_TOK_PRIMARY), 1);
+            fill_round(dc, nr, 8, tok(a, DSC_TOK_CARD_BG));
+            stroke_round(dc, nr, 8, tok(a, DSC_TOK_PRIMARY), 1);
             draw_text(dc, a->font_ui, node,
                       (RECT){nr.left + 12, nr.top, nr.right - 12, nr.bottom},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             y.top += 34;
             if (ni + 1 < dn) {
                 draw_text(dc, a->font_bold, "\u2193",
                           (RECT){y.left, y.top, y.right, y.top + 18},
-                          tok(a, AIC_TOK_PRIMARY), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                          tok(a, DSC_TOK_PRIMARY), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 y.top += 18;
             }
         }
@@ -5079,34 +5079,34 @@ static void paint_kb(App *a, HDC dc, RECT content)
     }
 
     draw_text(dc, a->font_bold, "示例", (RECT){y.left, y.top, y.right, y.top + 26},
-              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
     {
         int h = adv_measure(dc, a->font_small, ar->example, width);
         draw_text(dc, a->font_small, ar->example, (RECT){y.left, y.top, y.right, y.top + h},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += h + 16;
     }
 
     draw_text(dc, a->font_bold, "要点卡片", (RECT){y.left, y.top, y.right, y.top + 26},
-              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
     {
         int h = adv_measure(dc, a->font_small, ar->points, width);
         draw_text(dc, a->font_small, ar->points, (RECT){y.left, y.top, y.right, y.top + h},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += h + 16;
     }
 
     draw_text(dc, a->font_bold, "来源（只收录允许再分发的内容）",
               (RECT){y.left, y.top, y.right, y.top + 26},
-              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
     for (i = 0; i < ar->source_n; i++) {
         char line[512];
-        aic_kb_source_line(&ar->sources[i], line, sizeof(line));
+        dsc_kb_source_line(&ar->sources[i], line, sizeof(line));
         draw_text(dc, a->font_small, line, (RECT){y.left, y.top, y.right, y.top + 26},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         y.top += 28;
     }
     y.top += 24;
@@ -5140,7 +5140,7 @@ static void paint_error_center(App *a, HDC dc, RECT content)
 
     draw_text(dc, a->font_title, "错误中心",
               (RECT){y.left, y.top, y.right - 140, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
               "返回设置", ACT_ERR_BACK, 0);
     y.top += 52;
@@ -5153,7 +5153,7 @@ static void paint_error_center(App *a, HDC dc, RECT content)
         if (per_row < 1) per_row = 1;
         for (cat = 0; cat <= g_err_cat_n; cat++) {
             RECT rc;
-            const char *label = (cat == 0) ? "全部" : aic_error_category_text(g_err_cats[cat - 1]);
+            const char *label = (cat == 0) ? "全部" : dsc_error_category_text(g_err_cats[cat - 1]);
             if ((cat % per_row) == 0 && cat > 0) { px = y.left; py += 38; }
             rc = (RECT){px, py, px + 74, py + 32};
             draw_pill(a, dc, rc, label, ACT_ERR_CAT_BASE + cat, a->err_filter == cat);
@@ -5169,46 +5169,46 @@ static void paint_error_center(App *a, HDC dc, RECT content)
               "清除", ACT_ERR_CLEAR, 0);
     draw_pill(a, dc, (RECT){y.left + 192, y.top, y.left + 316, y.top + 32},
               "导出诊断包", ACT_ERR_EXPORT, 1);
-    snprintf(v, sizeof(v), "%d 条未查看 · 保留 %d 天", aic_error_unread(a->db),
-             aic_error_retention_days(a->db));
+    snprintf(v, sizeof(v), "%d 条未查看 · 保留 %d 天", dsc_error_unread(a->db),
+             dsc_error_retention_days(a->db));
     draw_text(dc, a->font_small, v,
               (RECT){y.left + 326, y.top, y.right, y.top + 32},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     y.top += 46;
 
     if (a->err_n == 0) {
         draw_text(dc, a->font_small,
-                  aic_error_count(a->db, 0) == 0 ? "还没有记录到运行错误。" : "当前类别下没有错误。",
+                  dsc_error_count(a->db, 0) == 0 ? "还没有记录到运行错误。" : "当前类别下没有错误。",
                   (RECT){y.left, y.top, y.right, y.top + 40},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += 40;
     }
 
     for (i = 0; i < a->err_n; i++) {
-        const aic_error_entry *er = &a->err_rows[i];
+        const dsc_error_entry *er = &a->err_rows[i];
         RECT card = {y.left, y.top, y.right, y.top + 84};
         char head[300];
         RECT actr;
         int act_w = 96;
 
-        fill_round(dc, card, 8, tok(a, AIC_TOK_CARD_BG));
+        fill_round(dc, card, 8, tok(a, DSC_TOK_CARD_BG));
         snprintf(head, sizeof(head), "%s · %s · %s%s", er->occurred_at,
-                 aic_error_category_text(er->category), er->code[0] ? er->code : "未命名错误",
+                 dsc_error_category_text(er->category), er->code[0] ? er->code : "未命名错误",
                  er->acknowledged ? "" : " · 未查看");
         draw_text(dc, a->font_small, head,
                   (RECT){card.left + 12, card.top + 8, card.right - act_w - 24, card.top + 30},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         draw_text(dc, a->font_ui, er->message,
                   (RECT){card.left + 12, card.top + 30, card.right - act_w - 24, card.top + 54},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (er->detail_path[0]) {
             /* 右侧已经有动作入口，这里只说「留了脱敏原始响应」，不重复动作名。 */
             draw_text(dc, a->font_small, "已留脱敏原始响应（可在诊断包里导出）",
                       (RECT){card.left + 12, card.top + 56, card.right - act_w - 24, card.top + 78},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
         actr = (RECT){card.right - act_w - 8, card.top + 24, card.right - 8, card.top + 60};
-        draw_pill(a, dc, actr, aic_error_action_text(aic_error_action_for(er->category)),
+        draw_pill(a, dc, actr, dsc_error_action_text(dsc_error_action_for(er->category)),
                   ACT_ERR_ACT_BASE + i, 0);
         y.top += 92;
     }
@@ -5218,16 +5218,16 @@ static void paint_error_center(App *a, HDC dc, RECT content)
               "原始响应脱敏后写进 errors/ 目录（诊断日志）；错误不进消息表、不进上下文，也不进聊天框。"
               "额度不足给余额入口、网络中断给重试入口，重试沿用输入框里的原草稿，不产生新消息。",
               (RECT){y.left, y.top, y.right, y.top + 56},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
 }
 
 /* ---------- 设备能力与权限（FR-35 / §18） ---------- */
 /* 「选择…」按钮的动作：只有设备图片 / 已安装软件 / 本地文件三项需要用户显式挑一条。 */
 static int cap_pick_action(const char *kind)
 {
-    if (strcmp(kind, AIC_CAP_MEDIA) == 0) return ACT_CAP_PICK_MEDIA;
-    if (strcmp(kind, AIC_CAP_APPS) == 0) return ACT_CAP_PICK_APPS;
-    if (strcmp(kind, AIC_CAP_FILES) == 0) return ACT_CAP_PICK_FILES;
+    if (strcmp(kind, DSC_CAP_MEDIA) == 0) return ACT_CAP_PICK_MEDIA;
+    if (strcmp(kind, DSC_CAP_APPS) == 0) return ACT_CAP_PICK_APPS;
+    if (strcmp(kind, DSC_CAP_FILES) == 0) return ACT_CAP_PICK_FILES;
     return 0;
 }
 
@@ -5249,7 +5249,7 @@ static int cap_pick_path(App *a, const wchar_t *filter, const char *key, const w
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) return 0;
     w_to_u8(wf, u8, (int)sizeof(u8));
-    aic_setting_set(a->db, key, u8);
+    dsc_setting_set(a->db, key, u8);
     app_publish_setting(a, key);
     return 1;
 }
@@ -5257,7 +5257,7 @@ static int cap_pick_path(App *a, const wchar_t *filter, const char *key, const w
 static void paint_capability(App *a, HDC dc, RECT content)
 {
     RECT y = content;
-    int i, n = (int)aic_cap_count(), needed;
+    int i, n = (int)dsc_cap_count(), needed;
     char v[300];
 
     y.left += PAD + 8;
@@ -5276,47 +5276,47 @@ static void paint_capability(App *a, HDC dc, RECT content)
 
     draw_text(dc, a->font_title, "设备权限",
               (RECT){y.left, y.top, y.right - 140, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
               "返回设置", ACT_CAP_BACK, 0);
     y.top += 52;
 
     snprintf(v, sizeof(v), "时间固定授予、不可撤销，未授予不进主页；其余按需申请，可单独授予或撤销。");
     draw_text(dc, a->font_small, v, (RECT){y.left, y.top, y.right, y.top + 26},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
 
     for (i = 0; i < n; i++) {
-        const char *kind = aic_cap_kind_at(i);
-        aic_cap_status st;
+        const char *kind = dsc_cap_kind_at(i);
+        dsc_cap_status st;
         RECT card = {y.left, y.top, y.right, y.top + 96};
         const char *state_txt;
         int revocable;
 
         if (!kind) continue;
         memset(&st, 0, sizeof(st));
-        aic_cap_status_load(a->db, kind, &st);
-        revocable = aic_cap_revocable(kind);
+        dsc_cap_status_load(a->db, kind, &st);
+        revocable = dsc_cap_revocable(kind);
 
-        fill_round(dc, card, 8, tok(a, AIC_TOK_CARD_BG));
-        draw_text(dc, a->font_ui, aic_cap_name(kind),
+        fill_round(dc, card, 8, tok(a, DSC_TOK_CARD_BG));
+        draw_text(dc, a->font_ui, dsc_cap_name(kind),
                   (RECT){card.left + 12, card.top + 8, card.left + 160, card.top + 32},
-                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        if (st.granted) state_txt = aic_cap_required(kind) ? "已授予（必需）" : "已授予";
+        if (st.granted) state_txt = dsc_cap_required(kind) ? "已授予（必需）" : "已授予";
         else if (strcmp(st.state, "denied") == 0) state_txt = "已拒绝";
         else if (strcmp(st.state, "unset") == 0) state_txt = "未申请";
         else state_txt = st.state;
         draw_text(dc, a->font_small, state_txt,
                   (RECT){card.left + 168, card.top + 8, card.right - 140, card.top + 32},
-                  st.granted ? tok(a, AIC_TOK_SUCCESS) : tok(a, AIC_TOK_TEXT_SECONDARY),
+                  st.granted ? tok(a, DSC_TOK_SUCCESS) : tok(a, DSC_TOK_TEXT_SECONDARY),
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        draw_text(dc, a->font_small, aic_cap_purpose(kind),
+        draw_text(dc, a->font_small, dsc_cap_purpose(kind),
                   (RECT){card.left + 12, card.top + 34, card.right - 140, card.top + 58},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        if (aic_cap_required(kind) && !revocable) {
+        if (dsc_cap_required(kind) && !revocable) {
             draw_pill(a, dc, (RECT){card.right - 132, card.top + 8, card.right - 12, card.top + 40},
                       "必需", 0, 0);
         } else {
@@ -5332,12 +5332,12 @@ static void paint_capability(App *a, HDC dc, RECT content)
             snprintf(used, sizeof(used), "最近使用 %s", st.last_used_at);
             draw_text(dc, a->font_small, used,
                       (RECT){card.left + 12, card.top + 60, card.right - 140, card.top + 82},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else if (st.deny_count > 0) {
             snprintf(v, sizeof(v), "已拒绝 %d 次（不影响主对话）", st.deny_count);
             draw_text(dc, a->font_small, v,
                       (RECT){card.left + 12, card.top + 60, card.right - 140, card.top + 82},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
         y.top += 104;
     }
@@ -5346,19 +5346,19 @@ static void paint_capability(App *a, HDC dc, RECT content)
         y.top += 6;
         draw_text(dc, a->font_bold, "选一条作为「已安装软件」的注入内容（完整清单不上传）",
                   (RECT){y.left, y.top, y.right, y.top + 26},
-                  tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         y.top += 28;
         for (i = 0; i < a->app_n; i++) {
             RECT rr = {y.left, y.top, y.right, y.top + 34};
             char sel[160];
             int cur;
             sel[0] = '\0';
-            if (aic_setting_get(a->db, AIC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != AIC_OK)
+            if (dsc_setting_get(a->db, DSC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != DSC_OK)
                 sel[0] = '\0';
-            cur = aic_str_ieq(sel, a->app_list[i]);
+            cur = dsc_str_ieq(sel, a->app_list[i]);
             draw_text(dc, a->font_small, a->app_list[i],
                       (RECT){rr.left + 12, rr.top, rr.right - 12, rr.bottom},
-                      cur ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_TEXT),
+                      cur ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_TEXT),
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             reg(rr, ACT_CAP_APP_BASE + i);
             y.top += 34;
@@ -5370,12 +5370,12 @@ static void paint_capability(App *a, HDC dc, RECT content)
               "取数都在本机做：位置与天气在桌面端没有可用来源，取不到时按 §9.4 写一条错误，主对话与同步继续可用；"
               "原始图片、原始文件、完整软件清单都不上传，注入前脱敏。",
               (RECT){y.left, y.top, y.right, y.top + 52},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     if (a->cap_msg[0]) {
         y.top += 56;
         draw_text(dc, a->font_small, a->cap_msg,
                   (RECT){y.left, y.top, y.right, y.top + 40},
-                  tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     }
 }
 
@@ -5387,24 +5387,24 @@ static void draw_field(App *a, HDC dc, RECT box, const char *text, int focus, in
     char vis[512];
     size_t n = strlen(text ? text : "");
 
-    fill_round(dc, box, 8, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, box, 8, focus ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, box, 8, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, box, 8, focus ? tok(a, DSC_TOK_PRIMARY) : tok(a, DSC_TOK_DIVIDER), 1);
     if (n == 0) {
-        aic_strlcpy_utf8(vis, sizeof(vis), focus ? "|" : hint);
+        dsc_strlcpy_utf8(vis, sizeof(vis), focus ? "|" : hint);
     } else if (masked) {
         size_t i, cap = sizeof(vis);
         for (i = 0; i < n && i + 2 < cap; i++) vis[i] = '*';
         if (focus && i + 2 < cap) vis[i++] = '|';
         vis[i] = 0;
     } else {
-        aic_strlcpy_utf8(vis, sizeof(vis), text);
+        dsc_strlcpy_utf8(vis, sizeof(vis), text);
         if (focus) {
             size_t l = strlen(vis);
             if (l + 2 < sizeof(vis)) { vis[l] = '|'; vis[l + 1] = 0; }
         }
     }
     draw_text(dc, a->font_ui, vis, (RECT){box.left + 12, box.top, box.right - 12, box.bottom},
-              (n || focus) ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+              (n || focus) ? tok(a, DSC_TOK_TEXT) : tok(a, DSC_TOK_TEXT_SECONDARY),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -5417,15 +5417,15 @@ static void paint_credential(App *a, HDC dc, RECT client)
     RECT b1 = {client.left + 40, client.top + 316, client.left + 190, client.top + 356};
     RECT b2 = {client.left + 206, client.top + 316, client.left + 346, client.top + 356};
 
-    draw_text(dc, a->font_title, "配置 DeepSeek API Key", t, tok(a, AIC_TOK_TEXT),
+    draw_text(dc, a->font_title, "配置 DeepSeek API Key", t, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(dc, a->font_ui,
               "首次启动必须先填写 API Key。凭证只写入系统安全存储（Windows 凭据管理器），"
               "界面与日志不出现明文，导出包与备份包也不含凭证；凭证就绪后才进入主页选择默认模式。"
               " 没有 Key 时可以先用「演示模式」看界面，演示不会发出任何网络请求。",
-              d, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              d, tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     draw_text(dc, a->font_small, "API Key（形如 sk-...）", lbl,
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_field(a, dc, box, a->cred_key, a->cred_focus, 1, "点这里输入");
     reg(box, ACT_CRED_KEY_EDIT);
     draw_pill(a, dc, b1, "校验并继续", ACT_CRED_SAVE, 1);
@@ -5442,43 +5442,43 @@ static void paint_mode_select(App *a, HDC dc, RECT client)
     RECT b1 = {client.left + 60, client.top + 306, client.left + 250, client.top + 346};
     RECT b2 = {client.left + 440, client.top + 306, client.left + 630, client.top + 346};
 
-    draw_text(dc, a->font_title, "选择默认模式", t, tok(a, AIC_TOK_TEXT),
+    draw_text(dc, a->font_title, "选择默认模式", t, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(dc, a->font_ui,
               "两种模式共用凭证、模型、人设、插件与用户资料，会话记录按模式隔离；"
               "同一时刻只有一个模式活动，之后可以在左下角随时切换，各自保留滚动位置与草稿。",
-              d, tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              d, tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
 
-    fill_round(dc, c1, 12, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, c1, 12, tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, c1, 12, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, c1, 12, tok(a, DSC_TOK_DIVIDER), 1);
     draw_text(dc, a->font_bold, "聊天模式", (RECT){c1.left + 20, c1.top + 16, c1.right - 20, c1.top + 48},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(dc, a->font_small,
               "单对话、QQ 风格的三栏界面，适合长期陪伴。默认进入「聊天」栏。",
               (RECT){c1.left + 20, c1.top + 52, c1.right - 20, c1.top + 118},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     draw_pill(a, dc, b1, "用聊天模式", ACT_MODE_CHAT, 1);
 
-    fill_round(dc, c2, 12, tok(a, AIC_TOK_CARD_BG));
-    stroke_round(dc, c2, 12, tok(a, AIC_TOK_DIVIDER), 1);
+    fill_round(dc, c2, 12, tok(a, DSC_TOK_CARD_BG));
+    stroke_round(dc, c2, 12, tok(a, DSC_TOK_DIVIDER), 1);
     draw_text(dc, a->font_bold, "问答模式", (RECT){c2.left + 20, c2.top + 16, c2.right - 20, c2.top + 48},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(dc, a->font_small,
               "多会话列表、置顶与搜索，参照 DeepSeek 网页版的工作方式，适合查资料与写代码。",
               (RECT){c2.left + 20, c2.top + 52, c2.right - 20, c2.top + 118},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     draw_pill(a, dc, b2, "用问答模式", ACT_MODE_QA, 1);
 }
 
 /* ---------- 配对管理页（第 16 章 FR-25 / FR-26 / FR-27 / FR-28） ---------- */
-static const char *pair_phase_cn(aic_sync_state st)
+static const char *pair_phase_cn(dsc_sync_state st)
 {
     switch (st) {
-    case AIC_SYNC_DISCOVERING: return "发现中";
-    case AIC_SYNC_CONNECTING:  return "连接中";
-    case AIC_SYNC_PAIRING:     return "待配对（正在等对端输入配对码）";
-    case AIC_SYNC_PAIRED:      return "已配对（链路已断开，事件留在本地队列）";
-    case AIC_SYNC_SYNCING:     return "同步中";
+    case DSC_SYNC_DISCOVERING: return "发现中";
+    case DSC_SYNC_CONNECTING:  return "连接中";
+    case DSC_SYNC_PAIRING:     return "待配对（正在等对端输入配对码）";
+    case DSC_SYNC_PAIRED:      return "已配对（链路已断开，事件留在本地队列）";
+    case DSC_SYNC_SYNCING:     return "同步中";
     default:                   return "空闲";
     }
 }
@@ -5487,17 +5487,17 @@ static void paint_pair(App *a, HDC dc, RECT content)
 {
     RECT y = content;
     char v[320];
-    const char *code = a->ses ? aic_session_our_code(a->ses) : "";
-    aic_sync_state ph = a->ses ? aic_session_phase(a->ses) : AIC_SYNC_IDLE;
-    int paired = a->ses ? aic_session_is_paired(a->ses) : 0;
-    aic_pair_record rec;
-    int have_rec = (aic_pairing_current(a->db, &rec) == AIC_OK);
+    const char *code = a->ses ? dsc_session_our_code(a->ses) : "";
+    dsc_sync_state ph = a->ses ? dsc_session_phase(a->ses) : DSC_SYNC_IDLE;
+    int paired = a->ses ? dsc_session_is_paired(a->ses) : 0;
+    dsc_pair_record rec;
+    int have_rec = (dsc_pairing_current(a->db, &rec) == DSC_OK);
     int conflicts = 0;
     int outbox = 0;
-    int realtime = aic_sync_realtime_enabled(a->db);
+    int realtime = dsc_sync_realtime_enabled(a->db);
 
-    aic_sync_conflict_count(a->db, &conflicts);
-    aic_sync_outbox_count(a->db, &outbox);
+    dsc_sync_conflict_count(a->db, &conflicts);
+    dsc_sync_outbox_count(a->db, &outbox);
 
     y.left += PAD + 8;
     y.right -= PAD + 8;
@@ -5512,31 +5512,31 @@ static void paint_pair(App *a, HDC dc, RECT content)
     y.top += 8 - a->scroll[1];
 
     draw_text(dc, a->font_title, "配对管理", (RECT){y.left, y.top, y.right - 140, y.top + 44},
-              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42}, "返回设置", ACT_PAIR_BACK, 0);
     y.top += 52;
 
     /* 本端配对码 */
     {
         RECT card = {y.left, y.top, y.right, y.top + 108};
-        fill_round(dc, card, 12, tok(a, AIC_TOK_CARD_BG));
-        stroke_round(dc, card, 12, tok(a, AIC_TOK_DIVIDER), 1);
+        fill_round(dc, card, 12, tok(a, DSC_TOK_CARD_BG));
+        stroke_round(dc, card, 12, tok(a, DSC_TOK_DIVIDER), 1);
         draw_text(dc, a->font_small, "本端配对码（有效期 5 分钟，出错 5 次作废）",
                   (RECT){card.left + 20, card.top + 10, card.right - 20, card.top + 34},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         if (code && *code)
             draw_text(dc, a->font_title, code,
                       (RECT){card.left + 20, card.top + 34, card.right - 20, card.top + 78},
-                      tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         else
             draw_text(dc, a->font_bold, "尚未生成：点下面的「开始监听等待连入」或「连到该地址并配对」",
                       (RECT){card.left + 20, card.top + 34, card.right - 20, card.top + 78},
-                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         snprintf(v, sizeof(v), "状态：%s%s%s", pair_phase_cn(ph), paired ? " · 已与 " : "",
                  paired && have_rec ? rec.peer_name : "");
         draw_text(dc, a->font_small, v,
                   (RECT){card.left + 20, card.top + 80, card.right - 20, card.top + 104},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         y.top += 120;
     }
 
@@ -5545,13 +5545,13 @@ static void paint_pair(App *a, HDC dc, RECT content)
               "两边都填对才配对成立；任一端输错即终止本次配对，配对完成前不交换任何业务实体。"
               " 配对成功后实时同步默认开启；同一时刻只与一个已配对设备驻留。",
               (RECT){y.left, y.top, y.right, y.top + 64},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     y.top += 72;
 
     /* 对端码输入 + 握手 */
     draw_text(dc, a->font_small, "对端显示的 6 位配对码",
               (RECT){y.left, y.top, y.right, y.top + 22},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 24;
     {
         RECT box = {y.left, y.top, y.left + 200, y.top + 38};
@@ -5565,7 +5565,7 @@ static void paint_pair(App *a, HDC dc, RECT content)
     /* 地址输入 + 连接 */
     draw_text(dc, a->font_small, "对端局域网地址（也可以直接点下面发现的设备）",
               (RECT){y.left, y.top, y.right, y.top + 22},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 24;
     {
         RECT box = {y.left, y.top, y.left + 260, y.top + 38};
@@ -5580,18 +5580,18 @@ static void paint_pair(App *a, HDC dc, RECT content)
     {
         RECT b1 = {y.left, y.top, y.left + 220, y.top + 38};
         RECT b2 = {y.left + 236, y.top, y.left + 440, y.top + 38};
-        draw_pill(a, dc, b1, a->pair_channel == AIC_CH_BLUETOOTH
+        draw_pill(a, dc, b1, a->pair_channel == DSC_CH_BLUETOOTH
                                    ? "开始监听等待连入（蓝牙）" : "开始监听等待连入", ACT_PAIR_HOST, 0);
-        draw_pill(a, dc, b2, a->pair_channel == AIC_CH_BLUETOOTH
+        draw_pill(a, dc, b2, a->pair_channel == DSC_CH_BLUETOOTH
                                    ? "列出已配对蓝牙设备" : "发现同网设备", ACT_PAIR_DISCOVER, 0);
         y.top += 50;
         {
             RECT c1 = {y.left, y.top, y.left + 300, y.top + 34};
             RECT c2 = {y.left + 316, y.top, y.left + 616, y.top + 34};
             int cur = app_pair_channel(a);
-            draw_pill(a, dc, c1, cur == AIC_CH_LAN ? "通道：局域网（当前）" : "通道：局域网",
+            draw_pill(a, dc, c1, cur == DSC_CH_LAN ? "通道：局域网（当前）" : "通道：局域网",
                       ACT_PAIR_CH_LAN, 0);
-            draw_pill(a, dc, c2, cur == AIC_CH_BLUETOOTH ? "通道：蓝牙 RFCOMM（当前）" : "通道：蓝牙 RFCOMM",
+            draw_pill(a, dc, c2, cur == DSC_CH_BLUETOOTH ? "通道：蓝牙 RFCOMM（当前）" : "通道：蓝牙 RFCOMM",
                       ACT_PAIR_CH_BT, 0);
             y.top += 44;
         }
@@ -5600,14 +5600,14 @@ static void paint_pair(App *a, HDC dc, RECT content)
     if (a->peer_n > 0) {
         draw_text(dc, a->font_small, "发现的设备（点一行填入地址）",
                   (RECT){y.left, y.top, y.right, y.top + 22},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         y.top += 24;
         for (int i = 0; i < a->peer_n && i < (int)(sizeof(a->peers) / sizeof(a->peers[0])); i++) {
             RECT row = {y.left, y.top, y.right, y.top + 36};
-            fill_round(dc, row, 8, tok(a, AIC_TOK_CARD_BG));
+            fill_round(dc, row, 8, tok(a, DSC_TOK_CARD_BG));
             snprintf(v, sizeof(v), "%s · %s:%d", a->peers[i].name, a->peers[i].addr, a->peers[i].port);
             draw_text(dc, a->font_ui, v, (RECT){row.left + 12, row.top, row.right - 12, row.bottom},
-                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                      tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             reg(row, ACT_PAIR_DISCOVER + 100 + i);
             y.top += 44;
         }
@@ -5625,7 +5625,7 @@ static void paint_pair(App *a, HDC dc, RECT content)
     snprintf(v, sizeof(v), "待发送事件 %d 条 · 同步范围：用户资料 / 人设 / 会话 / 消息 / 提示词版本 / 设置白名单 / 插件清单",
              outbox);
     draw_text(dc, a->font_small, v, (RECT){y.left, y.top, y.right, y.top + 22},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     y.top += 30;
 
     if (have_rec) {
@@ -5637,14 +5637,14 @@ static void paint_pair(App *a, HDC dc, RECT content)
     if (a->pair_msg[0]) {
         draw_text(dc, a->font_small, a->pair_msg,
                   (RECT){y.left, y.top, y.right, y.top + 60},
-                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+                  tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += 66;
     }
     draw_text(dc, a->font_small,
               "两条通道共用同一套帧格式与配对流程：局域网用于同一网段的两台设备，蓝牙 RFCOMM 用于"
               "已系统配对的设备（Android 由平台套接字转发字节流）。跨网络或防火墙阻断时请改用导出导入迁移记录。",
               (RECT){y.left, y.top, y.right, y.top + 40},
-              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+              tok(a, DSC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
 }
 
 /* ---------- 输入事件 ---------- */
@@ -5686,7 +5686,7 @@ static void on_char(App *a, wchar_t ch)
         app_invalidate(a);
         return;
     }
-    if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
+    if (a->overlay != DSC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
         Field *fl = &a->fields[a->field_focus];
         edit_append(fl->buf, sizeof(fl->buf), &ch, 1);
         a->form_dirty = 1;
@@ -5699,8 +5699,8 @@ static void on_char(App *a, wchar_t ch)
         app_invalidate(a);
         return;
     }
-    if (aic_router_state(a->router) == AIC_ST_FIRST_RUN ||
-        aic_router_state(a->router) == AIC_ST_WIZARD) {
+    if (dsc_router_state(a->router) == DSC_ST_FIRST_RUN ||
+        dsc_router_state(a->router) == DSC_ST_WIZARD) {
         return;
     }
     edit_append(a->draft, sizeof(a->draft), &ch, 1);
@@ -5718,7 +5718,7 @@ static void app_paste(App *a)
     if (h) {
         w = (const wchar_t *)GlobalLock(h);
         if (w) {
-            if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
+            if (a->overlay != DSC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
                 edit_append(a->fields[a->field_focus].buf, sizeof(a->fields[0].buf),
                             w, (int)wcslen(w));
                 a->form_dirty = 1;
@@ -5784,17 +5784,17 @@ static void on_key(App *a, int vk)
             }
         } else if (a->page_error || a->page_cap) {
             cap_leave_subpage(a);
-        } else if (a->overlay != AIC_OV_NONE) {
+        } else if (a->overlay != DSC_OV_NONE) {
             app_try_close(a);
         } else if (a->search_focus) {
             a->search_focus = 0;
             a->search[0] = '\0';
             app_reload_threads(a);
         } else {
-            aic_back_action ba = aic_router_back(a->router);
-            if (ba == AIC_BACK_EXIT_CONFIRM) {
+            dsc_back_action ba = dsc_router_back(a->router);
+            if (ba == DSC_BACK_EXIT_CONFIRM) {
                 a->quit_confirm = 1;
-                app_set_overlay(a, AIC_OV_CONFIRM, "退出 Sai");
+                app_set_overlay(a, DSC_OV_CONFIRM, "退出 DSC");
                 a->confirm_action = FORM_CONFIRM;
                 snprintf(a->overlay_text, sizeof(a->overlay_text),
                          "确定退出吗？聊天记录与草稿都会保留。");
@@ -5803,7 +5803,7 @@ static void on_key(App *a, int vk)
         }
         return;
     case VK_BACK:
-        if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n)
+        if (a->overlay != DSC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n)
             edit_backspace(a->fields[a->field_focus].buf, sizeof(a->fields[0].buf));
         else if (a->page_kb && a->kb_focus)
             edit_backspace(a->kb_query, sizeof(a->kb_query));
@@ -5816,7 +5816,7 @@ static void on_key(App *a, int vk)
         }
         break;
     case VK_RETURN:
-        if (a->overlay != AIC_OV_NONE) {
+        if (a->overlay != DSC_OV_NONE) {
             if (a->field_focus >= 0 && a->field_focus < a->field_n &&
                 a->fields[a->field_focus].multiline) {
                 Field *fl = &a->fields[a->field_focus];
@@ -5850,13 +5850,13 @@ static void on_key(App *a, int vk)
 static void on_wheel(App *a, int delta)
 {
     int step = delta / WHEEL_DELTA;
-    if (a->overlay != AIC_OV_NONE) return;
-    if (aic_router_mode(a->router) == AIC_MODE_QA ||
-        aic_router_tab(a->router) == AIC_TAB_CHAT) {
+    if (a->overlay != DSC_OV_NONE) return;
+    if (dsc_router_mode(a->router) == DSC_MODE_QA ||
+        dsc_router_tab(a->router) == DSC_TAB_CHAT) {
         a->scroll[2] += step * 48;
         if (a->scroll[2] < 0) a->scroll[2] = 0;
     } else {
-        int t = (int)aic_router_tab(a->router);
+        int t = (int)dsc_router_tab(a->router);
         if (t < 0 || t >= 3) t = 0;
         a->scroll[t] -= step * 48;
         if (a->scroll[t] < 0) a->scroll[t] = 0;
@@ -5867,38 +5867,38 @@ static void on_wheel(App *a, int delta)
 /* ---------- 初始化与收尾 ---------- */
 static int app_root_dir(App *a)
 {
-    const char *base = getenv("SAI_DATA_DIR");
+    const char *base = getenv("DSC_DATA_DIR");
     static const char *subs[] = {"db", "plugins", "avatars", "backups", "exports", "logs", "updates"};
 
     if (base && *base) {
         /* 便携模式：数据目录由环境变量指定（便携包与验收测试用）。 */
-        aic_strlcpy_utf8(a->root, sizeof(a->root), base);
-        aic_mkdir_p(a->root);
+        dsc_strlcpy_utf8(a->root, sizeof(a->root), base);
+        dsc_mkdir_p(a->root);
         for (int i = 0; i < (int)(sizeof(subs) / sizeof(subs[0])); i++) {
             char p[800];
-            aic_path_join(p, sizeof(p), a->root, subs[i]);
-            aic_mkdir_p(p);
+            dsc_path_join(p, sizeof(p), a->root, subs[i]);
+            dsc_mkdir_p(p);
         }
-        return AIC_OK;
+        return DSC_OK;
     }
     base = getenv("LOCALAPPDATA");
     if (!base || !*base) base = ".";
-    aic_path_join(a->root, sizeof(a->root), base, "Sai");
-    aic_mkdir_p(a->root);
+    dsc_path_join(a->root, sizeof(a->root), base, "DSC");
+    dsc_mkdir_p(a->root);
     for (int i = 0; i < (int)(sizeof(subs) / sizeof(subs[0])); i++) {
         char p[800];
-        aic_path_join(p, sizeof(p), a->root, subs[i]);
-        aic_mkdir_p(p);
+        dsc_path_join(p, sizeof(p), a->root, subs[i]);
+        dsc_mkdir_p(p);
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
 static void app_init(App *a)
 {
     HDC screen;
 
-    /* SAI_DEMO=1 时用本地假传输演示对话（不发任何请求），便于离线看界面。 */
-    if (getenv("SAI_DEMO")) a->offline_demo = 1;
+    /* DSC_DEMO=1 时用本地假传输演示对话（不发任何请求），便于离线看界面。 */
+    if (getenv("DSC_DEMO")) a->offline_demo = 1;
     memset(a->scroll, 0, sizeof(a->scroll));
     a->field_focus = -1;
     a->input_focus = 1;
@@ -5930,44 +5930,44 @@ static void app_init(App *a)
     {
         int rc_db = app_open_db(a);
         DLOG("[diag] open_db rc=%d", rc_db);
-        if (rc_db != AIC_OK) {
+        if (rc_db != DSC_OK) {
             DLOG("[diag] db open failed, data dir=%s", a->root);
             if (!g_diag)
                 MessageBoxW(a->hwnd, L"打开本地数据库失败，请检查数据目录的写入权限。",
-                            L"Sai", MB_ICONERROR | MB_OK);
+                            L"DSC", MB_ICONERROR | MB_OK);
             return;
         }
     }
-    if (aic_router_create(a->db, &a->router) != AIC_OK) { DLOG("[diag] router fail"); return; }
-    aic_router_boot(a->router);
-    aic_router_config_check(a->router);
+    if (dsc_router_create(a->db, &a->router) != DSC_OK) { DLOG("[diag] router fail"); return; }
+    dsc_router_boot(a->router);
+    dsc_router_config_check(a->router);
     if (a->offline_demo) {
         /* 演示模式：不写凭证，只放行「凭证 → 模式选择」的顺序，便于离线看界面。 */
-        aic_route_state st = aic_router_state(a->router);
-        if (st == AIC_ST_CREDENTIAL_CHECK || st == AIC_ST_CREDENTIAL_SETUP || st == AIC_ST_MODE_SELECT) {
-            aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
-            aic_setting_set_int(a->db, AIC_SET_FIRST_RUN_DONE, 1);
-            aic_setting_set(a->db, AIC_SET_DEFAULT_MODE, "chat");
-            aic_router_config_check(a->router);
+        dsc_route_state st = dsc_router_state(a->router);
+        if (st == DSC_ST_CREDENTIAL_CHECK || st == DSC_ST_CREDENTIAL_SETUP || st == DSC_ST_MODE_SELECT) {
+            dsc_setting_set(a->db, DSC_SET_CRED_HAS_KEY, "1");
+            dsc_setting_set_int(a->db, DSC_SET_FIRST_RUN_DONE, 1);
+            dsc_setting_set(a->db, DSC_SET_DEFAULT_MODE, "chat");
+            dsc_router_config_check(a->router);
         }
     }
-    if (aic_router_state(a->router) == AIC_ST_FIRST_RUN) aic_router_start_wizard(a->router);
-    DLOG("[diag] router state=%s", aic_route_state_name(aic_router_state(a->router)));
+    if (dsc_router_state(a->router) == DSC_ST_FIRST_RUN) dsc_router_start_wizard(a->router);
+    DLOG("[diag] router state=%s", dsc_route_state_name(dsc_router_state(a->router)));
 
     {
         char ldir[600];
-        aic_path_join(ldir, sizeof(ldir), a->root, "logs");
-        aic_mkdir_p(ldir);
-        aic_log_init(ldir);
+        dsc_path_join(ldir, sizeof(ldir), a->root, "logs");
+        dsc_mkdir_p(ldir);
+        dsc_log_init(ldir);
         DLOG("[diag] log dir=%s", ldir);
     }
     {
         /* 技术设计 9.3：新增模型通过配置文件追加，不改核心代码。 */
         char mfile[800];
         char merr[256] = {0};
-        aic_path_join(mfile, sizeof(mfile), a->root, "models.json");
-        if (aic_path_exists(mfile)) {
-            if (aic_llm_models_load_file(mfile, merr, sizeof(merr)) == AIC_OK)
+        dsc_path_join(mfile, sizeof(mfile), a->root, "models.json");
+        if (dsc_path_exists(mfile)) {
+            if (dsc_llm_models_load_file(mfile, merr, sizeof(merr)) == DSC_OK)
                 DLOG("[diag] models.json loaded");
             else
                 DLOG("[diag] models.json invalid: %s", merr);
@@ -5980,37 +5980,37 @@ static void app_init(App *a)
     app_load_chat(a);
     DLOG("[diag] chat conv=%s msgs=%d", a->conv_id, (int)a->msg_n);
     a->scroll[2] = 0;
-    a->caret_tick = aic_now_ms();
+    a->caret_tick = dsc_now_ms();
 
     /* 第 16 章：同步搬运线程（网络与数据库读取不占用界面线程）。 */
     app_sync_start(a);
 
     /* §14.1：启动时检查一次（可在设置里关闭），之后按周期检查。 */
-    if (aic_setting_get_int(a->db, AIC_SET_UPDATE_AUTO, 1)) {
-        long long last = (long long)aic_setting_get_int(a->db, "update.last_check_ms", 0);
-        int hours = aic_setting_get_int(a->db, AIC_SET_UPDATE_INTERVAL, 24);
-        if (aic_update_should_check(last, hours, aic_now_ms())) app_check_update(a, 0);
+    if (dsc_setting_get_int(a->db, DSC_SET_UPDATE_AUTO, 1)) {
+        long long last = (long long)dsc_setting_get_int(a->db, "update.last_check_ms", 0);
+        int hours = dsc_setting_get_int(a->db, DSC_SET_UPDATE_INTERVAL, 24);
+        if (dsc_update_should_check(last, hours, dsc_now_ms())) app_check_update(a, 0);
     }
 }
 
 static void app_shutdown(App *a)
 {
-    if (a->msgs) aic_msg_free_array(a->msgs, a->msg_n);
+    if (a->msgs) dsc_msg_free_array(a->msgs, a->msg_n);
     a->msgs = NULL;
     a->msg_n = 0;
-    if (a->threads) aic_conv_free(a->threads, a->thread_n);
+    if (a->threads) dsc_conv_free(a->threads, a->thread_n);
     a->threads = NULL;
     a->thread_n = 0;
-    if (a->kb) { aic_kb_free(a->kb); a->kb = NULL; }
-    aic_cap_clear_provider();
-    if (a->eng) aic_engine_destroy(a->eng);
+    if (a->kb) { dsc_kb_free(a->kb); a->kb = NULL; }
+    dsc_cap_clear_provider();
+    if (a->eng) dsc_engine_destroy(a->eng);
     a->eng = NULL;
     app_sync_stop(a);
-    if (a->ses) aic_session_destroy(a->ses);
+    if (a->ses) dsc_session_destroy(a->ses);
     a->ses = NULL;
-    if (a->router) aic_router_destroy(a->router);
+    if (a->router) dsc_router_destroy(a->router);
     a->router = NULL;
-    if (a->db) aic_db_close(a->db);
+    if (a->db) dsc_db_close(a->db);
     a->db = NULL;
     if (a->font_ui) DeleteObject(a->font_ui);
     if (a->font_title) DeleteObject(a->font_title);
@@ -6034,12 +6034,12 @@ static int app_shoot(App *a, int w, int h, const char *path)
     BITMAPFILEHEADER fh;
     BITMAPINFOHEADER ih;
 
-    if (!path || !path[0] || w <= 0 || h <= 0) return AIC_E_INVAL;
+    if (!path || !path[0] || w <= 0 || h <= 0) return DSC_E_INVAL;
     sdc = GetDC(NULL);
-    if (!sdc) return AIC_E_IO;
+    if (!sdc) return DSC_E_IO;
     mdc = CreateCompatibleDC(sdc);
     bm = CreateCompatibleBitmap(sdc, w, h);
-    if (!mdc || !bm) { if (mdc) DeleteDC(mdc); if (bm) DeleteObject(bm); ReleaseDC(NULL, sdc); return AIC_E_NOMEM; }
+    if (!mdc || !bm) { if (mdc) DeleteDC(mdc); if (bm) DeleteObject(bm); ReleaseDC(NULL, sdc); return DSC_E_NOMEM; }
     old = SelectObject(mdc, bm);
     rc.left = 0; rc.top = 0; rc.right = w; rc.bottom = h;
     paint(a, mdc, rc);
@@ -6057,10 +6057,10 @@ static int app_shoot(App *a, int w, int h, const char *path)
     if (px && GetDIBits(sdc, bm, 0, (UINT)h, px, &bi, DIB_RGB_COLORS) == (int)h) ok = 1;
     ReleaseDC(NULL, sdc);
     DeleteObject(bm);
-    if (!ok) { aic_xfree(px); return AIC_E_IO; }
+    if (!ok) { dsc_xfree(px); return DSC_E_IO; }
 
     fp = fopen(path, "wb");
-    if (!fp) { aic_xfree(px); return AIC_E_IO; }
+    if (!fp) { dsc_xfree(px); return DSC_E_IO; }
     memset(&fh, 0, sizeof(fh));
     fh.bfType = 0x4D42;
     fh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
@@ -6077,8 +6077,8 @@ static int app_shoot(App *a, int w, int h, const char *path)
     fwrite(&ih, sizeof(ih), 1, fp);
     fwrite(px, 1, (size_t)stride * (size_t)h, fp);
     fclose(fp);
-    aic_xfree(px);
-    return AIC_OK;
+    dsc_xfree(px);
+    return DSC_OK;
 }
 
 /* ---------- 截图模式（--shot）的状态准备 ---------- */
@@ -6104,77 +6104,77 @@ static void shot_prepare(App *a)
 {
     if (g_shot_cred) {
         /* 截图：把启动流程退回到「还没填凭证」的首次启动状态（只动标记，不删数据）。 */
-        aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "0");
-        aic_router_boot(a->router);
-        aic_router_config_check(a->router);
+        dsc_setting_set(a->db, DSC_SET_CRED_HAS_KEY, "0");
+        dsc_router_boot(a->router);
+        dsc_router_config_check(a->router);
         return;
     }
     if (g_shot_mode) {
         /* 截图：凭证就绪但还没选默认模式。 */
-        aic_setting_set(a->db, AIC_SET_CRED_HAS_KEY, "1");
-        aic_setting_set_int(a->db, AIC_SET_FIRST_RUN_DONE, 0);
-        aic_router_boot(a->router);
-        aic_router_config_check(a->router);
+        dsc_setting_set(a->db, DSC_SET_CRED_HAS_KEY, "1");
+        dsc_setting_set_int(a->db, DSC_SET_FIRST_RUN_DONE, 0);
+        dsc_router_boot(a->router);
+        dsc_router_config_check(a->router);
         return;
     }
     if (g_shot_ready) {
-        aic_route_state st = aic_router_state(a->router);
-        if (st == AIC_ST_WIZARD) {
-            aic_router_finish_wizard(a->router);
+        dsc_route_state st = dsc_router_state(a->router);
+        if (st == DSC_ST_WIZARD) {
+            dsc_router_finish_wizard(a->router);
             app_setup_engine(a);
             app_reload_threads(a);
             app_load_chat(a);
-        } else if (st == AIC_ST_CREDENTIAL_CHECK || st == AIC_ST_CREDENTIAL_SETUP) {
-            aic_router_credential_done(a->router);
-            st = aic_router_state(a->router);
+        } else if (st == DSC_ST_CREDENTIAL_CHECK || st == DSC_ST_CREDENTIAL_SETUP) {
+            dsc_router_credential_done(a->router);
+            st = dsc_router_state(a->router);
         }
-        if (st == AIC_ST_MODE_SELECT) aic_router_mode_select(a->router, AIC_MODE_CHAT);
+        if (st == DSC_ST_MODE_SELECT) dsc_router_mode_select(a->router, DSC_MODE_CHAT);
     }
     if (g_shot_qa) {
-        aic_conversation *arr = NULL;
+        dsc_conversation *arr = NULL;
         size_t n = 0;
-        aic_router_switch_mode(a->router, AIC_MODE_QA);
-        aic_router_finish_switch(a->router);
-        if (aic_conv_list(a->db, AIC_MODE_QA, &arr, &n) == AIC_OK && n == 0) {
-            aic_conversation c;
+        dsc_router_switch_mode(a->router, DSC_MODE_QA);
+        dsc_router_finish_switch(a->router);
+        if (dsc_conv_list(a->db, DSC_MODE_QA, &arr, &n) == DSC_OK && n == 0) {
+            dsc_conversation c;
             memset(&c, 0, sizeof(c));
-            if (aic_conv_create(a->db, AIC_MODE_QA, "如何安排一天的学习计划？", NULL, AIC_MODEL_FLASH, &c) == AIC_OK) {
-                aic_msg_append(a->db, c.id, AIC_ROLE_USER, "怎么安排一天的学习时间？", AIC_MODEL_FLASH, NULL);
-                aic_msg_append(a->db, c.id, AIC_ROLE_ASSISTANT,
-                               "可以先按 25 分钟一段来做：上午处理最需要动脑的科目，下午做题与复盘，晚上只做轻量整理。", AIC_MODEL_FLASH, NULL);
-                aic_router_set_thread(a->router, c.id);
+            if (dsc_conv_create(a->db, DSC_MODE_QA, "如何安排一天的学习计划？", NULL, DSC_MODEL_FLASH, &c) == DSC_OK) {
+                dsc_msg_append(a->db, c.id, DSC_ROLE_USER, "怎么安排一天的学习时间？", DSC_MODEL_FLASH, NULL);
+                dsc_msg_append(a->db, c.id, DSC_ROLE_ASSISTANT,
+                               "可以先按 25 分钟一段来做：上午处理最需要动脑的科目，下午做题与复盘，晚上只做轻量整理。", DSC_MODEL_FLASH, NULL);
+                dsc_router_set_thread(a->router, c.id);
             }
             memset(&c, 0, sizeof(c));
-            aic_conv_create(a->db, AIC_MODE_QA, "帮我写一段生日祝福", NULL, AIC_MODEL_PRO, &c);
+            dsc_conv_create(a->db, DSC_MODE_QA, "帮我写一段生日祝福", NULL, DSC_MODEL_PRO, &c);
             memset(&c, 0, sizeof(c));
-            aic_conv_create(a->db, AIC_MODE_QA, "解释一下什么是递归", NULL, AIC_MODEL_FLASH, &c);
+            dsc_conv_create(a->db, DSC_MODE_QA, "解释一下什么是递归", NULL, DSC_MODEL_FLASH, &c);
         }
-        if (arr) aic_conv_free(arr, n);
+        if (arr) dsc_conv_free(arr, n);
         app_reload_threads(a);
         app_load_chat(a);
     }
     if (g_shot_demo && a->conv_id[0]) {
         long long cnt = 0;
-        if (aic_msg_count(a->db, a->conv_id, &cnt) == AIC_OK && cnt == 0) {
-            aic_msg_append(a->db, a->conv_id, AIC_ROLE_USER, "今天有点累，能陪我聊一会儿吗？", AIC_MODEL_FLASH, NULL);
-            aic_msg_append(a->db, a->conv_id, AIC_ROLE_ASSISTANT,
-                           "当然可以呀。今天发生什么了？要是想先歇一会儿，我们就慢慢说，不着急。", AIC_MODEL_FLASH, NULL);
-            aic_msg_append(a->db, a->conv_id, AIC_ROLE_USER, "也没什么大事，就是事情堆在一起，有点喘不过气。", AIC_MODEL_FLASH, NULL);
-            aic_msg_append(a->db, a->conv_id, AIC_ROLE_ASSISTANT,
-                           "那我们先从最容易的一件开始吧——你告诉我最让你烦心的是哪件，我陪你一起拆一拆。", AIC_MODEL_FLASH, NULL);
+        if (dsc_msg_count(a->db, a->conv_id, &cnt) == DSC_OK && cnt == 0) {
+            dsc_msg_append(a->db, a->conv_id, DSC_ROLE_USER, "今天有点累，能陪我聊一会儿吗？", DSC_MODEL_FLASH, NULL);
+            dsc_msg_append(a->db, a->conv_id, DSC_ROLE_ASSISTANT,
+                           "当然可以呀。今天发生什么了？要是想先歇一会儿，我们就慢慢说，不着急。", DSC_MODEL_FLASH, NULL);
+            dsc_msg_append(a->db, a->conv_id, DSC_ROLE_USER, "也没什么大事，就是事情堆在一起，有点喘不过气。", DSC_MODEL_FLASH, NULL);
+            dsc_msg_append(a->db, a->conv_id, DSC_ROLE_ASSISTANT,
+                           "那我们先从最容易的一件开始吧——你告诉我最让你烦心的是哪件，我陪你一起拆一拆。", DSC_MODEL_FLASH, NULL);
         }
         app_load_chat(a);
     }
-    if (g_shot_tab >= 0) aic_router_set_tab(a->router, g_shot_tab);
-    if (g_shot_adv) { aic_router_set_tab(a->router, AIC_TAB_SETTINGS); a->page_advanced = 1; a->scroll[1] = 0; }
+    if (g_shot_tab >= 0) dsc_router_set_tab(a->router, g_shot_tab);
+    if (g_shot_adv) { dsc_router_set_tab(a->router, DSC_TAB_SETTINGS); a->page_advanced = 1; a->scroll[1] = 0; }
     if (g_shot_pair) {
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_pair = 1;
         a->scroll[1] = 0;
         app_sync_start(a);
     }
     if (g_shot_kb) {
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_advanced = 0;
         a->page_pair = 0;
         a->page_error = 0;
@@ -6187,7 +6187,7 @@ static void shot_prepare(App *a)
         a->scroll[1] = 0;
         app_kb_refresh(a);
         if (g_shot_kb == 2 && a->kb) {
-            const aic_kb_article *a0 = aic_kb_article_at(a->kb, 0, 0);
+            const dsc_kb_article *a0 = dsc_kb_article_at(a->kb, 0, 0);
             if (a0) {
                 app_kb_open(a, a0->id);
                 a->kb_para = 0;
@@ -6195,22 +6195,22 @@ static void shot_prepare(App *a)
         }
     }
     if (g_shot_err) {
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_kb = 0;
         a->page_cap = 0;
         a->page_error = 1;
         a->scroll[1] = 0;
         app_err_reload(a);
         if (a->err_n == 0) {
-            aic_error_record(a->db, a->root, AIC_ERR_NETWORK, "llm.network",
+            dsc_error_record(a->db, a->root, DSC_ERR_NETWORK, "llm.network",
                              "网络不可达，请检查网络后重试", a->conv_id, NULL, "curl: 连接超时", NULL);
-            aic_error_record(a->db, a->root, AIC_ERR_QUOTA, "llm.balance_low",
+            dsc_error_record(a->db, a->root, DSC_ERR_QUOTA, "llm.balance_low",
                              "账户余额不足，无法继续对话", a->conv_id, NULL, NULL, NULL);
             app_err_reload(a);
         }
     }
     if (g_shot_cap) {
-        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        dsc_router_set_tab(a->router, DSC_TAB_SETTINGS);
         a->page_kb = 0;
         a->page_error = 0;
         a->page_cap = 1;
@@ -6219,9 +6219,9 @@ static void shot_prepare(App *a)
     }
     if (g_shot_errbar) {
         /* 聊天页顶部那条非侵入状态条：有未读错误时出现，点了进错误中心。 */
-        aic_router_set_tab(a->router, AIC_TAB_CHAT);
-        if (aic_error_unread(a->db) == 0) {
-            aic_error_record(a->db, a->root, AIC_ERR_NETWORK, "llm.network",
+        dsc_router_set_tab(a->router, DSC_TAB_CHAT);
+        if (dsc_error_unread(a->db) == 0) {
+            dsc_error_record(a->db, a->root, DSC_ERR_NETWORK, "llm.network",
                              "网络不可达，请检查网络后重试", a->conv_id, NULL, NULL, NULL);
         }
     }
@@ -6229,9 +6229,9 @@ static void shot_prepare(App *a)
     if (g_shot_overlay >= 0 && !g_shot_guide) {
         if (g_shot_overlay == 0) app_msg_open(a, -1);
         else if (g_shot_overlay == 1) app_persona_edit(a);
-        else if (g_shot_overlay == 2) app_set_overlay(a, AIC_OV_UPDATE, "检查更新");
+        else if (g_shot_overlay == 2) app_set_overlay(a, DSC_OV_UPDATE, "检查更新");
         else if (g_shot_overlay == 3) {
-            app_set_overlay(a, AIC_OV_CONFIRM, "导出聊天记录");
+            app_set_overlay(a, DSC_OV_CONFIRM, "导出聊天记录");
             a->confirm_action = FORM_EXPORT;
             snprintf(a->overlay_text, sizeof(a->overlay_text),
                      "导出到 %s\\exports。JSON 可再次导入（含 format/schema_version/checksum）；"
@@ -6286,11 +6286,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_TIMER:
         if (wp == ANIM_TIMER_ID) {
-            long long now = aic_now_ms();
-            if (aic_setting_get_int(a->db, AIC_SET_UPDATE_AUTO, 1)) {
-                long long last = (long long)aic_setting_get_int(a->db, "update.last_check_ms", 0);
-                int hours = aic_setting_get_int(a->db, AIC_SET_UPDATE_INTERVAL, 24);
-                if (aic_update_should_check(last, hours, now)) app_check_update(a, 0);
+            long long now = dsc_now_ms();
+            if (dsc_setting_get_int(a->db, DSC_SET_UPDATE_AUTO, 1)) {
+                long long last = (long long)dsc_setting_get_int(a->db, "update.last_check_ms", 0);
+                int hours = dsc_setting_get_int(a->db, DSC_SET_UPDATE_INTERVAL, 24);
+                if (dsc_update_should_check(last, hours, now)) app_check_update(a, 0);
             }
             if (a->anim_on && now - a->anim_start >= a->anim_dur) a->anim_on = 0;
             if (a->anim_on || (now - a->caret_tick) > 250) {
@@ -6323,7 +6323,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 a->stream_len += dl;
                 a->stream_text[a->stream_len] = '\0';
             }
-            aic_xfree(d);
+            dsc_xfree(d);
         }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -6340,7 +6340,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_PAIR:
         InterlockedExchange(&a->pair_busy, 0);
         a->pair_focus = 0;
-        if ((int)wp == AIC_OK && a->ses && aic_session_is_paired(a->ses)) {
+        if ((int)wp == DSC_OK && a->ses && dsc_session_is_paired(a->ses)) {
             app_load_chat(a);
             app_reload_threads(a);
         }
@@ -6437,7 +6437,7 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
     if (!RegisterClassExW(&wc)) { DLOG("[diag] RegisterClass failed err=%lu", GetLastError()); return 1; }
 
     g_app.hinst = hinst;
-    hwnd = CreateWindowExW(0, APP_CLASS, L"Sai", WS_OVERLAPPEDWINDOW,
+    hwnd = CreateWindowExW(0, APP_CLASS, L"DSC", WS_OVERLAPPEDWINDOW,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1120, 760,
                            NULL, NULL, hinst, NULL);
     if (!hwnd) { DLOG("[diag] CreateWindow failed err=%lu", GetLastError()); return 1; }

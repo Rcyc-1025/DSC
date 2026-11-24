@@ -1,9 +1,9 @@
 # sign_release.ps1 —— 用 signtool 给发布产物签名（需要 Windows SDK 的 signtool.exe + 一份代码签名证书）。
-# 本仓库不签发证书：证书由你把 .pfx 放进 dist\signing\（或用 -Pfx 指定），密码用环境变量 SAI_SIGN_PASSWORD 传入。
+# 本仓库不签发证书：证书由你把 .pfx 放进 dist\signing\（或用 -Pfx 指定），密码用环境变量 DSC_SIGN_PASSWORD 传入。
 # 没有 signtool 或没有证书时，脚本明确报错并退出 2/3，产物保持未签名 —— 不做假签名、不自造证书。
 param(
-    [string]$Pfx = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\dist\signing\sai.pfx'),
-    [string]$Password = $env:SAI_SIGN_PASSWORD,
+    [string]$Pfx = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\dist\signing\dsc.pfx'),
+    [string]$Password = $env:DSC_SIGN_PASSWORD,
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$Thumbprint = '',
     [string[]]$Files = @()
@@ -28,7 +28,7 @@ if (-not $signtool) {
 $usePfx = $false
 if ($Pfx -and (Test-Path $Pfx)) {
     if (-not $Password) {
-        Write-Host ('找到证书 ' + $Pfx + '，但没有提供密码：请设置环境变量 SAI_SIGN_PASSWORD 后再运行。')
+        Write-Host ('找到证书 ' + $Pfx + '，但没有提供密码：请设置环境变量 DSC_SIGN_PASSWORD 后再运行。')
         exit 3
     }
     $usePfx = $true
@@ -46,10 +46,10 @@ if ($Pfx -and (Test-Path $Pfx)) {
 
 if ($Files.Count -eq 0) {
     $Files = @(
-        (Join-Path $root 'build\Sai.exe'),
-        (Join-Path $root 'build\aic.exe'),
-        (Join-Path $root 'build\aic_plugin_host.exe'),
-        (Join-Path $root 'dist\Sai-0.1.0-win-x64-setup.exe')
+        (Join-Path $root 'build\DSC.exe'),
+        (Join-Path $root 'build\dsc-cli.exe'),
+        (Join-Path $root 'build\dsc_plugin_host.exe'),
+        (Join-Path $root 'dist\DSC-0.1.0-win-x64-setup.exe')
     ) | Where-Object { Test-Path $_ }
 }
 if ($Files.Count -eq 0) {

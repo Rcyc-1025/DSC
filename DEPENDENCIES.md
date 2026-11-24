@@ -28,7 +28,7 @@
 | binutils（as / ld / windres） | 2.47 | 汇编与链接 | 否 |
 | PowerShell | Windows PowerShell 5.1 | 执行 `build.ps1` | 否 |
 | Python | 3.12 | 只用于打包、截图、APK 构建等离线脚本 | 否（编译产物不含解释器） |
-| Android NDK | r27c（LLVM 18） | 交叉编译 `libaic.so` | 否 |
+| Android NDK | r27c（LLVM 18） | 交叉编译 `libdsc.so` | 否 |
 | Android SDK build-tools | 37.0.0（aapt2 / d8 / zipalign / apksigner） | 打包与签名 APK | 否 |
 | Android platform | android-35（`android.jar`） | javac 类路径 | 否 |
 | JDK | 21.0.12 | 编译 Java 界面层、生成 keystore | 否 |
@@ -54,7 +54,7 @@
 
 ## 版本升级与选择约束
 
-- **SQLite 升级**：替换 `third_party/sqlite` 下两个文件 → 跑 `build.ps1 -Target test` 与 `aic.exe verify` → 全部通过才可提交；若新版带来 schema 行为变化，必须新增迁移版本，不允许就地改历史迁移。
+- **SQLite 升级**：替换 `third_party/sqlite` 下两个文件 → 跑 `build.ps1 -Target test` 与 `dsc-cli.exe verify` → 全部通过才可提交；若新版带来 schema 行为变化，必须新增迁移版本，不允许就地改历史迁移。
 - **编译器升级**：先确认 `-Wall -Wextra` 仍为 0 告警，再比对 `docs/PRE-RELEASE-EVIDENCE.md` 里的性能基准没有劣化超过 10%。
 - **新增任何第三方库**：必须在本文档登记（版本、形式、用途、许可），并确认许可与 Apache-2.0 兼容；核心层不允许引入 C++ 或依赖解释器的库。
 

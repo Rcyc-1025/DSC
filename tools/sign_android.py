@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """用发布方自己的 keystore 给 APK 签名（技术设计 16.1：安装包签名）。
 
-不签发证书：keystore 由发布方提供，路径用环境变量 SAI_ANDROID_KEYSTORE 指定，
-口令用 SAI_ANDROID_STOREPASS / SAI_ANDROID_KEYPASS，别名用 SAI_ANDROID_ALIAS。
+不签发证书：keystore 由发布方提供，路径用环境变量 DSC_ANDROID_KEYSTORE 指定，
+口令用 DSC_ANDROID_STOREPASS / DSC_ANDROID_KEYPASS，别名用 DSC_ANDROID_ALIAS。
 缺任何一项都明确报错并以退出码 3 结束，绝不回退到仓库里的自签调试证书。
 
 用法：
-    python tools/sign_android.py [--in build_android/Sai.apk] [--out dist/Sai.apk]
+    python tools/sign_android.py [--in build_android/DSC.apk] [--out dist/DSC.apk]
 """
 
 import argparse
@@ -34,16 +34,16 @@ def fail(msg, code=1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="src", default=os.path.join(ROOT, "build_android", "Sai.apk"))
-    ap.add_argument("--out", dest="dst", default=os.path.join(ROOT, "dist", "Sai.apk"))
+    ap.add_argument("--in", dest="src", default=os.path.join(ROOT, "build_android", "DSC.apk"))
+    ap.add_argument("--out", dest="dst", default=os.path.join(ROOT, "dist", "DSC.apk"))
     args = ap.parse_args()
 
-    store = os.environ.get("SAI_ANDROID_KEYSTORE", "")
-    storepass = os.environ.get("SAI_ANDROID_STOREPASS", "")
-    keypass = os.environ.get("SAI_ANDROID_KEYPASS", "") or storepass
-    alias = os.environ.get("SAI_ANDROID_ALIAS", "")
-    missing = [n for n, v in (("SAI_ANDROID_KEYSTORE", store), ("SAI_ANDROID_STOREPASS", storepass),
-                              ("SAI_ANDROID_ALIAS", alias)) if not v]
+    store = os.environ.get("DSC_ANDROID_KEYSTORE", "")
+    storepass = os.environ.get("DSC_ANDROID_STOREPASS", "")
+    keypass = os.environ.get("DSC_ANDROID_KEYPASS", "") or storepass
+    alias = os.environ.get("DSC_ANDROID_ALIAS", "")
+    missing = [n for n, v in (("DSC_ANDROID_KEYSTORE", store), ("DSC_ANDROID_STOREPASS", storepass),
+                              ("DSC_ANDROID_ALIAS", alias)) if not v]
     if missing:
         fail("缺少发布方 keystore 配置：" + "、".join(missing) +
              "。本仓库不签发证书；请提供发布方自己的 keystore（含口令与别名）后重试。", 3)

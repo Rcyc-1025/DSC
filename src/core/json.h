@@ -1,10 +1,10 @@
 /* json.h —— 极简 JSON 读写（导出/导入、清单、账本、配置均复用）。
  * 只支持标准 JSON 子集：对象、数组、字符串、数字、true/false/null。
  * 解析错误带位置信息，避免"导入失败但说不清原因"。 */
-#ifndef AIC_JSON_H
-#define AIC_JSON_H
+#ifndef DSC_JSON_H
+#define DSC_JSON_H
 
-#include "aic_types.h"
+#include "dsc_types.h"
 #include "util.h"
 
 #ifdef __cplusplus
@@ -41,7 +41,7 @@ struct jv {
     } u;
 };
 
-/* 解析；失败返回 AIC_E_FORMAT 并写入 err（含行号列号）。 */
+/* 解析；失败返回 DSC_E_FORMAT 并写入 err（含行号列号）。 */
 int  jv_parse(const char *text, size_t len, jv **out, char *err, size_t errlen);
 void jv_free(jv *v);
 
@@ -87,4 +87,4 @@ void jw_escape_into(sb *b, const char *s);
 }
 #endif
 
-#endif /* AIC_JSON_H */
+#endif /* DSC_JSON_H */

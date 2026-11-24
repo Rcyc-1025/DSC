@@ -55,7 +55,7 @@ static long long proc_cpu_ms(HANDLE proc)
     return (long long)((kk.QuadPart + uu.QuadPart) / 10000LL);
 }
 
-int aic_plugin_proc_available(void) { return 1; }
+int dsc_plugin_proc_available(void) { return 1; }
 
 static int wide_from_utf8(const char *s, wchar_t *out, size_t cap)
 {
@@ -63,44 +63,44 @@ static int wide_from_utf8(const char *s, wchar_t *out, size_t cap)
     return n > 0;
 }
 
-int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
+int dsc_plugin_proc_call(const char *host_exe, const char *entry_path,
                          const char *request_json, size_t request_len,
                          int timeout_ms, const char *work_dir,
-                         aic_plugin_proc_result *out, char *err, size_t errlen)
+                         dsc_plugin_proc_result *out, char *err, size_t errlen)
 {
-    if (!host_exe || !entry_path || !request_json || !out) return AIC_E_INVAL;
+    if (!host_exe || !entry_path || !request_json || !out) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
     memset(out, 0, sizeof(*out));
     out->exit_code = -1;
     if (timeout_ms <= 0) timeout_ms = PROC_DEFAULT_TIMEOUT_MS;
 
-    if (!aic_path_exists(host_exe)) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件宿主程序不存在");
-        return AIC_E_NOTFOUND;
+    if (!dsc_path_exists(host_exe)) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件宿主程序不存在");
+        return DSC_E_NOTFOUND;
     }
-    if (!aic_path_exists(entry_path)) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件入口文件不存在");
-        return AIC_E_NOTFOUND;
+    if (!dsc_path_exists(entry_path)) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件入口文件不存在");
+        return DSC_E_NOTFOUND;
     }
 
     char uuid[40];
-    aic_uuid4(uuid);
+    dsc_uuid4(uuid);
     char req_name[80], resp_name[80];
     snprintf(req_name, sizeof(req_name), "plgreq_%s.json", uuid);
     snprintf(resp_name, sizeof(resp_name), "plgresp_%s.json", uuid);
 
     char req_path[1024], resp_path[1024];
     if (work_dir && work_dir[0]) {
-        aic_path_join(req_path, sizeof(req_path), work_dir, req_name);
-        aic_path_join(resp_path, sizeof(resp_path), work_dir, resp_name);
+        dsc_path_join(req_path, sizeof(req_path), work_dir, req_name);
+        dsc_path_join(resp_path, sizeof(resp_path), work_dir, resp_name);
     } else {
-        aic_strlcpy_utf8(req_path, sizeof(req_path), req_name);
-        aic_strlcpy_utf8(resp_path, sizeof(resp_path), resp_name);
+        dsc_strlcpy_utf8(req_path, sizeof(req_path), req_name);
+        dsc_strlcpy_utf8(resp_path, sizeof(resp_path), resp_name);
     }
 
-    int rc = aic_file_write_all(req_path, request_json, request_len);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "写入插件请求文件失败");
+    int rc = dsc_file_write_all(req_path, request_json, request_len);
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "写入插件请求文件失败");
         return rc;
     }
 
@@ -109,9 +109,9 @@ int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
         !wide_from_utf8(entry_path, wentry, MAX_PATH) ||
         !wide_from_utf8(req_path, wreq, MAX_PATH) ||
         !wide_from_utf8(resp_path, wresp, MAX_PATH)) {
-        aic_file_remove(req_path);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "路径包含无法转换的字符");
-        return AIC_E_INVAL;
+        dsc_file_remove(req_path);
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "路径包含无法转换的字符");
+        return DSC_E_INVAL;
     }
 
     wchar_t cmdline[8192];
@@ -124,15 +124,15 @@ int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
     si.cb = sizeof(si);
     memset(&pi, 0, sizeof(pi));
 
-    long long started = aic_now_ms();
+    long long started = dsc_now_ms();
     HANDLE job = CreateJobObjectW(NULL, NULL);
     if (job) job_apply_limits(job);
     if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE,
                         CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
-        aic_file_remove(req_path);
+        dsc_file_remove(req_path);
         if (job) CloseHandle(job);
         if (err && errlen) snprintf(err, errlen, "启动插件进程失败（Windows 错误码 %lu）", (unsigned long)GetLastError());
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
     if (job) {
         AssignProcessToJobObject(job, pi.hProcess);
@@ -148,13 +148,13 @@ int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         if (job) CloseHandle(job);
-        aic_file_remove(req_path);
-        aic_file_remove(resp_path);
+        dsc_file_remove(req_path);
+        dsc_file_remove(resp_path);
         out->timed_out = 1;
         out->exit_code = -1;
-        out->elapsed_ms = aic_now_ms() - started;
+        out->elapsed_ms = dsc_now_ms() - started;
         if (err && errlen) snprintf(err, errlen, "插件超时（超过 %d 毫秒），已终止插件进程", timeout_ms);
-        return AIC_E_TIMEOUT;
+        return DSC_E_TIMEOUT;
     }
 
     DWORD code = 0;
@@ -164,16 +164,16 @@ int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     if (job) CloseHandle(job);
-    aic_file_remove(req_path);
+    dsc_file_remove(req_path);
 
     out->exit_code = (int)code;
-    out->elapsed_ms = aic_now_ms() - started;
+    out->elapsed_ms = dsc_now_ms() - started;
 
     if (code != 0) {
-        aic_file_remove(resp_path);
+        dsc_file_remove(resp_path);
         if (err && errlen) {
-            if (code == 2) aic_strlcpy_utf8(err, errlen, "插件缺少 aic_plugin_call 入口，已禁用该插件");
-            else if (code == 3) aic_strlcpy_utf8(err, errlen, "插件动态库加载失败，已禁用该插件");
+            if (code == 2) dsc_strlcpy_utf8(err, errlen, "插件缺少 dsc_plugin_call 入口，已禁用该插件");
+            else if (code == 3) dsc_strlcpy_utf8(err, errlen, "插件动态库加载失败，已禁用该插件");
             else if (out->peak_mem_kb >= (long long)PLUGIN_MEM_LIMIT_MB * 1024 ||
                      out->cpu_ms >= (long long)PLUGIN_CPU_LIMIT_SEC * 1000)
                 snprintf(err, errlen,
@@ -182,26 +182,26 @@ int aic_plugin_proc_call(const char *host_exe, const char *entry_path,
                          out->peak_mem_kb, out->cpu_ms, PLUGIN_MEM_LIMIT_MB, PLUGIN_CPU_LIMIT_SEC);
             else snprintf(err, errlen, "插件进程异常退出（退出码 %lu），主程序继续运行", (unsigned long)code);
         }
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
 
     char *text = NULL;
     size_t len = 0;
-    rc = aic_file_read_all(resp_path, &text, &len);
-    aic_file_remove(resp_path);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件没有写出响应");
+    rc = dsc_file_read_all(resp_path, &text, &len);
+    dsc_file_remove(resp_path);
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件没有写出响应");
         return rc;
     }
     out->text = text;
     out->len = len;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-void aic_plugin_proc_free(aic_plugin_proc_result *r)
+void dsc_plugin_proc_free(dsc_plugin_proc_result *r)
 {
     if (!r) return;
-    aic_xfree(r->text);
+    dsc_xfree(r->text);
     r->text = NULL;
     r->len = 0;
 }

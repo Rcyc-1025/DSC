@@ -3,9 +3,9 @@
  *
  * <p>插件包是一个目录：plugin.json + 入口（.dex / .jar / .apk）+ 可选 prompt_fragment.txt。
  * 核心层登记清单，这里负责把入口装进 DexClassLoader 并调用约定入口
- * {@code public static String aic_plugin_call(String request_json)}。本类只在插件进程里执行。</p>
+ * {@code public static String dsc_plugin_call(String request_json)}。本类只在插件进程里执行。</p>
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.Context;
 
@@ -21,14 +21,14 @@ import dalvik.system.DexClassLoader;
  *
  * <p>插件包是一个目录：plugin.json + 入口（.dex / .jar / .apk）+ 可选 prompt_fragment.txt。
  * 核心层登记清单，这里负责真正把入口装进 DexClassLoader 并调用约定入口
- * {@code public static String aic_plugin_call(String request_json)}（与桌面端
- * {@code int aic_plugin_call(const char*, char*, size_t)} 语义一致：返回值即响应正文，
- * 返回空串等价于 AIC_OK 的空结果）。</p>
+ * {@code public static String dsc_plugin_call(String request_json)}（与桌面端
+ * {@code int dsc_plugin_call(const char*, char*, size_t)} 语义一致：返回值即响应正文，
+ * 返回空串等价于 DSC_OK 的空结果）。</p>
  */
 public final class PluginEngine {
 
-    public static final String ENTRY_CLASS = "SaiPlugin";
-    public static final String ENTRY_METHOD = "aic_plugin_call";
+    public static final String ENTRY_CLASS = "DscPlugin";
+    public static final String ENTRY_METHOD = "dsc_plugin_call";
 
     private PluginEngine() {
     }

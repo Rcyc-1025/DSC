@@ -37,7 +37,7 @@ build_android/
 *.bmp
 
 # 单元测试运行时在 cwd 下建的临时目录
-aic_test_*/
+dsc_test_*/
 
 # 手工调试留下的散落文件（tools/clean.py 会一并清掉）
 *.log

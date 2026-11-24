@@ -7,7 +7,7 @@
 /* FR-33：深蓝主色调（H≈213）。日光与夜间只改明度、不改色相，
  * 主色都由同一支深蓝色阶取出：日间 #103F7A、夜间 #6194C9。
  * 深蓝底 + 白字 10.4:1，夜间 3.2:1，均满足按钮 ≥3:1 的硬要求。 */
-static const aic_theme g_day = {
+static const dsc_theme g_day = {
     0, "day",
     {
         0xF4F7FB, /* PAGE_BG */
@@ -23,7 +23,7 @@ static const aic_theme g_day = {
     }
 };
 
-static const aic_theme g_night = {
+static const dsc_theme g_night = {
     1, "night",
     {
         0x0B1220, /* PAGE_BG */
@@ -39,36 +39,36 @@ static const aic_theme g_night = {
     }
 };
 
-const aic_theme *aic_theme_day(void) { return &g_day; }
-const aic_theme *aic_theme_night(void) { return &g_night; }
+const dsc_theme *dsc_theme_day(void) { return &g_day; }
+const dsc_theme *dsc_theme_night(void) { return &g_night; }
 
-const aic_theme *aic_theme_resolve(int pref, int system_night)
+const dsc_theme *dsc_theme_resolve(int pref, int system_night)
 {
     if (pref == 0) return &g_day;
     if (pref == 1) return &g_night;
     return system_night ? &g_night : &g_day;
 }
 
-const char *aic_token_name(aic_token t)
+const char *dsc_token_name(dsc_token t)
 {
     switch (t) {
-    case AIC_TOK_PAGE_BG:        return "page_bg";
-    case AIC_TOK_CARD_BG:        return "card_bg";
-    case AIC_TOK_TEXT:           return "text";
-    case AIC_TOK_TEXT_SECONDARY: return "text_secondary";
-    case AIC_TOK_DIVIDER:        return "divider";
-    case AIC_TOK_PRIMARY:        return "primary";
-    case AIC_TOK_ACCENT:         return "accent";
-    case AIC_TOK_SUCCESS:        return "success";
-    case AIC_TOK_WARNING:        return "warning";
-    case AIC_TOK_DANGER:         return "danger";
+    case DSC_TOK_PAGE_BG:        return "page_bg";
+    case DSC_TOK_CARD_BG:        return "card_bg";
+    case DSC_TOK_TEXT:           return "text";
+    case DSC_TOK_TEXT_SECONDARY: return "text_secondary";
+    case DSC_TOK_DIVIDER:        return "divider";
+    case DSC_TOK_PRIMARY:        return "primary";
+    case DSC_TOK_ACCENT:         return "accent";
+    case DSC_TOK_SUCCESS:        return "success";
+    case DSC_TOK_WARNING:        return "warning";
+    case DSC_TOK_DANGER:         return "danger";
     default:                     return "unknown";
     }
 }
 
-unsigned int aic_theme_color(const aic_theme *th, aic_token t)
+unsigned int dsc_theme_color(const dsc_theme *th, dsc_token t)
 {
-    if (!th || (int)t < 0 || (int)t >= AIC_TOK_COUNT) return 0;
+    if (!th || (int)t < 0 || (int)t >= DSC_TOK_COUNT) return 0;
     return th->color[t];
 }
 
@@ -86,7 +86,7 @@ static double rel_lum(unsigned int rgb)
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-int aic_theme_contrast(unsigned int fg, unsigned int bg)
+int dsc_theme_contrast(unsigned int fg, unsigned int bg)
 {
     double l1 = rel_lum(fg);
     double l2 = rel_lum(bg);
@@ -95,27 +95,27 @@ int aic_theme_contrast(unsigned int fg, unsigned int bg)
     return (int)(ratio * 100.0 + 0.5);
 }
 
-int aic_theme_contrast_ok(unsigned int fg, unsigned int bg, int min_x100)
+int dsc_theme_contrast_ok(unsigned int fg, unsigned int bg, int min_x100)
 {
-    return aic_theme_contrast(fg, bg) >= min_x100 ? 1 : 0;
+    return dsc_theme_contrast(fg, bg) >= min_x100 ? 1 : 0;
 }
 
-int aic_theme_audit(const aic_theme *th)
+int dsc_theme_audit(const dsc_theme *th)
 {
     if (!th) return 1;
     int bad = 0;
     /* 正文与次要文字要过 4.5:1（次要文字用在卡片上）。 */
-    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT], th->color[AIC_TOK_PAGE_BG], 450)) bad++;
-    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT], th->color[AIC_TOK_CARD_BG], 450)) bad++;
-    if (!aic_theme_contrast_ok(th->color[AIC_TOK_TEXT_SECONDARY], th->color[AIC_TOK_CARD_BG], 450)) bad++;
+    if (!dsc_theme_contrast_ok(th->color[DSC_TOK_TEXT], th->color[DSC_TOK_PAGE_BG], 450)) bad++;
+    if (!dsc_theme_contrast_ok(th->color[DSC_TOK_TEXT], th->color[DSC_TOK_CARD_BG], 450)) bad++;
+    if (!dsc_theme_contrast_ok(th->color[DSC_TOK_TEXT_SECONDARY], th->color[DSC_TOK_CARD_BG], 450)) bad++;
     /* 关键按钮（主色底 + 白字）至少 3:1。 */
-    if (!aic_theme_contrast_ok(0xFFFFFF, th->color[AIC_TOK_PRIMARY], 300)) bad++;
+    if (!dsc_theme_contrast_ok(0xFFFFFF, th->color[DSC_TOK_PRIMARY], 300)) bad++;
     return bad;
 }
 
-aic_motion aic_motion_default(void)
+dsc_motion dsc_motion_default(void)
 {
-    aic_motion m;
+    dsc_motion m;
     m.mode_switch_ms = 220;
     m.tab_switch_ms = 180;
     m.subpage_ms = 200;
@@ -128,9 +128,9 @@ aic_motion aic_motion_default(void)
     return m;
 }
 
-aic_motion aic_motion_reduced(void)
+dsc_motion dsc_motion_reduced(void)
 {
-    aic_motion m = aic_motion_default();
+    dsc_motion m = dsc_motion_default();
     m.mode_switch_ms = 0;
     m.tab_switch_ms = 0;
     m.subpage_ms = 0;

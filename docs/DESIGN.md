@@ -1,6 +1,6 @@
-# Sai 技术设计（实现说明）
+# DSC 技术设计（实现说明）
 
-> 本文件说明 "Sai" 0.1.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -17,7 +17,7 @@
 ## 2. 分层与目录
 
     src/core/            核心层：与平台无关，两端共用同一份 .c
-      aic_types.*        错误码、模式/角色枚举、模型标识、导出格式常量
+      dsc_types.*        错误码、模式/角色枚举、模型标识、导出格式常量
       util.*             字符串缓冲 sb、UTF-8、时间、UUID4、SHA-256、路径与文件、敏感串扫描
       json.*     / db.*   JSON 解析与写出；SQLite 封装（事务/嵌套 SAVEPOINT/迁移）
       schema.c           建表与版本迁移（v1 起）
@@ -49,9 +49,9 @@
                          http_win.c（WinHTTP）、transport_win.c（Winsock 局域网）、avatar_win.c（GDI+）、notify_win.c（气泡）、update_apply_win.c（替换安装）
     src/platform/android/ 适配层（Android）：transport_android.c（BSD socket）、credential_android.c
     src/ui/win/          Windows 界面（单文件 Win32 + GDI，离屏渲染可截图）
-    src/cli/             aic.exe：verify（逐条 FR 自检）/ bench / doctor
-    src/plugin_runner/   插件宿主进程 aic_plugin_host.exe 与纯 C ABI 头
-    android/app/...      Android 界面（Java）+ JNI 桥（aic_jni.c）+ 清单与资源
+    src/cli/             dsc-cli.exe：verify（逐条 FR 自检）/ bench / doctor
+    src/plugin_runner/   插件宿主进程 dsc_plugin_host.exe 与纯 C ABI 头
+    android/app/...      Android 界面（Java）+ JNI 桥（dsc_jni.c）+ 清单与资源
     third_party/sqlite/  SQLite 3.54.1 amalgamation
     resources/knowledge/ 内置知识包的 JSON 源（重新生成用；运行期读的是 knowledge_data.c）
     tests/               单元测试（C）与三个测试插件（正常/崩溃/卡死）
@@ -95,7 +95,7 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
     QA_READY   → QA_THREAD_LIST | QA_THREAD
     任意状态   → OVERLAY(AI_INFO|UPDATE|GUIDE|CONFIRM)（浮层不销毁底层状态）
 
-返回键固定三级：先关浮层 → 再退子页 → 最后弹退出确认（aic_router_back 返回 CLOSED_OVERLAY / POPPED_SUBPAGE / EXIT_CONFIRM）。
+返回键固定三级：先关浮层 → 再退子页 → 最后弹退出确认（dsc_router_back 返回 CLOSED_OVERLAY / POPPED_SUBPAGE / EXIT_CONFIRM）。
 模式切换只换活动上下文，不改写对端会话、不共享未提交草稿；各栏滚动位置与草稿保存在界面层。
 
 ## 5. 对话链路
@@ -112,7 +112,7 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 
 传输层：Windows 用 WinHTTP（winhttp.dll，自动代理、15/15/60/120 秒超时、逐块 WinHttpReadData 直接喂 SSE 解析器，
 可随时取消）；Android 由 Java 侧 HttpURLConnection 读流后把行喂给 C 侧的同一个解析器。没有 Key 时 engine 直接返回
-AIC_LLM_E_AUTH「尚未配置 API Key」，不伪造成功；只有显式 `--demo`（或 `SAI_DEMO=1`）才启用本地假传输做界面演示。
+DSC_LLM_E_AUTH「尚未配置 API Key」，不伪造成功；只有显式 `--demo`（或 `DSC_DEMO=1`）才启用本地假传输做界面演示。
 
 生成中可停止（stop 置标志 → 传输层返回取消 → 已落库的用户消息保留），可重新生成（取最后一条助手消息置
 superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上下文）。
@@ -120,8 +120,8 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 ## 6. 主题与动效（FR-17 / FR-21）
 
 主题令牌 10 项（页面底、卡片底、正文、次要文字、分割线、主色、强调色、成功/警告/危险），日光与夜间两套，
-界面所有颜色都通过 aic_theme_color(token) 取，禁止硬编码色值。对比度用 WCAG 相对亮度公式实算：
-正文 ≥4.5:1（页面底与卡片底都查）、白字主色按钮 ≥3:1，由 aic_theme_audit 断言。
+界面所有颜色都通过 dsc_theme_color(token) 取，禁止硬编码色值。对比度用 WCAG 相对亮度公式实算：
+正文 ≥4.5:1（页面底与卡片底都查）、白字主色按钮 ≥3:1，由 dsc_theme_audit 断言。
 
 主色为深蓝色阶（FR-33）：日间主色 `0x103F7A`、强调色 `0x1F5FA8`；夜间主色 `0x6194C9`、强调色 `0x4E86D6`。
 两套主色色相都在 211~213 度，差 ≤5 度——日光与夜间只改明度不改色相。实算对比度：日间正文/页面 15.06:1、
@@ -129,18 +129,18 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 
 动效时长（毫秒）：模式切换 220（ease-out，交叉淡入 + 轻微位移）、三栏切换 180（ease-in-out，指示器滑动）、
 子页进入 200、浮层 160、消息入场 140、Toast 120；只动 transform/opacity，单帧预算 16.7ms；
-系统"减少动态效果"或用户关闭动效时 aic_motion_reduced() 全部归零，直接切到终态。
+系统"减少动态效果"或用户关闭动效时 dsc_motion_reduced() 全部归零，直接切到终态。
 
 ## 7. 插件隔离（FR-05）
 
-插件是原生动态库（Windows DLL / Android .so），宿主通过独立进程 aic_plugin_host.exe 调用：
+插件是原生动态库（Windows DLL / Android .so），宿主通过独立进程 dsc_plugin_host.exe 调用：
 
-- ABI：int (*aic_plugin_call)(const char *request_json, char *out, size_t out_cap)，输出上限 64KiB；
+- ABI：int (*dsc_plugin_call)(const char *request_json, char *out, size_t out_cap)，输出上限 64KiB；
 - 宿主用 CreateProcessW + CREATE_NO_WINDOW 启动，超时（默认 5 秒）TerminateProcess，主程序继续运行；
 - 崩溃/超时后写 setting plugin.crash.<id> 并禁用该插件，错误文案写入用户可见提示；
-- 清单可选 sha256：给了就校验入口文件哈希，不符拒绝安装（AIC_E_CHECKSUM）；
+- 清单可选 sha256：给了就校验入口文件哈希，不符拒绝安装（DSC_E_CHECKSUM）；
 - 进程塞进 Job Object：内存上限 128MB、CPU 上限 5 秒，超限由内核结束并禁用插件；
-- 安装前展示来源、版本、权限、扩展点、入口与入口哈希并要求确认；同名插件已安装时走覆盖安装（aic_plugin_install_ex allow_overwrite=1），不静默替换；
+- 安装前展示来源、版本、权限、扩展点、入口与入口哈希并要求确认；同名插件已安装时走覆盖安装（dsc_plugin_install_ex allow_overwrite=1），不静默替换；
 - 插件目录 plugins/<id>/ 与核心数据分离（表里记 data_dir），卸载时用户决定是否保留数据。
 
 ## 8. 更新与数据保护（FR-07 / FR-08）
@@ -152,13 +152,13 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 
 ### 8.1 替换安装与回滚
 
-1. `aic_update_run_install` 校验备份门 → `aic_http_download`（Range 断点续传，写 `.part`）→ 大小与 SHA-256 双校验，
+1. `dsc_update_run_install` 校验备份门 → `dsc_http_download`（Range 断点续传，写 `.part`）→ 大小与 SHA-256 双校验，
    失败删除半包；2. 把当前安装目录整树复制到 `backups/app-<时间戳>` 作为回滚点；
 3. `CreateProcessW("<包> /S /D=<安装目录>")`，等待最多 180 秒；4. 退出码非 0 → 整树回滚并提示「已回滚到更新前的版本」。
 
 ### 8.2 数据管理（备份 / 恢复 / 清理）
 
-备份包是标准 ZIP（`aic_zip`，store 方式、UTF-8 名称、CRC 校验）：`db/sai.db` + `avatars/` + `plugins/` +
+备份包是标准 ZIP（`dsc_zip`，store 方式、UTF-8 名称、CRC 校验）：`db/dsc.db` + `avatars/` + `plugins/` +
 `manifest.json`（format、schema_version、created_at、db_schema、文件清单与逐个 SHA-256）。创建前先
 `PRAGMA wal_checkpoint(TRUNCATE)` 并跑 `PRAGMA quick_check`，不通过则拒绝备份。恢复先整包校验再解压到
 `backups/restore-<时间戳>`，覆盖数据库与头像/插件目录；清理默认保留最近 3 个。
@@ -167,7 +167,7 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 
 界面线程只做绘制与输入；网络发送、流式解析、导出、导入、更新下载、余额查询、备份都在工作线程执行，
 结果通过 `PostMessage`（`WM_APP_DELTA` / `WM_APP_DONE` / `WM_APP_IO` / `WM_APP_UPD` / `WM_APP_BAL`）回到界面线程；
-备份、恢复、清理与更新下载也在工作线程里跑，界面只收结果；会话正文按 100 条一页取（`aic_msg_page`），万条会话不整表进内存。
+备份、恢复、清理与更新下载也在工作线程里跑，界面只收结果；会话正文按 100 条一页取（`dsc_msg_page`），万条会话不整表进内存。
 界面线程不直接操作数据库句柄做批量读写，SQLite 以 serialized 模式编译（`SQLITE_THREADSAFE=1`），
 写操作统一走事务，跨线程写入由连接自身的互斥保护。
 
@@ -180,8 +180,8 @@ hello_ack（带本端码与已输入的对端码）→ 第二次 hello（带 ent
 
 传输（§16.1）：局域网 TCP 长连接 + UDP 广播发现（SAI-DISCOVER 1 → SAI-HERE <id> <name>），帧格式为 4 字节大端长度 + JSON；
 蓝牙走 RFCOMM（Windows 用 AF_BTH + `winsock2` 的 bt_rfcomm，Android 由 Java 的 `BluetoothSocket` 建链后把字节流交给
-C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），两通道共用同一套帧格式、同一套配对流程与同一个状态机；
-`aic_transport_available(`BLUETOOTH`)` 只在平台确实提供蓝牙栈时返回 1（桌面恒 1，Android 由 Java 侧探测后置位）。
+C 侧的 `dsc_bt_attach_*` / `dsc_bt_feed` / `dsc_bt_drain` 环形缓冲），两通道共用同一套帧格式、同一套配对流程与同一个状态机；
+`dsc_transport_available(`BLUETOOTH`)` 只在平台确实提供蓝牙栈时返回 1（桌面恒 1，Android 由 Java 侧探测后置位）。
 
 同步（§16.3~16.6）：状态机 IDLE→DISCOVERING→CONNECTING→PAIRING→PAIRED→SYNCING（DISCOVERING 允许直接被连方转 PAIRING）。
 配对成功即进 SYNCING 且实时同步默认开启；暂停只停新事件发送，已入队事件恢复后按 event_id 补发；同一时刻只与一个设备同步。
@@ -207,7 +207,7 @@ C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），�
 
 ## 8.6 错误中心与报错隔离（FR-34，§9.4）
 
-失败点统一收敛到 `aic_error_record`：对话链路（传输/流式/解析/额度/凭证）、Android 的 sendFail 与「模型没有返回内容」、
+失败点统一收敛到 `dsc_error_record`：对话链路（传输/流式/解析/额度/凭证）、Android 的 sendFail 与「模型没有返回内容」、
 能力取数失败。写入分两处：`error_record` 表（类别、错误码、可读描述、关联会话、发生时间、是否已查看）+ `errors/<id>.json`
 明细（脱敏后的原始响应，超过 8KB 截断）。
 
@@ -217,7 +217,7 @@ C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），�
 - 入口：额度不足给「看余额」，网络中断给「重试」（回聊天直接用原草稿再发，不产生新的用户消息），凭证/限流给「去设置」，
   解析与存储给「详情」（明细路径）。
 - 保留：默认 30 天，可配 0~3650 天（0 表示不自动清理），启动后的清理按 occurred_at 删除过期记录与其明细文件。
-- 诊断包：`sai_diagnostic` 顶层（schema 版本、导出时间、错误总数与未读数）+ 设置快照（不含 API Key 本体）+ 错误条目。
+- 诊断包：`dsc_diagnostic` 顶层（schema 版本、导出时间、错误总数与未读数）+ 设置快照（不含 API Key 本体）+ 错误条目。
 
 ## 8.7 设备能力与权限（FR-35，§18）
 
@@ -238,7 +238,7 @@ C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），�
   过滤「抱歉 / 作为一 / 我不能」这类拒答与代码块；一条记忆必挂 `source_message_id`，可追溯回原话。
 - 索引：CJK 相邻二字 + 英文/数字整词（含停用词表）建 `memory_token`，检索按命中数排序。
 - 注入：取最相关的至多 12 条（总量 ≤2048 字节），带固定表头，不整段回灌对话。
-- 修改 AI 发言（不设时间窗）：`aic_engine_edit_ai` 在一个事务内「改正文与 original_content/edited_at」→
+- 修改 AI 发言（不设时间窗）：`dsc_engine_edit_ai` 在一个事务内「改正文与 original_content/edited_at」→
   「按 source_message_id 物理删除旧 memory_entry 与索引」→「重新抽取写入」，任一步失败整体回滚（不留半套记忆）。
 - 跨端：成功后向已配对设备发实体 `memory` 的 `memory_replace` 事件（payload 带 source_message_id /
   conversation_id / content），接收端整条重建；两端编辑浮层都先提示「修改将同步更改 AI 记忆」。
@@ -248,7 +248,7 @@ C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），�
 预算（桌面 / 移动）：冷启动 2000/2500ms、常驻内存 240/180MB、模式切换 200/220ms、三栏切换 150/160ms、
 首段回复 2000/2000ms、万条分页 300/350ms、万条导出 2000/2500ms、安装包 80/60MB。
 
-aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分页 0.03 ms/页、导出 20 ms、常驻内存 8.6 MB，
+dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分页 0.03 ms/页、导出 20 ms、常驻内存 8.6 MB，
 三项均远低于预算；冷启动与切换时长由 FR-21/FR-24 的动效参数与界面时延断言覆盖（真实交互时长依赖具体机器）。
 
 ## 10. 跨平台策略
@@ -257,7 +257,7 @@ aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分
 - 平台差异只在适配层：凭据存储（Windows 凭据管理器 / Android 交给 Java 侧 Keystore 语义）、插件进程、耗时与内存采样；
 - 界面各自原生：Windows 单窗口 Win32 + GDI 双缓冲自绘；Android 纯代码构建 View 层级（不依赖 XML 布局），
   两者都只通过 JNI/直接调用的核心 API 取数据，保证数据格式与行为一致；
-- 数据目录：Windows 默认 %LOCALAPPDATA%\Sai，可用 SAI_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
+- 数据目录：Windows 默认 %LOCALAPPDATA%\DSC，可用 DSC_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
 
 ## 11. 构建与打包
 
@@ -280,8 +280,8 @@ Android 用 NDK r27c clang 18.0.3，产物为 arm64-v8a。
    因此 Android 侧的界面路径（三段式流式、选图、通知、更新安装器跳转、蓝牙 RFCOMM、真实余额、插件独立进程）
    只有编译与结构校验，C 侧协议另有主机复刻测试；头像不读 EXIF 方向，系统对话框外观不随深色主题切换。
 3. 签名通道已闭环但不含证书：Windows 用 `scripts\sign_release.ps1`（`-Pfx` 或 `-Thumbprint`，缺 signtool 退出 2、
-   缺证书退出 3），Android 用 `tools\sign_android.py`（`SAI_ANDROID_KEYSTORE` 等环境变量，缺项退出 3，产出 v2+v3 并当场验签）。
-   仓库自带的 `build_android\sai.keystore` 只用于开发期出可安装包，发布前必须用发布方证书重签。
+   缺证书退出 3），Android 用 `tools\sign_android.py`（`DSC_ANDROID_KEYSTORE` 等环境变量，缺项退出 3，产出 v2+v3 并当场验签）。
+   仓库自带的 `build_android\dsc.keystore` 只用于开发期出可安装包，发布前必须用发布方证书重签。
 4. 32 位 Windows 未构建；ARM64 为交叉编译产物（便携 zip），未在 ARM64 硬件上运行。
 5. 插件扩展点四个都已在 Windows 侧接通：prompt.fragment 拼提示词、ui.panel（describe/invoke）面板按钮、
 message.transform 改送模型的最后一条 user 文本、tool.provider 产出 tools 声明；Android 侧由

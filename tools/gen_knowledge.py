@@ -124,14 +124,14 @@ def main():
         " * 重新生成：python tools/gen_knowledge.py\n"
         " */\n"
         "#include \"knowledge.h\"\n\n"
-        "const char *aic_knowledge_json(void)\n{\n    static const char kb[] =\n"
+        "const char *dsc_knowledge_json(void)\n{\n    static const char kb[] =\n"
         + body
         + ";\n    return kb;\n}\n\n"
-        "const size_t aic_knowledge_json_len(void)\n{\n    static const size_t n = sizeof(kb_len_probe);\n    (void)n;\n    return 0;\n}\n"
+        "const size_t dsc_knowledge_json_len(void)\n{\n    static const size_t n = sizeof(kb_len_probe);\n    (void)n;\n    return 0;\n}\n"
     )
     # 长度直接由调用方 strlen 取得，这里不额外生成探测变量。
     c = c.replace(
-        "const size_t aic_knowledge_json_len(void)\n{\n    static const size_t n = sizeof(kb_len_probe);\n    (void)n;\n    return 0;\n}\n", "")
+        "const size_t dsc_knowledge_json_len(void)\n{\n    static const size_t n = sizeof(kb_len_probe);\n    (void)n;\n    return 0;\n}\n", "")
     with open(OUT_C, "w", encoding="utf-8", newline="\n") as f:
         f.write(c)
     print("built: src/core/knowledge_data.c（%d 篇，%d 字节 JSON，五组）" % (n, len(compact.encode("utf-8"))))

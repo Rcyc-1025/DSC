@@ -9,7 +9,7 @@
 
 static jv *jv_new(jv_type t)
 {
-    jv *v = (jv *)aic_xcalloc(1, sizeof(jv));
+    jv *v = (jv *)dsc_xcalloc(1, sizeof(jv));
     v->type = t;
     return v;
 }
@@ -19,24 +19,24 @@ void jv_free(jv *v)
     if (!v) return;
     switch (v->type) {
     case JV_STR:
-        aic_xfree(v->u.str);
+        dsc_xfree(v->u.str);
         break;
     case JV_ARR:
         for (size_t i = 0; i < v->u.arr.n; i++) jv_free(v->u.arr.items[i]);
-        aic_xfree(v->u.arr.items);
+        dsc_xfree(v->u.arr.items);
         break;
     case JV_OBJ:
         for (size_t i = 0; i < v->u.obj.n; i++) {
-            aic_xfree(v->u.obj.keys[i]);
+            dsc_xfree(v->u.obj.keys[i]);
             jv_free(v->u.obj.vals[i]);
         }
-        aic_xfree(v->u.obj.keys);
-        aic_xfree(v->u.obj.vals);
+        dsc_xfree(v->u.obj.keys);
+        dsc_xfree(v->u.obj.vals);
         break;
     default:
         break;
     }
-    aic_xfree(v);
+    dsc_xfree(v);
 }
 
 const jv *jv_get(const jv *obj, const char *key)
@@ -286,7 +286,7 @@ static jv *parse_string(jparse *p)
         unsigned char c = (unsigned char)p->s[p->pos];
         if (c == '"') { advance(p); 
             jv *v = jv_new(JV_STR);
-            v->u.str = aic_strdup(sb_cstr(&b));
+            v->u.str = dsc_strdup(sb_cstr(&b));
             sb_free(&b);
             return v;
         }
@@ -422,10 +422,10 @@ static jv *parse_value(jparse *p, int depth)
             if (!val) { jv_free(k); jv_free(o); return NULL; }
             if (o->u.obj.n == o->u.obj.cap) {
                 o->u.obj.cap = o->u.obj.cap ? o->u.obj.cap * 2 : 8;
-                o->u.obj.keys = (char **)aic_xrealloc(o->u.obj.keys, o->u.obj.cap * sizeof(char *));
-                o->u.obj.vals = (jv **)aic_xrealloc(o->u.obj.vals, o->u.obj.cap * sizeof(jv *));
+                o->u.obj.keys = (char **)dsc_xrealloc(o->u.obj.keys, o->u.obj.cap * sizeof(char *));
+                o->u.obj.vals = (jv **)dsc_xrealloc(o->u.obj.vals, o->u.obj.cap * sizeof(jv *));
             }
-            o->u.obj.keys[o->u.obj.n] = aic_strdup(k->u.str);
+            o->u.obj.keys[o->u.obj.n] = dsc_strdup(k->u.str);
             o->u.obj.vals[o->u.obj.n] = val;
             o->u.obj.n++;
             jv_free(k);
@@ -447,7 +447,7 @@ static jv *parse_value(jparse *p, int depth)
             if (!val) { jv_free(a); return NULL; }
             if (a->u.arr.n == a->u.arr.cap) {
                 a->u.arr.cap = a->u.arr.cap ? a->u.arr.cap * 2 : 8;
-                a->u.arr.items = (jv **)aic_xrealloc(a->u.arr.items, a->u.arr.cap * sizeof(jv *));
+                a->u.arr.items = (jv **)dsc_xrealloc(a->u.arr.items, a->u.arr.cap * sizeof(jv *));
             }
             a->u.arr.items[a->u.arr.n++] = val;
             skip_ws(p);
@@ -481,7 +481,7 @@ static jv *parse_value(jparse *p, int depth)
 
 int jv_parse(const char *text, size_t len, jv **out, char *err, size_t errlen)
 {
-    if (!text || !out) return AIC_E_INVAL;
+    if (!text || !out) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
     jparse p;
     memset(&p, 0, sizeof(p));
@@ -492,15 +492,15 @@ int jv_parse(const char *text, size_t len, jv **out, char *err, size_t errlen)
     p.err = err;
     p.errlen = errlen;
     jv *v = parse_value(&p, 0);
-    if (!v) return p.failed ? AIC_E_FORMAT : AIC_E_INVAL;
+    if (!v) return p.failed ? DSC_E_FORMAT : DSC_E_INVAL;
     skip_ws(&p);
     if (p.pos != p.len) {
         jerr(&p, "JSON 结束后存在多余内容");
         jv_free(v);
-        return AIC_E_FORMAT;
+        return DSC_E_FORMAT;
     }
     *out = v;
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* ================= 序列化（jv → 文本） ================= */

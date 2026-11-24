@@ -4,7 +4,7 @@
  * minSdk 24 没有它，所以两条路径都要处理：13 以上先判断权限，13 以下直接发。
  * 渠道用 IMPORTANCE_DEFAULT：提醒不该响铃打断人。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -17,7 +17,7 @@ import android.os.Build;
 
 public final class Notifier {
 
-    public static final String CHANNEL_ID = "sai_reminder";
+    public static final String CHANNEL_ID = "dsc_reminder";
     private static final String CHANNEL_NAME = "提醒";
 
     /** 通知 id：同类通知复用同一个 id，避免堆一长串。 */

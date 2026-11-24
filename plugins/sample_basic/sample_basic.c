@@ -19,7 +19,7 @@ static int sample_call(const char *request_json, char *out, size_t out_cap)
     return 0;
 }
 
-__declspec(dllexport) int aic_plugin_call(const char *request_json, char *out, size_t out_cap)
+__declspec(dllexport) int dsc_plugin_call(const char *request_json, char *out, size_t out_cap)
 {
     return sample_call(request_json, out, out_cap);
 }

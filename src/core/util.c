@@ -20,10 +20,10 @@
 #  include <unistd.h>
 #endif
 
-/* 错误文案与枚举名实现在 aic_types.c 中，此处不再重复定义。 */
+/* 错误文案与枚举名实现在 dsc_types.c 中，此处不再重复定义。 */
 
 /* ================= 内存 ================= */
-void *aic_xmalloc(size_t n)
+void *dsc_xmalloc(size_t n)
 {
     void *p = malloc(n ? n : 1);
     if (!p) {
@@ -33,46 +33,46 @@ void *aic_xmalloc(size_t n)
     return p;
 }
 
-void *aic_xcalloc(size_t n, size_t sz)
+void *dsc_xcalloc(size_t n, size_t sz)
 {
     void *p = calloc(n ? n : 1, sz ? sz : 1);
     if (!p) abort();
     return p;
 }
 
-void *aic_xrealloc(void *p, size_t n)
+void *dsc_xrealloc(void *p, size_t n)
 {
     void *q = realloc(p, n ? n : 1);
     if (!q) abort();
     return q;
 }
 
-void aic_xfree(void *p)
+void dsc_xfree(void *p)
 {
     if (p) free(p);
 }
 
-char *aic_strdup(const char *s)
+char *dsc_strdup(const char *s)
 {
     if (!s) return NULL;
     size_t n = strlen(s);
-    char *d = (char *)aic_xmalloc(n + 1);
+    char *d = (char *)dsc_xmalloc(n + 1);
     memcpy(d, s, n + 1);
     return d;
 }
 
-char *aic_strndup(const char *s, size_t n)
+char *dsc_strndup(const char *s, size_t n)
 {
     if (!s) return NULL;
     size_t len = 0;
     while (len < n && s[len]) len++;
-    char *d = (char *)aic_xmalloc(len + 1);
+    char *d = (char *)dsc_xmalloc(len + 1);
     memcpy(d, s, len);
     d[len] = '\0';
     return d;
 }
 
-void aic_strlcpy_utf8(char *dst, size_t cap, const char *src)
+void dsc_strlcpy_utf8(char *dst, size_t cap, const char *src)
 {
     if (!dst || cap == 0) return;
     if (!src) { dst[0] = '\0'; return; }
@@ -99,7 +99,7 @@ void sb_init(sb *b)
 void sb_free(sb *b)
 {
     if (!b) return;
-    aic_xfree(b->data);
+    dsc_xfree(b->data);
     b->data = NULL;
     b->len = b->cap = 0;
 }
@@ -116,7 +116,7 @@ int sb_reserve(sb *b, size_t need)
     if (b->cap >= need + 1) return 0;
     size_t cap = b->cap ? b->cap : 64;
     while (cap < need + 1) cap *= 2;
-    b->data = (char *)aic_xrealloc(b->data, cap);
+    b->data = (char *)dsc_xrealloc(b->data, cap);
     b->cap = cap;
     return 0;
 }
@@ -174,7 +174,7 @@ const char *sb_cstr(sb *b)
 }
 
 /* ================= UTF-8 ================= */
-size_t aic_utf8_length(const char *s)
+size_t dsc_utf8_length(const char *s)
 {
     if (!s) return 0;
     size_t n = 0;
@@ -183,7 +183,7 @@ size_t aic_utf8_length(const char *s)
     return n;
 }
 
-int aic_utf8_valid(const char *s)
+int dsc_utf8_valid(const char *s)
 {
     if (!s) return 0;
     const unsigned char *p = (const unsigned char *)s;
@@ -204,7 +204,7 @@ int aic_utf8_valid(const char *s)
     return 1;
 }
 
-size_t aic_utf8_truncate_chars(char *s, size_t max_chars)
+size_t dsc_utf8_truncate_chars(char *s, size_t max_chars)
 {
     if (!s) return 0;
     size_t chars = 0, i = 0;
@@ -219,7 +219,7 @@ size_t aic_utf8_truncate_chars(char *s, size_t max_chars)
 }
 
 /* ================= 时间 ================= */
-int64_t aic_now_ms(void)
+int64_t dsc_now_ms(void)
 {
 #ifdef _WIN32
     FILETIME ft;
@@ -234,7 +234,7 @@ int64_t aic_now_ms(void)
 #endif
 }
 
-void aic_ms_to_iso8601(int64_t ms, char buf[32])
+void dsc_ms_to_iso8601(int64_t ms, char buf[32])
 {
     time_t secs = (time_t)(ms / 1000);
     int msec = (int)(ms % 1000);
@@ -249,20 +249,20 @@ void aic_ms_to_iso8601(int64_t ms, char buf[32])
     snprintf(tmp, sizeof(tmp), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
              tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec, msec);
-    aic_strlcpy_utf8(buf, 32, tmp);
+    dsc_strlcpy_utf8(buf, 32, tmp);
 }
 
-void aic_now_iso8601(char buf[32])
+void dsc_now_iso8601(char buf[32])
 {
-    aic_ms_to_iso8601(aic_now_ms(), buf);
+    dsc_ms_to_iso8601(dsc_now_ms(), buf);
 }
 
-int aic_parse_iso8601(const char *s, int64_t *out_ms)
+int dsc_parse_iso8601(const char *s, int64_t *out_ms)
 {
-    if (!s || !out_ms) return AIC_E_INVAL;
+    if (!s || !out_ms) return DSC_E_INVAL;
     int Y = 0, M = 0, D = 0, h = 0, mi = 0, se = 0, ms = 0;
     int n = sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d", &Y, &M, &D, &h, &mi, &se);
-    if (n < 3) return AIC_E_FORMAT;
+    if (n < 3) return DSC_E_FORMAT;
     /* 可选毫秒与本地时区偏移。 */
     const char *p = s;
     while (*p && *p != 'T' && *p != ' ') p++;
@@ -300,22 +300,22 @@ int aic_parse_iso8601(const char *s, int64_t *out_ms)
 #else
     time_t t = timegm(&tmv);
 #endif
-    if (t == (time_t)-1) return AIC_E_FORMAT;
+    if (t == (time_t)-1) return DSC_E_FORMAT;
     *out_ms = (int64_t)t * 1000ll + ms - (int64_t)offset_min * 60000ll;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int64_t aic_iso8601_to_ms(const char *s)
+int64_t dsc_iso8601_to_ms(const char *s)
 {
     int64_t ms = 0;
-    if (aic_parse_iso8601(s, &ms) != AIC_OK) return 0;
+    if (dsc_parse_iso8601(s, &ms) != DSC_OK) return 0;
     return ms;
 }
 
 /* ================= 随机源 ================= */
-int aic_random_bytes(void *buf, size_t n)
+int dsc_random_bytes(void *buf, size_t n)
 {
-    if (!buf || n == 0) return AIC_E_INVAL;
+    if (!buf || n == 0) return DSC_E_INVAL;
 #ifdef _WIN32
     /* advapi32 导出的 SystemFunction036（即 RtlGenRandom），无需额外链接 bcrypt。 */
     typedef unsigned char(__stdcall *rtl_gen_random_fn)(void *, unsigned long);
@@ -324,28 +324,28 @@ int aic_random_bytes(void *buf, size_t n)
         HMODULE h = LoadLibraryA("advapi32.dll");
         if (h) fn = (rtl_gen_random_fn)(void *)GetProcAddress(h, "SystemFunction036");
     }
-    if (fn && fn(buf, (unsigned long)n)) return AIC_OK;
-    return AIC_E_IO;
+    if (fn && fn(buf, (unsigned long)n)) return DSC_OK;
+    return DSC_E_IO;
 #else
     FILE *f = fopen("/dev/urandom", "rb");
-    if (!f) return AIC_E_IO;
+    if (!f) return DSC_E_IO;
     size_t got = fread(buf, 1, n, f);
     fclose(f);
-    if (got != n) return AIC_E_IO;
-    return AIC_OK;
+    if (got != n) return DSC_E_IO;
+    return DSC_OK;
 #endif
 }
 
 /* ================= UUID ================= */
 static uint64_t g_uuid_counter = 0;
 
-void aic_uuid4(char out[37])
+void dsc_uuid4(char out[37])
 {
     uint8_t b[16];
     static int seeded = 0;
     if (!seeded) {
         seeded = 1;
-        unsigned long long seed = (unsigned long long)aic_now_ms();
+        unsigned long long seed = (unsigned long long)dsc_now_ms();
 #ifdef _WIN32
         seed ^= ((unsigned long long)GetCurrentProcessId() << 32);
 #endif
@@ -355,7 +355,7 @@ void aic_uuid4(char out[37])
     for (int i = 0; i < 16; i++) b[i] = (uint8_t)(rand() & 0xFF);
     /* 混入计数器与时间，降低同毫秒碰撞概率。 */
     for (int i = 0; i < 8; i++) b[i] ^= (uint8_t)((ctr >> (i * 8)) & 0xFF);
-    uint64_t now = (uint64_t)aic_now_ms();
+    uint64_t now = (uint64_t)dsc_now_ms();
     for (int i = 8; i < 16; i++) b[i] ^= (uint8_t)((now >> ((i - 8) * 8)) & 0xFF);
     b[6] = (uint8_t)((b[6] & 0x0F) | 0x40); /* version 4 */
     b[8] = (uint8_t)((b[8] & 0x3F) | 0x80); /* variant */
@@ -369,7 +369,7 @@ void aic_uuid4(char out[37])
     out[pos] = '\0';
 }
 
-int aic_uuid_valid(const char *s)
+int dsc_uuid_valid(const char *s)
 {
     if (!s) return 0;
     size_t n = strlen(s);
@@ -402,7 +402,7 @@ static const uint32_t K256[64] = {
 
 #define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 
-void aic_sha256_init(aic_sha256_ctx *c)
+void dsc_sha256_init(dsc_sha256_ctx *c)
 {
     c->state[0] = 0x6a09e667u; c->state[1] = 0xbb67ae85u;
     c->state[2] = 0x3c6ef372u; c->state[3] = 0xa54ff53au;
@@ -412,7 +412,7 @@ void aic_sha256_init(aic_sha256_ctx *c)
     c->buflen = 0;
 }
 
-static void sha256_block(aic_sha256_ctx *c, const uint8_t *p)
+static void sha256_block(dsc_sha256_ctx *c, const uint8_t *p)
 {
     uint32_t w[64];
     for (int i = 0; i < 16; i++)
@@ -439,7 +439,7 @@ static void sha256_block(aic_sha256_ctx *c, const uint8_t *p)
     c->state[4] += e; c->state[5] += f; c->state[6] += g; c->state[7] += h;
 }
 
-void aic_sha256_update(aic_sha256_ctx *c, const void *data, size_t len)
+void dsc_sha256_update(dsc_sha256_ctx *c, const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
     c->bitlen += (uint64_t)len * 8ull;
@@ -466,13 +466,13 @@ void aic_sha256_update(aic_sha256_ctx *c, const void *data, size_t len)
     }
 }
 
-void aic_sha256_final(aic_sha256_ctx *c, uint8_t out[32])
+void dsc_sha256_final(dsc_sha256_ctx *c, uint8_t out[32])
 {
     uint64_t bits = c->bitlen;
     uint8_t pad = 0x80;
-    aic_sha256_update(c, &pad, 1);
+    dsc_sha256_update(c, &pad, 1);
     uint8_t zero = 0;
-    while (c->buflen != 56) aic_sha256_update(c, &zero, 1);
+    while (c->buflen != 56) dsc_sha256_update(c, &zero, 1);
     uint8_t lenbuf[8];
     for (int i = 0; i < 8; i++) lenbuf[i] = (uint8_t)((bits >> (56 - i * 8)) & 0xFF);
     /* 直接喂入长度，避免影响 bitlen 语义。 */
@@ -487,15 +487,15 @@ void aic_sha256_final(aic_sha256_ctx *c, uint8_t out[32])
     }
 }
 
-void aic_sha256(const void *data, size_t len, uint8_t out[32])
+void dsc_sha256(const void *data, size_t len, uint8_t out[32])
 {
-    aic_sha256_ctx c;
-    aic_sha256_init(&c);
-    aic_sha256_update(&c, data, len);
-    aic_sha256_final(&c, out);
+    dsc_sha256_ctx c;
+    dsc_sha256_init(&c);
+    dsc_sha256_update(&c, data, len);
+    dsc_sha256_final(&c, out);
 }
 
-void aic_hex_encode(const uint8_t *in, size_t n, char *out)
+void dsc_hex_encode(const uint8_t *in, size_t n, char *out)
 {
     static const char *hex = "0123456789abcdef";
     for (size_t i = 0; i < n; i++) {
@@ -513,46 +513,46 @@ static int hexval(char c)
     return -1;
 }
 
-int aic_hex_decode(const char *hex, uint8_t *out, size_t cap, size_t *out_len)
+int dsc_hex_decode(const char *hex, uint8_t *out, size_t cap, size_t *out_len)
 {
-    if (!hex) return AIC_E_INVAL;
+    if (!hex) return DSC_E_INVAL;
     size_t n = strlen(hex);
-    if (n % 2) return AIC_E_FORMAT;
+    if (n % 2) return DSC_E_FORMAT;
     size_t bytes = n / 2;
-    if (bytes > cap) return AIC_E_LIMIT;
+    if (bytes > cap) return DSC_E_LIMIT;
     for (size_t i = 0; i < bytes; i++) {
         int hi = hexval(hex[i * 2]), lo = hexval(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0) return AIC_E_FORMAT;
+        if (hi < 0 || lo < 0) return DSC_E_FORMAT;
         out[i] = (uint8_t)((hi << 4) | lo);
     }
     if (out_len) *out_len = bytes;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-void aic_sha256_hex(const void *data, size_t len, char out[65])
+void dsc_sha256_hex(const void *data, size_t len, char out[65])
 {
     uint8_t d[32];
-    aic_sha256(data, len, d);
-    aic_hex_encode(d, 32, out);
+    dsc_sha256(data, len, d);
+    dsc_hex_encode(d, 32, out);
 }
 
 /* ================= 路径与文件 ================= */
-int aic_path_join(char *dst, size_t cap, const char *a, const char *b)
+int dsc_path_join(char *dst, size_t cap, const char *a, const char *b)
 {
-    if (!dst || cap == 0 || !a) return AIC_E_INVAL;
+    if (!dst || cap == 0 || !a) return DSC_E_INVAL;
     if (!b || !b[0]) {
         snprintf(dst, cap, "%s", a);
-        return AIC_OK;
+        return DSC_OK;
     }
     size_t la = strlen(a);
     int need_sep = la > 0 && a[la - 1] != '/' && a[la - 1] != '\\';
     int extra = (b[0] == '/' || b[0] == '\\') ? 1 : 0;
     int n = snprintf(dst, cap, "%s%s%s", a, need_sep ? "/" : "", b + extra);
-    if (n < 0 || (size_t)n >= cap) return AIC_E_LIMIT;
-    return AIC_OK;
+    if (n < 0 || (size_t)n >= cap) return DSC_E_LIMIT;
+    return DSC_OK;
 }
 
-int aic_path_exists(const char *p)
+int dsc_path_exists(const char *p)
 {
     if (!p || !p[0]) return 0;
 #ifdef _WIN32
@@ -564,7 +564,7 @@ int aic_path_exists(const char *p)
 #endif
 }
 
-int aic_is_dir(const char *p)
+int dsc_is_dir(const char *p)
 {
 #ifdef _WIN32
     struct _stat st;
@@ -577,12 +577,12 @@ int aic_is_dir(const char *p)
 #endif
 }
 
-int aic_mkdir_p(const char *p)
+int dsc_mkdir_p(const char *p)
 {
-    if (!p || !p[0]) return AIC_E_INVAL;
+    if (!p || !p[0]) return DSC_E_INVAL;
     char buf[1024];
     size_t n = strlen(p);
-    if (n >= sizeof(buf)) return AIC_E_LIMIT;
+    if (n >= sizeof(buf)) return DSC_E_LIMIT;
     memcpy(buf, p, n + 1);
     for (size_t i = 1; i < n; i++) {
         if (buf[i] == '/' || buf[i] == '\\') {
@@ -590,7 +590,7 @@ int aic_mkdir_p(const char *p)
             buf[i] = '\0';
             /* 跳过盘符根（"C:"）。 */
             if (!(strlen(buf) == 2 && buf[1] == ':')) {
-                if (!aic_is_dir(buf)) {
+                if (!dsc_is_dir(buf)) {
 #ifdef _WIN32
                     _mkdir(buf);
 #else
@@ -601,99 +601,99 @@ int aic_mkdir_p(const char *p)
             buf[i] = save;
         }
     }
-    if (!aic_is_dir(buf)) {
+    if (!dsc_is_dir(buf)) {
 #ifdef _WIN32
         _mkdir(buf);
 #else
         mkdir(buf, 0777);
 #endif
     }
-    return aic_is_dir(buf) ? AIC_OK : AIC_E_IO;
+    return dsc_is_dir(buf) ? DSC_OK : DSC_E_IO;
 }
 
-int aic_file_size(const char *p, int64_t *out)
+int dsc_file_size(const char *p, int64_t *out)
 {
-    if (!p || !out) return AIC_E_INVAL;
+    if (!p || !out) return DSC_E_INVAL;
 #ifdef _WIN32
     struct _stat st;
-    if (_stat(p, &st) != 0) return AIC_E_IO;
+    if (_stat(p, &st) != 0) return DSC_E_IO;
 #else
     struct stat st;
-    if (stat(p, &st) != 0) return AIC_E_IO;
+    if (stat(p, &st) != 0) return DSC_E_IO;
 #endif
     *out = (int64_t)st.st_size;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_file_read_all(const char *p, char **out, size_t *out_len)
+int dsc_file_read_all(const char *p, char **out, size_t *out_len)
 {
-    if (!p || !out) return AIC_E_INVAL;
+    if (!p || !out) return DSC_E_INVAL;
     FILE *f = fopen(p, "rb");
-    if (!f) return AIC_E_IO;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return AIC_E_IO; }
+    if (!f) return DSC_E_IO;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return DSC_E_IO; }
     long sz = ftell(f);
-    if (sz < 0) { fclose(f); return AIC_E_IO; }
+    if (sz < 0) { fclose(f); return DSC_E_IO; }
     rewind(f);
-    char *buf = (char *)aic_xmalloc((size_t)sz + 1);
+    char *buf = (char *)dsc_xmalloc((size_t)sz + 1);
     size_t rd = sz > 0 ? fread(buf, 1, (size_t)sz, f) : 0;
     fclose(f);
     buf[rd] = '\0';
     *out = buf;
     if (out_len) *out_len = rd;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_file_write_all(const char *p, const void *data, size_t len)
+int dsc_file_write_all(const char *p, const void *data, size_t len)
 {
-    if (!p) return AIC_E_INVAL;
+    if (!p) return DSC_E_INVAL;
     FILE *f = fopen(p, "wb");
-    if (!f) return AIC_E_IO;
+    if (!f) return DSC_E_IO;
     size_t wr = len ? fwrite(data, 1, len, f) : 0;
     int rc = fclose(f);
-    if (wr != len || rc != 0) return AIC_E_IO;
-    return AIC_OK;
+    if (wr != len || rc != 0) return DSC_E_IO;
+    return DSC_OK;
 }
 
-int aic_file_append(const char *p, const void *data, size_t len)
+int dsc_file_append(const char *p, const void *data, size_t len)
 {
-    if (!p) return AIC_E_INVAL;
+    if (!p) return DSC_E_INVAL;
     FILE *f = fopen(p, "ab");
-    if (!f) return AIC_E_IO;
+    if (!f) return DSC_E_IO;
     size_t wr = len ? fwrite(data, 1, len, f) : 0;
     int rc = fclose(f);
-    if (wr != len || rc != 0) return AIC_E_IO;
-    return AIC_OK;
+    if (wr != len || rc != 0) return DSC_E_IO;
+    return DSC_OK;
 }
 
-int aic_file_copy(const char *src, const char *dst)
+int dsc_file_copy(const char *src, const char *dst)
 {
     char *buf = NULL;
     size_t len = 0;
-    int rc = aic_file_read_all(src, &buf, &len);
-    if (rc != AIC_OK) return rc;
-    rc = aic_file_write_all(dst, buf, len);
-    aic_xfree(buf);
+    int rc = dsc_file_read_all(src, &buf, &len);
+    if (rc != DSC_OK) return rc;
+    rc = dsc_file_write_all(dst, buf, len);
+    dsc_xfree(buf);
     return rc;
 }
 
-int aic_file_remove(const char *p)
+int dsc_file_remove(const char *p)
 {
-    if (!p) return AIC_E_INVAL;
+    if (!p) return DSC_E_INVAL;
 #ifdef _WIN32
-    return _unlink(p) == 0 ? AIC_OK : AIC_E_IO;
+    return _unlink(p) == 0 ? DSC_OK : DSC_E_IO;
 #else
-    return unlink(p) == 0 ? AIC_OK : AIC_E_IO;
+    return unlink(p) == 0 ? DSC_OK : DSC_E_IO;
 #endif
 }
 
-int aic_file_move(const char *src, const char *dst)
+int dsc_file_move(const char *src, const char *dst)
 {
-    if (aic_file_copy(src, dst) != AIC_OK) return AIC_E_IO;
-    aic_file_remove(src);
-    return AIC_OK;
+    if (dsc_file_copy(src, dst) != DSC_OK) return DSC_E_IO;
+    dsc_file_remove(src);
+    return DSC_OK;
 }
 
-const char *aic_path_basename(const char *p)
+const char *dsc_path_basename(const char *p)
 {
     if (!p) return "";
     const char *last = p;
@@ -702,16 +702,16 @@ const char *aic_path_basename(const char *p)
     return last;
 }
 
-int aic_dir_list(const char *dir, sb *names_out, char sep)
+int dsc_dir_list(const char *dir, sb *names_out, char sep)
 {
-    if (!dir || !names_out) return AIC_E_INVAL;
+    if (!dir || !names_out) return DSC_E_INVAL;
     int count = 0;
 #ifdef _WIN32
     char pattern[1024];
-    if (snprintf(pattern, sizeof(pattern), "%s/*", dir) >= (int)sizeof(pattern)) return AIC_E_LIMIT;
+    if (snprintf(pattern, sizeof(pattern), "%s/*", dir) >= (int)sizeof(pattern)) return DSC_E_LIMIT;
     struct _finddata_t fd;
     intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return AIC_OK;
+    if (h == -1) return DSC_OK;
     do {
         if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
         if (names_out->len) sb_appendc(names_out, sep);
@@ -721,7 +721,7 @@ int aic_dir_list(const char *dir, sb *names_out, char sep)
     _findclose(h);
 #else
     DIR *d = opendir(dir);
-    if (!d) return AIC_OK;
+    if (!d) return DSC_OK;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
@@ -735,7 +735,7 @@ int aic_dir_list(const char *dir, sb *names_out, char sep)
 }
 
 /* ================= 其他工具 ================= */
-int aic_str_ieq(const char *a, const char *b)
+int dsc_str_ieq(const char *a, const char *b)
 {
     if (!a || !b) return 0;
     while (*a && *b) {
@@ -746,27 +746,27 @@ int aic_str_ieq(const char *a, const char *b)
     return *a == *b;
 }
 
-int aic_parse_int(const char *s, int *out)
+int dsc_parse_int(const char *s, int *out)
 {
-    if (!s || !out) return AIC_E_INVAL;
+    if (!s || !out) return DSC_E_INVAL;
     char *end = NULL;
     long v = strtol(s, &end, 10);
-    if (end == s || (end && *end != '\0' && !isspace((unsigned char)*end))) return AIC_E_FORMAT;
+    if (end == s || (end && *end != '\0' && !isspace((unsigned char)*end))) return DSC_E_FORMAT;
     *out = (int)v;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_parse_ll(const char *s, long long *out)
+int dsc_parse_ll(const char *s, long long *out)
 {
-    if (!s || !out) return AIC_E_INVAL;
+    if (!s || !out) return DSC_E_INVAL;
     char *end = NULL;
     long long v = strtoll(s, &end, 10);
-    if (end == s) return AIC_E_FORMAT;
+    if (end == s) return DSC_E_FORMAT;
     *out = v;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_is_valid_date(const char *s)
+int dsc_is_valid_date(const char *s)
 {
     if (!s) return 0;
     size_t n = strlen(s);
@@ -789,7 +789,7 @@ int aic_is_valid_date(const char *s)
     return D >= 1 && D <= maxd;
 }
 
-int aic_is_local_relative_path(const char *s)
+int dsc_is_local_relative_path(const char *s)
 {
     if (!s || !s[0]) return 0;
     if (s[0] == '/' || s[0] == '\\') return 0;
@@ -805,7 +805,7 @@ int aic_is_local_relative_path(const char *s)
     return 1;
 }
 
-int aic_version_compare(const char *a, const char *b)
+int dsc_version_compare(const char *a, const char *b)
 {
     if (!a) a = "0";
     if (!b) b = "0";
@@ -830,7 +830,7 @@ int aic_version_compare(const char *a, const char *b)
     }
 }
 
-int aic_hex_valid(const char *hex, size_t need_len)
+int dsc_hex_valid(const char *hex, size_t need_len)
 {
     if (!hex) return 0;
     size_t n = strlen(hex);
@@ -843,7 +843,7 @@ int aic_hex_valid(const char *hex, size_t need_len)
     return 1;
 }
 
-int aic_version_valid(const char *v)
+int dsc_version_valid(const char *v)
 {
     if (!v || !v[0]) return 0;
     int segments = 0;
@@ -861,7 +861,7 @@ int aic_version_valid(const char *v)
     }
 }
 
-int aic_scan_sensitive(const char *text, sb *hit)
+int dsc_scan_sensitive(const char *text, sb *hit)
 {
     if (!text) return 0;
     struct pattern {
@@ -906,9 +906,9 @@ int aic_scan_sensitive(const char *text, sb *hit)
 static const char g_b64tab[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-int aic_base64_encode(const void *data, size_t len, sb *out)
+int dsc_base64_encode(const void *data, size_t len, sb *out)
 {
-    if (!out) return AIC_E_INVAL;
+    if (!out) return DSC_E_INVAL;
     const unsigned char *p = (const unsigned char *)data;
     size_t i = 0;
     for (; i + 3 <= len; i += 3) {
@@ -931,7 +931,7 @@ int aic_base64_encode(const void *data, size_t len, sb *out)
         sb_appendc(out, g_b64tab[(v >> 6) & 0x3F]);
         sb_appendc(out, '=');
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
 static int b64val(char ch)
@@ -944,10 +944,10 @@ static int b64val(char ch)
     return -1;
 }
 
-int aic_base64_decode(const char *s, size_t len, unsigned char **out, size_t *out_len)
+int dsc_base64_decode(const char *s, size_t len, unsigned char **out, size_t *out_len)
 {
-    if (!s || !out || !out_len) return AIC_E_INVAL;
-    unsigned char *buf = (unsigned char *)aic_xmalloc(len / 4 * 3 + 4);
+    if (!s || !out || !out_len) return DSC_E_INVAL;
+    unsigned char *buf = (unsigned char *)dsc_xmalloc(len / 4 * 3 + 4);
     size_t n = 0;
     int quad[4];
     int qn = 0;
@@ -966,7 +966,7 @@ int aic_base64_decode(const char *s, size_t len, unsigned char **out, size_t *ou
             continue;
         }
         int v = b64val(ch);
-        if (v < 0) { aic_xfree(buf); return AIC_E_FORMAT; }
+        if (v < 0) { dsc_xfree(buf); return DSC_E_FORMAT; }
         quad[qn++] = v;
         if (qn == 4) {
             unsigned int x = ((unsigned int)quad[0] << 18) | ((unsigned int)quad[1] << 12) |
@@ -986,11 +986,11 @@ int aic_base64_decode(const char *s, size_t len, unsigned char **out, size_t *ou
         buf[n++] = (unsigned char)((x >> 16) & 0xFF);
         buf[n++] = (unsigned char)((x >> 8) & 0xFF);
     } else if (qn == 1) {
-        aic_xfree(buf);
-        return AIC_E_FORMAT;
+        dsc_xfree(buf);
+        return DSC_E_FORMAT;
     }
     *out = buf;
     *out_len = n;
-    return AIC_OK;
+    return DSC_OK;
 }
 

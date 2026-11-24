@@ -1,4 +1,4 @@
-/* SaiFileProvider.java —— 极简文件共享 Provider（不使用 androidx）
+/* DscFileProvider.java —— 极简文件共享 Provider（不使用 androidx）
  *
  * 用途：把应用私有目录里的文件（导出的记录、下载好的安装包）以 content:// 交给
  * 系统分享面板或包安装器。Android 7.0 起禁止用 file:// 直接外传，必须有 Provider。
@@ -8,7 +8,7 @@
  *   - 只允许访问应用私有根目录（getFilesDir）下的文件，规范化后必须仍在该目录内；
  *   - 不对外声明 exported，靠 grantUriPermissions 逐次授权。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -25,9 +25,9 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.List;
 
-public class SaiFileProvider extends ContentProvider {
+public class DscFileProvider extends ContentProvider {
 
-    public static final String AUTHORITY = "com.sai.app.fileprovider";
+    public static final String AUTHORITY = "com.dsc.app.fileprovider";
 
     @Override
     public boolean onCreate() {

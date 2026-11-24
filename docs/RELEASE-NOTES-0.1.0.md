@@ -1,8 +1,8 @@
-# Sai 0.1.0 发布说明（GitHub Release 正文）
+# DSC 0.1.0 发布说明（GitHub Release 正文）
 
 > 本文件是 `v0.1.0` Release 的发布说明存档，与 `CHANGELOG.md` 的 `[0.1.0]` 段落同源。
 
-> 本节同时是 GitHub Release `v0.1.0` 的发布说明。本节所有数字与哈希均为**按 Apache-2.0 重新构建**后的实测值
+> 本节同时是 GitHub Release `v0.1.0` 的发布说明。本节所有数字与哈希均为**按 Apache-2.0、并完成产品更名为 DSC 后重新构建**的实测值
 > （单测 1014 通过 / 36 条 FR 全 PASS / 719 项断言 / 19 个截图场景 / 12 个产物与 4 个各 `.sha256`）。
 > 可复现的证据与第 2 节的产物哈希见 `docs/PRE-RELEASE-EVIDENCE.md`，逐条需求对照见 `docs/FR-MATRIX.md`。
 
@@ -12,26 +12,40 @@
   `README.md` / `README.en.md` 的许可一节重写，`CONTRIBUTING.md` 与 `DEPENDENCIES.md` 的约束口径同步改为 Apache-2.0；
   `tools/precommit_scan.py` 的许可证检查由「必须是 MIT」改为「必须是 Apache-2.0」，GPL/AGPL 拦截不变。
   运行期唯一第三方依赖 SQLite 为 Public Domain，与 Apache-2.0 兼容，依赖清单无需改动。
-- **产物按新许可证重打**：`dist` 下四个包 + 各自 `.sha256` 旁挂文件；GitHub 仓库由私有转为公开，
-  建立 Release `v0.1.0` 并挂上四个安装包。
+- **产品更名为 DSC（DeepSeek Chat）**：发布前把项目从旧名 `Sai` 整体更名为 DSC，不复用旧名、不保留旧产物，
+  改名覆盖全部相关因素（145 个文件、14217 处替换）：
+  - 展示名与文案：窗口标题、关于框、设置页、`使用说明.txt`、安装与卸载程序、Android 应用名一律写作 **DSC**；
+  - C 代码：标识符前缀 `aic_` → `dsc_`、宏 `AIC_` → `DSC_`、CamelCase 简称 `SaiXxx` → `DscXxx`；
+    源文件名同步改为 `dsc_app.c` / `dsc_cli.c` / `dsc_verify.c` / `dsc_setup.c` / `dsc_uninstall.c` /
+    `dsc_plugin_host.c` / `dsc_jni.c` / `dsc_types.c`；
+  - 可执行文件：`DSC.exe`（界面）、`dsc-cli.exe`（命令行验收器）、`dsc_plugin_host.exe`（插件宿主）；
+  - 数据与环境：数据库 `dsc.db`、数据目录 `%LOCALAPPDATA%\DSC`、安装目录 `%LOCALAPPDATA%\Programs\DSC`、
+    环境变量 `DSC_*`；
+  - Android：包名 `com.dsc.app`、JNI 符号 `Java_com_dsc_app_*`、原生库 `libdsc.so`、`DscPlugin` / `DscFileProvider`；
+  - 产物与仓库：`DSC-0.1.0-*.zip/exe/apk`，GitHub 仓库由 `Rcyc-1025/Sai` 改为 `Rcyc-1025/DSC`，
+    旧 `v0.1.0` 的 Release 与标签一并删除后重建（版本号仍是 0.1.0，仍是第一个正式版本）。
+  `tools/precommit_scan.py` 新增第 7 项检查：文本文件里出现 `aic_` / `AIC_` / `Sai` / 独立 `sai` 即判失败，
+  防止旧名回潮。
+- **产物按 更名 + 新许可证 重打**：`dist` 下四个包 + 各自 `.sha256` 旁挂文件，文件名统一为 `DSC-0.1.0-*`；
+  GitHub 仓库由私有转为公开，建立 Release `v0.1.0` 并挂上四个安装包与四个校验文件。
 - **签名与校验状态（务必先读）**：本次 Windows 产物**未做代码签名**（无签名证书，首次运行会有 SmartScreen 提示）；
-  Android APK 用**调试证书**签名（证书 DN：`CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN`），
+  Android APK 用**调试证书**签名（证书 DN：`CN=DSC, OU=Dev, O=DSC, L=Local, ST=Local, C=CN`），
   只适合自测与内部分发，不适合上架。两者完整性一律以同一行的 SHA-256 为准。
-- **发布后复测**：`test_core` 1014 通过 0 失败；`aic.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
+- **发布后复测**：`test_core` 1014 通过 0 失败；`dsc-cli.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
   `python tools\shots.py` 19 个场景 0 失败；`tools/precommit_scan.py` 0 问题；
-  `aic.exe bench` 万条分页 12.06 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 11.9 MB（预算 240 MB）；
-  安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `Sai Setup 0.1.0`，静默卸载后目录整体消失。
+  `dsc-cli.exe bench` 万条分页 11.74 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 12.0 MB（预算 240 MB）；
+  安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `DSC Setup 0.1.0`，静默卸载后目录整体消失。
 - **仍未实测的边界**（不在本版声明之内）：Android 真机运行、用真实 Key 打 `api.deepseek.com`、
   Windows 安装程序的开始菜单快捷方式与卸载登记（本机沙箱拒绝写注册表）、ARM64 真机启动、32 位 Windows、代码签名。
   逐条说明见 `docs/PRE-RELEASE-EVIDENCE.md` 第 11 节。
 
 ### 工程记录（随本节一并公开）
 
-- 新增 `tools/clean.py`：一键清掉 `build/`、`build_android/`、仓库根的 `aic_test_*` 临时目录、散落日志与
+- 新增 `tools/clean.py`：一键清掉 `build/`、`build_android/`、仓库根的 `dsc_test_*` 临时目录、散落日志与
   `dist/` 里的旧版本包（`--dry-run` 只预演，`--all` 连当前版本产物一起清）；`.gitignore` 补上散落日志规则；
   `CONTRIBUTING.md` 新增「收尾清理（每次都做）」一节，把「写完代码或测完就清理」定为硬要求。
-- 清理仓库：删除 101 个仓库根 `aic_test_*` 目录、`build/`（180 MB）、`build_android/`（8.6 MB）、
-  `dist/` 里 AIChat-1.0.0 与 Sai-1.0.0~1.3.0 的旧包及其展开目录；工作区从 285 MB 降到约 20 MB。
+- 清理仓库：删除 101 个仓库根 `dsc_test_*` 目录、`build/`（180 MB）、`build_android/`（8.6 MB）、
+  `dist/` 里 AIChat-1.0.0 与 DSC-1.0.0~1.3.0 的旧包及其展开目录；工作区从 285 MB 降到约 20 MB。
 按技术设计文档 V1.0（2026-11-21，FR-01 ~ FR-36）逐章复核，补齐第 17 章（内置知识库与来源引用）、
 第 18 章（设备能力与权限）与 FR-36（AI 发言修改与记忆同步），并把主色调改为深蓝。逐条对照见
 `docs/TDD-TRACE-0.1.0.md`，自动化验收见 `docs/FR-MATRIX.md`（36 条需求、719 项断言）。
@@ -61,7 +75,7 @@
   （不设时间窗）在同一事务内按 `source_message_id` 物理删除旧记忆条目与索引后重新抽取，失败整体回滚；成功后向已配对
   设备发 `memory_replace` 事件（新增同步实体 `memory`），接收端整条重建。两端编辑浮层都先提示「修改将同步更改 AI 记忆」。
 - **schema v5**：新增 `error_record`、`memory_entry`、`memory_token`、`capability_grant` 四张表与索引，迁移前照旧落备份。
-- **验收与文档**：`aic.exe verify` 扩到 FR-01 ~ FR-36（新增 fr31~fr36，断言 719 项），单元测试增至 1014 项；
+- **验收与文档**：`dsc-cli.exe verify` 扩到 FR-01 ~ FR-36（新增 fr31~fr36，断言 719 项），单元测试增至 1014 项；
   新增 `docs/TDD-TRACE-0.1.0.md`（逐条对照与口径差异）、`tools/gen_knowledge.py`；截图场景扩到 20 张。
 
 ### 新增（1.3.0 之后的两端补强）
@@ -72,15 +86,15 @@
   `btAttach/btFeed/btDrain/btDetach/btPeersSet` 交给 C 侧的环形缓冲；两条通道共用同一套帧格式、配对流程与状态机。
   桌面配对页新增「通道：局域网 / 通道：蓝牙 RFCOMM」切换与「蓝牙：等待对端连入」「蓝牙：列出已配对设备」。
 - **Android 余额改走真实账户接口（FR-11）**：新增 `BalanceQuery`（`HttpURLConnection` GET `/user/balance`，Bearer 头），
-  返回体交回 C 侧 `aic_llm_balance_parse` 解析；失败保留上次结果并标注「上次结果，本次查询未成功」；低于阈值发系统通知。
+  返回体交回 C 侧 `dsc_llm_balance_parse` 解析；失败保留上次结果并标注「上次结果，本次查询未成功」；低于阈值发系统通知。
   C 侧新增 `balance` / `balanceApply` / `balanceFailed` 三个桥命令。
 - **Android 插件独立进程（FR-05 / §10.1）**：新增 `PluginHostService`（`android:process=":plugin"`）与 `PluginWorker`
   （`am broadcast` 拉起的一次性 `:plugincall` 进程），`PluginEngine` 用 `DexClassLoader` 加载插件 dex、反射调用
-  `SaiPlugin.aic_plugin_call(String)`；超时 5 秒即 `destroy` 子进程，插件崩溃不影响主程序。C 侧新增 `pluginPointList` 与
+  `DscPlugin.dsc_plugin_call(String)`；超时 5 秒即 `destroy` 子进程，插件崩溃不影响主程序。C 侧新增 `pluginPointList` 与
   三段式 `pluginCallPoint`（问清单 → 独立进程执行 → 回灌汇总），界面「插件」里可直接调 `ui.panel` 扩展点面板。
-- **Android 示例插件源码**：`plugins/sample_android`（`plugin.json` + `SaiPlugin.java` + 打包说明）。
+- **Android 示例插件源码**：`plugins/sample_android`（`plugin.json` + `DscPlugin.java` + 打包说明）。
 - **两端签名通道闭环**：`scripts/sign_release.ps1` 支持 `-Pfx`/`-Thumbprint` 并验签（缺 signtool 退出 2、缺证书退出 3、
-  无产物退出 4）；新增 `tools/sign_android.py`（`SAI_ANDROID_KEYSTORE/STOREPASS/KEYPASS/ALIAS`，缺项退出 3，
+  无产物退出 4）；新增 `tools/sign_android.py`（`DSC_ANDROID_KEYSTORE/STOREPASS/KEYPASS/ALIAS`，缺项退出 3，
   产出 v2+v3 并当场 `apksigner verify --print-certs`）。仓库不签发证书。
 
 ### 变更
@@ -90,6 +104,7 @@
 - `docs/RELEASE.md` 的第 7 步（签名）重写为两端的具体命令与退出码。
 - 设置页新增「内置知识库 / 设备权限 / 错误中心」三行（桌面与 Android 各 19 行），Android 端设置页顺序与桌面端对齐。
 - 版本号升到 0.1.0（安装包、APK `versionCode=5`、便携包文件名同步）；Android 端关于页与桌面端关于框补全本版新增说明。
+- 产品名由 `Sai` 改为 **DSC**（DeepSeek Chat），仓库同时改名；旧 Release 与旧标签已删除，本版即第一个 DSC 正式版本。
 - 文档：`docs/DESIGN.md` 补四个新模块与 schema v5，`docs/ADVANCED.md` 补知识库/错误中心/设备权限/AI 记忆四节，
   `docs/RELEASE.md` 的产物命名与 APK 版本口径同步，`docs/PRE-RELEASE-EVIDENCE.md` 按 0.1.0 重测后更新。
 
@@ -97,10 +112,10 @@
 
 | 文件 | 说明 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| `Sai-0.1.0-win-x64-portable.zip` | Windows x64 便携版（解压即用，含 `install.ps1`） | 1685291 字节 | `44699545e53b033ab07523fee5a2038cef5613d3dda626e3e2c5919d4d55f4bf` |
-| `Sai-0.1.0-win-x64-setup.exe` | Windows x64 自解压安装程序（`/S` 静默、`/D=<目录>` 指定路径） | 4122037 字节 | `2677666c7fadf08813c63e656193e00695d563d8f16dfbac488999f736115c79` |
-| `Sai-0.1.0-win-arm64-portable.zip` | Windows ARM64 便携版（交叉编译，未在 ARM64 真机启动过） | 951696 字节 | `3144f1332271e27298a98d50b16acafeb6618b007153f6757d85d0b2dd899529` |
-| `Sai-0.1.0-android-arm64.apk` | Android ARM64 安装包（调试证书签名，`versionCode 5` / `versionName 0.1.0`） | 905678 字节 | `37cc12291f06f3e6ac339e86fc332a7ea1c250013292a6c3f3e6d27e170a2480` |
+| `DSC-0.1.0-win-x64-portable.zip` | Windows x64 便携版（解压即用，含 `install.ps1`） | 1688755 字节 | `618aba9326ec2f3cf355a5386afd7f654eca95016fc1c7f1a9090e9c50d2b71b` |
+| `DSC-0.1.0-win-x64-setup.exe` | Windows x64 自解压安装程序（`/S` 静默、`/D=<目录>` 指定路径） | 4129763 字节 | `5c7892481d6f067f008e287a58169399f17f8a34d3e5b38a695a9eaff673f16e` |
+| `DSC-0.1.0-win-arm64-portable.zip` | Windows ARM64 便携版（交叉编译，未在 ARM64 真机启动过） | 955198 字节 | `7d491b7b58cbe29cce2bee0090cd644608bd7e74ecfd6fec3729b7f6550b8e3b` |
+| `DSC-0.1.0-android-arm64.apk` | Android ARM64 安装包（调试证书签名，`versionCode 5` / `versionName 0.1.0`） | 905678 字节 | `c5df345e303289d456bb5e8aeb54584be56535c8bde8dad9d011cf9699387935` |
 
 每个包旁挂同名 `.sha256` 文件，四个校验文件也一并附在本 Release 里。
 
@@ -108,21 +123,21 @@
 
 ```powershell
 # Windows PowerShell：逐包核对（输出为 OK 即一致）
-Get-FileHash .\Sai-0.1.0-win-x64-portable.zip -Algorithm SHA256
+Get-FileHash .\DSC-0.1.0-win-x64-portable.zip -Algorithm SHA256
 # 或直接比对旁挂文件
-Get-Content .\Sai-0.1.0-win-x64-portable.zip.sha256
+Get-Content .\DSC-0.1.0-win-x64-portable.zip.sha256
 ```
 
 ```bash
 # Linux / macOS
-shasum -a 256 Sai-0.1.0-win-x64-portable.zip
-sha256sum -c Sai-0.1.0-win-x64-portable.zip.sha256
+shasum -a 256 DSC-0.1.0-win-x64-portable.zip
+sha256sum -c DSC-0.1.0-win-x64-portable.zip.sha256
 ```
 
 ### 安装方式
 
-1. **Windows 便携版**：解压 `Sai-0.1.0-win-x64-portable.zip`，双击 `Sai.exe`；或运行 `install.ps1` 做当前用户安装。
-2. **Windows 安装包**：双击 `Sai-0.1.0-win-x64-setup.exe`；静默安装为 `setup.exe /S /D=<目录>`，卸载用安装目录下的 `uninstall.exe /S`。
+1. **Windows 便携版**：解压 `DSC-0.1.0-win-x64-portable.zip`，双击 `DSC.exe`；或运行 `install.ps1` 做当前用户安装。
+2. **Windows 安装包**：双击 `DSC-0.1.0-win-x64-setup.exe`；静默安装为 `setup.exe /S /D=<目录>`，卸载用安装目录下的 `uninstall.exe /S`。
 3. **Android**：允许「安装未知来源应用」后安装 APK（调试证书，仅自测/内部分发）。
 4. 首次启动需要自备 DeepSeek API Key（应用内配置，加密存入系统凭据库，不上传）。
 

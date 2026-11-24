@@ -7,14 +7,14 @@
 
 - `plugin.json`：清单（id / name / version / author / entry / permissions / extension_points）。
   清单里的 `entry` 是插件目录内的相对文件名，这里指向编译产物 `plugin.dex`。
-- `SaiPlugin.java`：入口实现，约定方法
-  `public static String aic_plugin_call(String request_json)`，返回值即响应正文。
+- `DscPlugin.java`：入口实现，约定方法
+  `public static String dsc_plugin_call(String request_json)`，返回值即响应正文。
 
 ## 打包
 
 ```
-javac -source 8 -target 8 -cp <android.jar> -d classes SaiPlugin.java
-d8 --min-api 24 --output . classes/SaiPlugin.class   # 产出 classes.dex
+javac -source 8 -target 8 -cp <android.jar> -d classes DscPlugin.java
+d8 --min-api 24 --output . classes/DscPlugin.class   # 产出 classes.dex
 ```
 
 把 `classes.dex` 改名为 `plugin.dex`，与 `plugin.json` 一起放进同一个目录，压缩成 zip，

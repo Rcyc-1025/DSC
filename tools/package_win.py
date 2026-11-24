@@ -1,6 +1,6 @@
 
 # -*- coding: utf-8 -*-
-r"""打 Windows 便携包：组装 dist/Sai-<ver>-win-<arch>/ 并压成 zip，附带依赖自检与 SHA-256。
+r"""打 Windows 便携包：组装 dist/DSC-<ver>-win-<arch>/ 并压成 zip，附带依赖自检与 SHA-256。
 
 用法：
   python tools\package_win.py            # x64（默认）
@@ -22,14 +22,14 @@ BUILD = os.path.join(ROOT, 'build')
 DIST = os.path.join(ROOT, 'dist')
 VER = '0.1.0'
 ARCH = 'arm64' if '--arm64' in sys.argv else 'x64'
-NAME = 'Sai-%s-win-%s' % (VER, ARCH)
+NAME = 'DSC-%s-win-%s' % (VER, ARCH)
 OUTDIR = os.path.join(DIST, NAME)
 ZIP = os.path.join(DIST, NAME + '-portable.zip')
 # arm64 产物在 build\arm64，运行时 DLL 来自 MSYS2 clangarm64；x64 产物在 build
 SRCBUILD = os.path.join(BUILD, 'arm64') if ARCH == 'arm64' else BUILD
 MINGWBIN = (r'D:\Code\msys2arm64\clangarm64\bin' if ARCH == 'arm64'
             else r'D:\Code\msys2ucrt\ucrt64\bin')
-EXES = ['Sai.exe', 'aic_plugin_host.exe'] if ARCH == 'arm64' else ['Sai.exe', 'aic.exe', 'aic_plugin_host.exe']
+EXES = ['DSC.exe', 'dsc_plugin_host.exe'] if ARCH == 'arm64' else ['DSC.exe', 'dsc-cli.exe', 'dsc_plugin_host.exe']
 
 # 允许的系统 DLL（其余视为需要随包分发的运行时）
 SYSTEM_DLLS = {
@@ -119,10 +119,10 @@ def main():
     os.makedirs(OUTDIR, exist_ok=True)
 
     print('组装 %s（%s）' % (OUTDIR, ARCH))
-    copy(os.path.join(SRCBUILD, 'Sai.exe'), 'Sai.exe')
+    copy(os.path.join(SRCBUILD, 'DSC.exe'), 'DSC.exe')
     if ARCH != 'arm64':
-        copy(os.path.join(SRCBUILD, 'aic.exe'), 'tools/aic.exe')
-    copy(os.path.join(SRCBUILD, 'aic_plugin_host.exe'), 'aic_plugin_host.exe')
+        copy(os.path.join(SRCBUILD, 'dsc-cli.exe'), 'tools/dsc-cli.exe')
+    copy(os.path.join(SRCBUILD, 'dsc_plugin_host.exe'), 'dsc_plugin_host.exe')
 
     for d, src in sorted(need_dlls().items()):
         copy(src, d)
@@ -150,27 +150,27 @@ def main():
     copy(os.path.join(ROOT, 'scripts', 'install.ps1'), 'install.ps1')
 
     notes = (
-        'Sai %s（Windows x64 便携包）\n'
+        'DSC %s（Windows x64 便携包）\n'
         '\n'
-        '1. 直接双击 Sai.exe 运行；不需要安装，也不会写注册表。\n'
-        '2. 数据默认放在 %%LOCALAPPDATA%%\\Sai；想做成纯便携（如放 U 盘），\n'
-        '   在同目录建一个 data 文件夹，或用 set SAI_DATA_DIR=.<你的目录> 指定。\n'
+        '1. 直接双击 DSC.exe 运行；不需要安装，也不会写注册表。\n'
+        '2. 数据默认放在 %%LOCALAPPDATA%%\\DSC；想做成纯便携（如放 U 盘），\n'
+        '   在同目录建一个 data 文件夹，或用 set DSC_DATA_DIR=.<你的目录> 指定。\n'
         '3. 首次启动进「设置 → API Key」填自己的 DeepSeek Key（保存在 Windows 凭据管理器）。\n'
-        '4. tools\\aic.exe 是命令行验收器：\n'
-        '     aic.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
-        '     aic.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
-        '     aic.exe doctor            环境自检（数据库、凭据、插件宿主）\n'
+        '4. tools\\dsc-cli.exe 是命令行验收器：\n'
+        '     dsc-cli.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
+        '     dsc-cli.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
+        '     dsc-cli.exe doctor            环境自检（数据库、凭据、插件宿主）\n'
         '5. 想装到开始菜单：右键 install.ps1 → 用 PowerShell 运行。\n'
         '6. 本包未做代码签名（本机无 signtool），首次运行 SmartScreen 可能提示；\n'
         '   自签证书脚本见仓库 scripts\\gen_cert.ps1。\n'
     ) % VER
     if ARCH == 'arm64':
-        # 交叉编译产物没有 aic.exe（验收器只有 x64 版），把第 4 条换成如实说明
+        # 交叉编译产物没有 dsc-cli.exe（验收器只有 x64 版），把第 4 条换成如实说明
         notes = notes.replace(
-            '4. tools\aic.exe 是命令行验收器：\n'
-            '     aic.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
-            '     aic.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
-            '     aic.exe doctor            环境自检（数据库、凭据、插件宿主）\n',
+            '4. tools\dsc-cli.exe 是命令行验收器：\n'
+            '     dsc-cli.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
+            '     dsc-cli.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
+            '     dsc-cli.exe doctor            环境自检（数据库、凭据、插件宿主）\n',
             '4. 本包是 Windows ARM64 交叉编译产物，尚未在 ARM64 真机运行验证；\n'
             '   插件宿主与示例插件同为 ARM64，请在同一架构上使用。\n')
         notes = notes.replace('Windows x64 便携包', 'Windows ARM64 便携包')

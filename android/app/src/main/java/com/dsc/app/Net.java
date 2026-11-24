@@ -8,7 +8,7 @@
  * 线程模型：本类的 run() 一律跑在工作线程（new Thread），
  * 回调通过网络线程转 runOnUiThread 回到主线程，界面层不必自己再切回来。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.app.Activity;
 
@@ -35,7 +35,7 @@ public final class Net {
         /** 用户停止：result 里带已收到的部分文本。 */
         void onStopped(JSONObject result);
 
-        /** 失败：message 是可直接给用户看的中文，errCode 是核心层的 aic_llm_err 分类。 */
+        /** 失败：message 是可直接给用户看的中文，errCode 是核心层的 dsc_llm_err 分类。 */
         void onFailed(String message, int errCode);
     }
 
@@ -83,7 +83,7 @@ public final class Net {
             public void run() {
                 sendBlocking(act, text == null ? "" : text, regen, cb);
             }
-        }, "sai-net");
+        }, "dsc-net");
         t.setDaemon(true);
         t.start();
     }
@@ -96,7 +96,7 @@ public final class Net {
         try {
             JSONObject extra = new JSONObject();
             if (!regen) extra.put("text", text);
-            /* 没有 Key 时核心直接返回 AIC_LLM_E_AUTH，不会联网（保持离线可用）。 */
+            /* 没有 Key 时核心直接返回 DSC_LLM_E_AUTH，不会联网（保持离线可用）。 */
             JSONObject begin = Native.req(regen ? "regenerate" : "sendBegin", extra);
             if (!begin.optBoolean("ok", false)) {
                 fail(act, cb, begin.optString("err", "发送失败"), begin.optInt("errCode", -1));

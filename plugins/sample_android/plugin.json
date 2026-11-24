@@ -2,7 +2,7 @@
   "id": "sample_android",
   "name": "安卓示例插件",
   "version": "1.0.0",
-  "author": "Sai",
+  "author": "DSC",
   "entry": "plugin.dex",
   "permissions": [],
   "extension_points": ["ui.panel"]

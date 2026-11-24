@@ -5,7 +5,7 @@
  * 起一个一次性的 PluginWorker 进程去加载并调用插件入口。插件崩溃、OOM 或死循环，
  * 死的只是那个一次性进程，本服务与主程序都不受影响。超时（默认 5 秒）即 destroy 子进程。</p>
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.app.Service;
 import android.content.ComponentName;
@@ -33,9 +33,9 @@ import java.util.List;
  */
 public class PluginHostService extends Service {
 
-    private static final String TAG = "SaiPlugin";
+    private static final String TAG = "DscPlugin";
 
-    /** 单次插件调用的墙钟上限，与桌面端 aic_plugin_proc_call 的默认超时一致。 */
+    /** 单次插件调用的墙钟上限，与桌面端 dsc_plugin_proc_call 的默认超时一致。 */
     public static final int DEFAULT_TIMEOUT_MS = 5000;
 
     private final IBinder binder = new LocalBinder();

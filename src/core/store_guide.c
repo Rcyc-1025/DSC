@@ -3,7 +3,7 @@
 
 #include <string.h>
 
-static const aic_guide_step g_steps[AIC_GUIDE_STEP_COUNT] = {
+static const dsc_guide_step g_steps[DSC_GUIDE_STEP_COUNT] = {
     /* §12.2：API Key 配置是首次启动的第一步，必须先于进入主页模式选择完成。 */
     { "api_key", "API Key 配置", "首次启动、进入主页之前", "配置可用的模型凭证", "Key 输入框提交且凭证写入安全存储并通过格式校验", "1.0" },
     { "mode_intro", "模式介绍", "凭证就绪后首次进入主页", "认识问答模式与聊天模式并选定默认模式", "在模式选择处选定过一次默认模式", "1.0" },
@@ -16,66 +16,66 @@ static const aic_guide_step g_steps[AIC_GUIDE_STEP_COUNT] = {
     { "update_guard", "更新与数据保护", "首次更新前", "了解更新前的备份规则", "在更新设置里确认过一次备份说明", "1.0" },
 };
 
-const aic_guide_step *aic_guide_steps(void)
+const dsc_guide_step *dsc_guide_steps(void)
 {
     return g_steps;
 }
 
-int aic_guide_step_index(const char *step_id)
+int dsc_guide_step_index(const char *step_id)
 {
     if (!step_id) return -1;
-    for (int i = 0; i < AIC_GUIDE_STEP_COUNT; i++)
+    for (int i = 0; i < DSC_GUIDE_STEP_COUNT; i++)
         if (strcmp(g_steps[i].id, step_id) == 0) return i;
     return -1;
 }
 
-int aic_guide_mark(aic_db *db, const char *step_id, int skipped)
+int dsc_guide_mark(dsc_db *db, const char *step_id, int skipped)
 {
-    if (!db || !step_id) return AIC_E_INVAL;
-    if (aic_guide_step_index(step_id) < 0) return AIC_E_INVAL;
+    if (!db || !step_id) return DSC_E_INVAL;
+    if (dsc_guide_step_index(step_id) < 0) return DSC_E_INVAL;
     char now[32];
-    aic_now_iso8601(now);
-    aic_stmt *st = aic_db_prepare(db,
+    dsc_now_iso8601(now);
+    dsc_stmt *st = dsc_db_prepare(db,
         "INSERT INTO guide_progress (step_id, completed_at, skipped) VALUES (?1, ?2, ?3) "
         "ON CONFLICT(step_id) DO UPDATE SET completed_at = excluded.completed_at, skipped = excluded.skipped;");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_text(st, 1, step_id);
-    aic_stmt_bind_text(st, 2, now);
-    aic_stmt_bind_ll(st, 3, skipped ? 1 : 0);
-    int rc = aic_stmt_step(st);
-    aic_stmt_finalize(st);
-    return rc == AIC_DONE ? AIC_OK : rc;
+    if (!st) return DSC_E_DB;
+    dsc_stmt_bind_text(st, 1, step_id);
+    dsc_stmt_bind_text(st, 2, now);
+    dsc_stmt_bind_ll(st, 3, skipped ? 1 : 0);
+    int rc = dsc_stmt_step(st);
+    dsc_stmt_finalize(st);
+    return rc == DSC_DONE ? DSC_OK : rc;
 }
 
-int aic_guide_reset(aic_db *db)
+int dsc_guide_reset(dsc_db *db)
 {
-    if (!db) return AIC_E_INVAL;
-    return aic_db_exec(db, "DELETE FROM guide_progress;");
+    if (!db) return DSC_E_INVAL;
+    return dsc_db_exec(db, "DELETE FROM guide_progress;");
 }
 
-int aic_guide_state_get(aic_db *db, aic_guide_state *out)
+int dsc_guide_state_get(dsc_db *db, dsc_guide_state *out)
 {
-    if (!db || !out) return AIC_E_INVAL;
+    if (!db || !out) return DSC_E_INVAL;
     memset(out, 0, sizeof(*out));
-    aic_stmt *st = aic_db_prepare(db, "SELECT step_id, skipped FROM guide_progress;");
-    if (!st) return AIC_E_DB;
+    dsc_stmt *st = dsc_db_prepare(db, "SELECT step_id, skipped FROM guide_progress;");
+    if (!st) return DSC_E_DB;
     int rc;
-    while ((rc = aic_stmt_step(st)) == AIC_ROW) {
-        const char *id = aic_stmt_text(st, 0);
-        int idx = aic_guide_step_index(id);
+    while ((rc = dsc_stmt_step(st)) == DSC_ROW) {
+        const char *id = dsc_stmt_text(st, 0);
+        int idx = dsc_guide_step_index(id);
         if (idx >= 0) {
             out->completed[idx] = 1;
-            out->skipped[idx] = aic_stmt_int(st, 1);
+            out->skipped[idx] = dsc_stmt_int(st, 1);
         }
     }
-    aic_stmt_finalize(st);
-    if (rc != AIC_DONE) return rc;
+    dsc_stmt_finalize(st);
+    if (rc != DSC_DONE) return rc;
     out->completed_count = 0;
     out->next_index = -1;
-    for (int i = 0; i < AIC_GUIDE_STEP_COUNT; i++) {
+    for (int i = 0; i < DSC_GUIDE_STEP_COUNT; i++) {
         if (out->completed[i] && !out->skipped[i]) out->completed_count++;
         else if (out->next_index < 0) out->next_index = i;
     }
-    if (out->next_index < 0) out->next_index = AIC_GUIDE_STEP_COUNT;
-    return AIC_OK;
+    if (out->next_index < 0) out->next_index = DSC_GUIDE_STEP_COUNT;
+    return DSC_OK;
 }

@@ -1,4 +1,4 @@
-/* aic_jni.c —— Android 端桥接层。
+/* dsc_jni.c —— Android 端桥接层。
  *
  * 界面层（Java）不直接调用几十个核心函数，而是通过单一入口 call(json) 交换 JSON：
  *   request : {"cmd":"state"} 等
@@ -14,7 +14,7 @@
 #include <unistd.h>
 #include <android/log.h>
 
-#include "aic_types.h"
+#include "dsc_types.h"
 #include "util.h"
 #include "db.h"
 #include "json.h"
@@ -48,20 +48,20 @@
 #include "capability.h"
 #include "memory.h"
 
-#define TAG "SaiCore"
+#define TAG "DscCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
 /* 消息默认只给最近 100 条，更早的由 loadOlder 每次向上翻 100 条（技术设计 13.3）。 */
-#define AIC_MSG_PAGE 100
+#define DSC_MSG_PAGE 100
 
-static aic_db     *g_db;
-static aic_engine *g_eng;
-static aic_router *g_router;
+static dsc_db     *g_db;
+static dsc_engine *g_eng;
+static dsc_router *g_router;
 static char        g_dir[400];       /* 应用私有根目录 */
 static char        g_conv[40];       /* 当前查看的会话 id（问答线程或唯一聊天会话） */
 static char        g_err[512];
 static char        g_device[40];   /* 本机设备标识：记忆条目与同步事件都带它（§16.5） */
-static aic_kb     *g_kb;           /* 内置知识库（FR-31）：首次使用时解析，进程内只一份 */
+static dsc_kb     *g_kb;           /* 内置知识库（FR-31）：首次使用时解析，进程内只一份 */
 
 /* ============================================================================
  * 以下为 Android 端补齐部分（对应技术设计文档 FR-02/03/05/07/08/11/16/17 等）：
@@ -94,30 +94,30 @@ static int  g_system_night;  /* 系统是否深色（Java 侧读 uiMode 后传�
 static int  g_backup_ok;     /* 本进程内是否成功备份过（更新安装的前置条件） */
 
 /* 最近一次解析成功的更新清单，下载校验与安装校验都要用它。 */
-static aic_update_manifest g_update;
+static dsc_update_manifest g_update;
 static int                 g_update_valid;
 
 /* ---------- 三段协议：一次生成的状态 ----------
  * C 侧只负责「组装请求体」与「把 Java 收到的每一块字节喂给 SSE 解析器」，
  * 真正的 HTTP 由 Java 的 HttpURLConnection 完成（Android 上没有 WinHTTP）。 */
-typedef struct aic_gen {
+typedef struct dsc_gen {
     int      active;        /* 1 表示有进行中的生成 */
     int      handle;        /* 本次生成句柄（Java 侧回传，用于防错配） */
     int      regen;         /* 1 表示「重新生成」 */
     char     conv_id[64];
     char     model[64];
-    aic_sse_parser parser;
+    dsc_sse_parser parser;
     int      parser_inited;
     sb       text;          /* 已收到的全部增量文本 */
     sb       body;          /* 请求体（服务端不给 usage 时用它估算 prompt token） */
     size_t   emitted;       /* 已经回给 Java 的字节数，只需回新增部分 */
     long long pt, ct;       /* 用量 */
-    aic_llm_err err;        /* 解析过程中服务端返回的错误 */
+    dsc_llm_err err;        /* 解析过程中服务端返回的错误 */
     char     err_msg[256];
     int      cancel;        /* 用户点了停止 */
-} aic_gen;
+} dsc_gen;
 
-static aic_gen      g_gen;
+static dsc_gen      g_gen;
 static int          g_gen_ready;  /* text/body 两个 sb 是否已初始化 */
 static int          g_gen_seq;    /* 句柄自增 */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -128,27 +128,27 @@ static void gen_unlock(void) { pthread_mutex_unlock(&g_lock); }
 /* 关闭整个环境（恢复备份前必须调用：恢复会替换数据库文件）。 */
 static void close_env(void)
 {
-    if (g_kb) { aic_kb_free(g_kb); g_kb = NULL; }
+    if (g_kb) { dsc_kb_free(g_kb); g_kb = NULL; }
     session_close();
-    if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }
-    if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
-    if (g_db) { aic_db_close(g_db); g_db = NULL; }
+    if (g_eng) { dsc_engine_destroy(g_eng); g_eng = NULL; }
+    if (g_router) { dsc_router_destroy(g_router); g_router = NULL; }
+    if (g_db) { dsc_db_close(g_db); g_db = NULL; }
 }
 
-/* 当前生效模型：与 aic_engine_build_request 的取值顺序一致（设置优先）。 */
+/* 当前生效模型：与 dsc_engine_build_request 的取值顺序一致（设置优先）。 */
 static const char *selected_model(void)
 {
-    if (aic_setting_get_int(g_db, AIC_SET_MODEL_DEFAULT, 0) == 1) return AIC_MODEL_PRO;
-    return AIC_MODEL_FLASH;
+    if (dsc_setting_get_int(g_db, DSC_SET_MODEL_DEFAULT, 0) == 1) return DSC_MODEL_PRO;
+    return DSC_MODEL_FLASH;
 }
 
 /* 服务端地址：设置里有就用设置的，否则用默认端点。 */
 static const char *cur_endpoint(void)
 {
-    static char ep[AIC_LLM_URL_MAX];
+    static char ep[DSC_LLM_URL_MAX];
     ep[0] = '\0';
-    aic_setting_get(g_db, AIC_SET_CRED_ENDPOINT, ep, sizeof(ep));
-    if (!ep[0]) aic_strlcpy_utf8(ep, sizeof(ep), AIC_LLM_MODEL_DEFAULT_URL);
+    dsc_setting_get(g_db, DSC_SET_CRED_ENDPOINT, ep, sizeof(ep));
+    if (!ep[0]) dsc_strlcpy_utf8(ep, sizeof(ep), DSC_LLM_MODEL_DEFAULT_URL);
     return ep;
 }
 
@@ -160,7 +160,7 @@ static void gen_reset(void)
         g_gen_ready = 1;
     }
     if (g_gen.parser_inited) {
-        aic_sse_free(&g_gen.parser);
+        dsc_sse_free(&g_gen.parser);
         g_gen.parser_inited = 0;
     }
     memset(&g_gen.parser, 0, sizeof(g_gen.parser));
@@ -173,24 +173,24 @@ static void gen_reset(void)
     g_gen.model[0] = '\0';
     g_gen.emitted = 0;
     g_gen.pt = g_gen.ct = 0;
-    g_gen.err = AIC_LLM_OK;
+    g_gen.err = DSC_LLM_OK;
     g_gen.err_msg[0] = '\0';
     g_gen.cancel = 0;
 }
 
 /* SSE 事件回调：只累加文本与用量，不碰界面（界面靠 feed 返回的增量刷新）。 */
-static void gen_on_event(void *ud, const aic_llm_event *ev)
+static void gen_on_event(void *ud, const dsc_llm_event *ev)
 {
-    aic_gen *g = (aic_gen *)ud;
+    dsc_gen *g = (dsc_gen *)ud;
     if (!g || !ev) return;
-    if (ev->kind == AIC_LLM_EV_DELTA && ev->text) {
+    if (ev->kind == DSC_LLM_EV_DELTA && ev->text) {
         sb_append(&g->text, ev->text);
-    } else if (ev->kind == AIC_LLM_EV_USAGE) {
+    } else if (ev->kind == DSC_LLM_EV_USAGE) {
         if (ev->prompt_tokens > 0) g->pt = ev->prompt_tokens;
         if (ev->completion_tokens > 0) g->ct = ev->completion_tokens;
-    } else if (ev->kind == AIC_LLM_EV_ERROR) {
+    } else if (ev->kind == DSC_LLM_EV_ERROR) {
         g->err = ev->err;
-        aic_strlcpy_utf8(g->err_msg, sizeof(g->err_msg), ev->message);
+        dsc_strlcpy_utf8(g->err_msg, sizeof(g->err_msg), ev->message);
     }
 }
 
@@ -236,7 +236,7 @@ static void rm_tree(const char *dir)
     sb names;
     int n;
     sb_init(&names);
-    n = aic_dir_list(dir, &names, '\n');
+    n = dsc_dir_list(dir, &names, '\n');
     if (n > 0) {
         const char *p = sb_cstr(&names);
         while (*p) {
@@ -247,9 +247,9 @@ static void rm_tree(const char *dir)
             name[k] = '\0';
             if (*p == '\n') p++;
             if (!name[0]) continue;
-            aic_path_join(child, sizeof(child), dir, name);
-            if (aic_is_dir(child)) rm_tree(child);
-            else aic_file_remove(child);
+            dsc_path_join(child, sizeof(child), dir, name);
+            if (dsc_is_dir(child)) rm_tree(child);
+            else dsc_file_remove(child);
         }
     }
     sb_free(&names);
@@ -264,14 +264,14 @@ static void cmd_send_begin(const char *text, int regen, sb *out)
     char err[256] = { 0 };
     const char *conv;
     char conv_id[64];
-    aic_message m;
+    dsc_message m;
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!g_key[0]) {
         /* 没有 Key 就明确不联网：与离线演示传输保持同一套提示与错误码。 */
-        reply_err_code(out, "尚未配置 API Key，请先到设置里填写", (int)AIC_LLM_E_AUTH);
+        reply_err_code(out, "尚未配置 API Key，请先到设置里填写", (int)DSC_LLM_E_AUTH);
         return;
     }
     conv = current_conv();
@@ -284,36 +284,36 @@ static void cmd_send_begin(const char *text, int regen, sb *out)
         return;
     }
     gen_reset();
-    aic_strlcpy_utf8(conv_id, sizeof(conv_id), conv);
+    dsc_strlcpy_utf8(conv_id, sizeof(conv_id), conv);
     if (regen) {
         memset(&m, 0, sizeof(m));
-        if (aic_msg_last_assistant(g_db, conv_id, &m) != AIC_OK) {
+        if (dsc_msg_last_assistant(g_db, conv_id, &m) != DSC_OK) {
             gen_unlock();
             reply_err(out, "还没有可以重新生成的回复");
             return;
         }
-        aic_msg_supersede(g_db, m.id);   /* 旧回复标记为被替代，不删除 */
-        aic_msg_free(&m);
+        dsc_msg_supersede(g_db, m.id);   /* 旧回复标记为被替代，不删除 */
+        dsc_msg_free(&m);
     } else {
         if (!text || !text[0]) { gen_unlock(); reply_err(out, "消息不能为空"); return; }
         memset(&m, 0, sizeof(m));
-        rc = aic_msg_append(g_db, conv_id, AIC_ROLE_USER, text, selected_model(), &m);
-        if (rc != AIC_OK) { gen_unlock(); reply_err(out, "保存消息失败"); return; }
-        aic_msg_free(&m);
+        rc = dsc_msg_append(g_db, conv_id, DSC_ROLE_USER, text, selected_model(), &m);
+        if (rc != DSC_OK) { gen_unlock(); reply_err(out, "保存消息失败"); return; }
+        dsc_msg_free(&m);
     }
-    rc = aic_engine_build_request(g_eng, conv_id, &g_gen.body, err, sizeof(err));
-    if (rc != AIC_OK) {
+    rc = dsc_engine_build_request(g_eng, conv_id, &g_gen.body, err, sizeof(err));
+    if (rc != DSC_OK) {
         gen_unlock();
         reply_err(out, err[0] ? err : "组装请求失败");
         return;
     }
-    aic_sse_init(&g_gen.parser);
+    dsc_sse_init(&g_gen.parser);
     g_gen.parser_inited = 1;
     g_gen.active = 1;
     g_gen.handle = ++g_gen_seq;
     g_gen.regen = regen ? 1 : 0;
-    aic_strlcpy_utf8(g_gen.conv_id, sizeof(g_gen.conv_id), conv_id);
-    aic_strlcpy_utf8(g_gen.model, sizeof(g_gen.model), selected_model());
+    dsc_strlcpy_utf8(g_gen.conv_id, sizeof(g_gen.conv_id), conv_id);
+    dsc_strlcpy_utf8(g_gen.model, sizeof(g_gen.model), selected_model());
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -355,7 +355,7 @@ static void gen_feed_data(const void *data, size_t len, sb *out)
         gen_unlock();
         return;
     }
-    if (len > 0) aic_sse_feed(&g_gen.parser, (const char *)data, len, gen_on_event, &g_gen);
+    if (len > 0) dsc_sse_feed(&g_gen.parser, (const char *)data, len, gen_on_event, &g_gen);
 
     all = sb_cstr(&g_gen.text);
     to = g_gen.text.len;
@@ -382,8 +382,8 @@ static void gen_feed_data(const void *data, size_t len, sb *out)
 /* sendEnd：收尾 → 成功则落助手消息并记账；用户停止则只保留用户消息。 */
 static void cmd_send_end(int handle, sb *out)
 {
-    aic_message amsg;
-    const aic_llm_model *mdl;
+    dsc_message amsg;
+    const dsc_llm_model *mdl;
     long long pt, ct, cost;
     char cost_s[32] = { 0 };
     jw w;
@@ -400,7 +400,7 @@ static void cmd_send_end(int handle, sb *out)
         jw_obj_begin(&w, NULL);
         jw_put_bool(&w, "ok", 0);
         jw_put_str(&w, "err", "已停止生成");
-        jw_put_int(&w, "errCode", (long long)AIC_LLM_E_CANCEL);
+        jw_put_int(&w, "errCode", (long long)DSC_LLM_E_CANCEL);
         jw_put_bool(&w, "cancelled", 1);
         jw_put_str(&w, "text", sb_cstr(&g_gen.text));
         jw_obj_end(&w);
@@ -408,11 +408,11 @@ static void cmd_send_end(int handle, sb *out)
         gen_unlock();
         return;
     }
-    if (g_gen.parser_inited) aic_sse_finish(&g_gen.parser, gen_on_event, &g_gen);
-    if (g_gen.err != AIC_LLM_OK) {
+    if (g_gen.parser_inited) dsc_sse_finish(&g_gen.parser, gen_on_event, &g_gen);
+    if (g_gen.err != DSC_LLM_OK) {
         char msg[320];
         snprintf(msg, sizeof(msg), "%s",
-                 g_gen.err_msg[0] ? g_gen.err_msg : aic_llm_err_text(g_gen.err));
+                 g_gen.err_msg[0] ? g_gen.err_msg : dsc_llm_err_text(g_gen.err));
         /* FR-34：流里带回的错误同样进错误中心，不进消息表、不进上下文。 */
         record_llm_error((int)g_gen.err, msg, g_gen.conv_id, g_gen.err_msg);
         reply_err_code(out, msg, (int)g_gen.err);
@@ -422,7 +422,7 @@ static void cmd_send_end(int handle, sb *out)
     }
     if (g_gen.text.len == 0) {
         if (g_db) {
-            aic_error_record(g_db, g_dir, AIC_ERR_PARSE, "llm.no_content", "模型没有返回内容",
+            dsc_error_record(g_db, g_dir, DSC_ERR_PARSE, "llm.no_content", "模型没有返回内容",
                              g_gen.conv_id, NULL, NULL, NULL);
         }
         reply_err(out, "模型没有返回内容");
@@ -431,8 +431,8 @@ static void cmd_send_end(int handle, sb *out)
         return;
     }
     memset(&amsg, 0, sizeof(amsg));
-    if (aic_msg_append(g_db, g_gen.conv_id, AIC_ROLE_ASSISTANT, sb_cstr(&g_gen.text),
-                       g_gen.model, &amsg) != AIC_OK) {
+    if (dsc_msg_append(g_db, g_gen.conv_id, DSC_ROLE_ASSISTANT, sb_cstr(&g_gen.text),
+                       g_gen.model, &amsg) != DSC_OK) {
         reply_err(out, "保存回复失败");
         gen_reset();
         gen_unlock();
@@ -442,15 +442,15 @@ static void cmd_send_end(int handle, sb *out)
     ct = g_gen.ct;
     if (pt <= 0) pt = est_tokens(sb_cstr(&g_gen.body));
     if (ct <= 0) ct = est_tokens(sb_cstr(&g_gen.text));
-    mdl = aic_llm_model_or_default(g_gen.model);
-    cost = mdl ? aic_llm_cost_micros(mdl, pt, ct) : 0;
-    aic_usage_append(g_db, g_gen.conv_id, amsg.id, mdl ? mdl->id : g_gen.model, pt, ct, cost);
+    mdl = dsc_llm_model_or_default(g_gen.model);
+    cost = mdl ? dsc_llm_cost_micros(mdl, pt, ct) : 0;
+    dsc_usage_append(g_db, g_gen.conv_id, amsg.id, mdl ? mdl->id : g_gen.model, pt, ct, cost);
     /* FR-36：AI 发言落库后抽记忆（记忆条目带 source_message_id，改发言时按它重建）。 */
     {
         int mem_added = 0;
-        aic_mem_extract(g_db, amsg.id, g_gen.conv_id, sb_cstr(&g_gen.text), g_device, &mem_added);
+        dsc_mem_extract(g_db, amsg.id, g_gen.conv_id, sb_cstr(&g_gen.text), g_device, &mem_added);
     }
-    aic_llm_format_micros(cost, cost_s, sizeof(cost_s));
+    dsc_llm_format_micros(cost, cost_s, sizeof(cost_s));
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -466,16 +466,16 @@ static void cmd_send_end(int handle, sb *out)
     jw_put_str(&w, "cost", cost_s);
     jw_put_bool(&w, "regenerated", g_gen.regen);
     jw_obj_end(&w);
-    aic_msg_free(&amsg);
+    dsc_msg_free(&amsg);
     gen_reset();
     gen_unlock();
 }
 
 /* sendFail：Java 侧 HTTP 失败（非 2xx / 连接异常）时交回 C 侧，
- * 由核心按状态码分类成 AIC_LLM_E_*，界面据此提示可执行的下一步。 */
+ * 由核心按状态码分类成 DSC_LLM_E_*，界面据此提示可执行的下一步。 */
 static void cmd_send_fail(int handle, int http, const char *message, sb *out)
 {
-    aic_llm_err le;
+    dsc_llm_err le;
     char msg[420];
 
     gen_lock();
@@ -485,14 +485,14 @@ static void cmd_send_fail(int handle, int http, const char *message, sb *out)
         return;
     }
     if (http > 0) {
-        le = aic_llm_classify_http(http);
-        if (le == AIC_LLM_OK) le = AIC_LLM_E_SERVER;
+        le = dsc_llm_classify_http(http);
+        if (le == DSC_LLM_OK) le = DSC_LLM_E_SERVER;
     } else {
-        le = AIC_LLM_E_NETWORK;
+        le = DSC_LLM_E_NETWORK;
     }
     /* 服务端返回的 JSON 原样给用户看不懂，改用分类文案；纯文本错误则优先用原文。 */
     if (message && message[0] && message[0] != '{') snprintf(msg, sizeof(msg), "%s", message);
-    else snprintf(msg, sizeof(msg), "%s", aic_llm_err_text(le));
+    else snprintf(msg, sizeof(msg), "%s", dsc_llm_err_text(le));
     JLOG("生成失败：http=%d %s", http, msg);
     /* FR-34：失败写错误中心（脱敏明细进 errors/），聊天框里只出现状态条，不产生新消息。 */
     record_llm_error((int)le, msg, g_gen.conv_id,
@@ -512,7 +512,7 @@ static void cmd_stop(sb *out)
         return;
     }
     g_gen.cancel = 1;
-    if (g_eng) aic_engine_stop(g_eng);   /* 旧的同步 send 路径也看这个标志 */
+    if (g_eng) dsc_engine_stop(g_eng);   /* 旧的同步 send 路径也看这个标志 */
     gen_unlock();
     reply_ok(out);
 }
@@ -522,33 +522,33 @@ static void cmd_set_avatar(const char *rel, sb *out)
 {
     char err[256] = { 0 };
     char full[700];
-    aic_profile p;
+    dsc_profile p;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (!aic_is_local_relative_path(rel)) {
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!dsc_is_local_relative_path(rel)) {
         reply_err(out, "头像路径必须是应用私有目录下的相对路径");
         return;
     }
-    aic_path_join(full, sizeof(full), g_dir, rel);
-    if (!aic_path_exists(full)) { reply_err(out, "头像文件不存在"); return; }
+    dsc_path_join(full, sizeof(full), g_dir, rel);
+    if (!dsc_path_exists(full)) { reply_err(out, "头像文件不存在"); return; }
     memset(&p, 0, sizeof(p));
-    aic_profile_get(g_db, &p);
-    aic_strlcpy_utf8(p.avatar_path, sizeof(p.avatar_path), rel);
-    rc = aic_profile_set(g_db, &p, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "保存头像路径失败"); return; }
+    dsc_profile_get(g_db, &p);
+    dsc_strlcpy_utf8(p.avatar_path, sizeof(p.avatar_path), rel);
+    rc = dsc_profile_set(g_db, &p, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "保存头像路径失败"); return; }
     reply_ok(out);
 }
 
 /* ---------- 更新 ---------- */
-static const char *update_status_name(aic_update_status s)
+static const char *update_status_name(dsc_update_status s)
 {
     switch (s) {
-    case AIC_UPD_UP_TO_DATE: return "up_to_date";
-    case AIC_UPD_AVAILABLE:  return "available";
-    case AIC_UPD_SKIPPED:    return "skipped";
-    case AIC_UPD_TOO_OLD:    return "too_old";
-    case AIC_UPD_INVALID:    return "invalid";
+    case DSC_UPD_UP_TO_DATE: return "up_to_date";
+    case DSC_UPD_AVAILABLE:  return "available";
+    case DSC_UPD_SKIPPED:    return "skipped";
+    case DSC_UPD_TOO_OLD:    return "too_old";
+    case DSC_UPD_INVALID:    return "invalid";
     default:                 return "not_checked";
     }
 }
@@ -558,24 +558,24 @@ static void cmd_check_update(const char *json, const char *cur, const char *skip
 {
     char err[256] = { 0 };
     char now_s[32];
-    aic_update_plan plan;
+    dsc_update_plan plan;
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!json || !json[0]) { reply_err(out, "更新清单为空"); return; }
     memset(&g_update, 0, sizeof(g_update));
-    rc = aic_update_parse_manifest(json, strlen(json), &g_update, err, sizeof(err));
-    if (rc != AIC_OK) {
+    rc = dsc_update_parse_manifest(json, strlen(json), &g_update, err, sizeof(err));
+    if (rc != DSC_OK) {
         g_update_valid = 0;
         reply_err(out, err[0] ? err : "更新清单格式不正确");
         return;
     }
     g_update_valid = 1;
-    snprintf(now_s, sizeof(now_s), "%lld", (long long)aic_now_ms());
-    aic_setting_set(g_db, "update.last_check_ms", now_s);
+    snprintf(now_s, sizeof(now_s), "%lld", (long long)dsc_now_ms());
+    dsc_setting_set(g_db, "update.last_check_ms", now_s);
     memset(&plan, 0, sizeof(plan));
-    aic_update_make_plan(&g_update, (cur && cur[0]) ? cur : "1.0.0", skip ? skip : "", &plan);
+    dsc_update_make_plan(&g_update, (cur && cur[0]) ? cur : "1.0.0", skip ? skip : "", &plan);
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -606,10 +606,10 @@ static void cmd_download_update(const char *path, sb *out)
     int rc;
 
     if (!g_update_valid) { reply_err(out, "还没有可用的更新清单，请先检查更新"); return; }
-    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
-    rc = aic_update_verify_file(&g_update, path, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
-    aic_file_size(path, &size);
+    if (!path || !path[0] || !dsc_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
+    rc = dsc_update_verify_file(&g_update, path, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
+    dsc_file_size(path, &size);
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -629,13 +629,13 @@ static void cmd_install_update(const char *path, int backup_ok, sb *out)
     char err[256] = { 0 };
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!g_update_valid) { reply_err(out, "还没有可用的更新清单，请先检查更新"); return; }
-    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
-    rc = aic_update_can_apply(backup_ok, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "需要先完成一次备份才能安装更新"); return; }
-    rc = aic_update_verify_file(&g_update, path, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
+    if (!path || !path[0] || !dsc_path_exists(path)) { reply_err(out, "安装包文件不存在"); return; }
+    rc = dsc_update_can_apply(backup_ok, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "需要先完成一次备份才能安装更新"); return; }
+    rc = dsc_update_verify_file(&g_update, path, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "安装包校验失败"); return; }
     reply_ok_note(out, "已通过大小与 SHA-256 校验，安装动作交给系统安装器");
 }
 
@@ -643,20 +643,20 @@ static void cmd_install_update(const char *path, int backup_ok, sb *out)
 static void cmd_backup_create(const char *ver, sb *out)
 {
     char dir[512], dbpath[700], zip[700], name[128], err[256] = { 0 };
-    aic_backup_info info;
+    dsc_backup_info info;
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    aic_path_join(dir, sizeof(dir), g_dir, "backups");
-    aic_mkdir_p(dir);
-    aic_path_join(dbpath, sizeof(dbpath), g_dir, "db/aic.db");
-    snprintf(name, sizeof(name), "backup-%lld.zip", (long long)(aic_now_ms() / 1000));
-    aic_path_join(zip, sizeof(zip), dir, name);
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    dsc_path_join(dir, sizeof(dir), g_dir, "backups");
+    dsc_mkdir_p(dir);
+    dsc_path_join(dbpath, sizeof(dbpath), g_dir, "db/dsc.db");
+    snprintf(name, sizeof(name), "backup-%lld.zip", (long long)(dsc_now_ms() / 1000));
+    dsc_path_join(zip, sizeof(zip), dir, name);
     memset(&info, 0, sizeof(info));
-    rc = aic_backup_create(g_dir, dbpath, (ver && ver[0]) ? ver : "1.0.0", zip, &info,
+    rc = dsc_backup_create(g_dir, dbpath, (ver && ver[0]) ? ver : "1.0.0", zip, &info,
                            err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "备份失败"); return; }
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "备份失败"); return; }
     g_backup_ok = 1;
 
     sb_reset(out);
@@ -681,10 +681,10 @@ static void cmd_backup_list(sb *out)
     int n;
     const char *p;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    aic_path_join(dir, sizeof(dir), g_dir, "backups");
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    dsc_path_join(dir, sizeof(dir), g_dir, "backups");
     sb_init(&names);
-    n = aic_dir_list(dir, &names, '\n');
+    n = dsc_dir_list(dir, &names, '\n');
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -698,16 +698,16 @@ static void cmd_backup_list(sb *out)
             char name[256];
             size_t k = 0;
             int64_t size = 0;
-            aic_backup_info info;
+            dsc_backup_info info;
             memset(&info, 0, sizeof(info));
             while (*p && *p != '\n' && k + 1 < sizeof(name)) name[k++] = *p++;
             name[k] = '\0';
             if (*p == '\n') p++;
             if (!name[0]) continue;
-            aic_path_join(child, sizeof(child), dir, name);
-            aic_file_size(child, &size);
+            dsc_path_join(child, sizeof(child), dir, name);
+            dsc_file_size(child, &size);
             /* 清单读不出来的包照样列出，但 createdAt 为空——界面据此提示可能残缺 */
-            aic_backup_inspect(child, &info, err, sizeof(err));
+            dsc_backup_inspect(child, &info, err, sizeof(err));
             jw_obj_begin(&w, NULL);
             jw_put_str(&w, "name", name);
             jw_put_str(&w, "path", child);
@@ -729,7 +729,7 @@ static void cmd_backup_restore(const char *zip, sb *out)
     int rc;
 
     if (!g_dir[0]) { reply_err(out, "尚未调用 init"); return; }
-    if (!zip || !zip[0] || !aic_path_exists(zip)) { reply_err(out, "备份包不存在"); return; }
+    if (!zip || !zip[0] || !dsc_path_exists(zip)) { reply_err(out, "备份包不存在"); return; }
     gen_lock();
     if (g_gen.active) {
         gen_unlock();
@@ -739,9 +739,9 @@ static void cmd_backup_restore(const char *zip, sb *out)
     gen_reset();
     gen_unlock();
     close_env();   /* 恢复会替换数据库文件，必须先关库 */
-    rc = aic_backup_restore(zip, g_dir, err, sizeof(err));
-    if (ensure_env() != AIC_OK) { reply_err(out, "恢复后重新打开数据库失败"); return; }
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "恢复失败"); return; }
+    rc = dsc_backup_restore(zip, g_dir, err, sizeof(err));
+    if (ensure_env() != DSC_OK) { reply_err(out, "恢复后重新打开数据库失败"); return; }
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "恢复失败"); return; }
     g_conv[0] = 0;
     reply_ok(out);
 }
@@ -753,10 +753,10 @@ static void cmd_backup_clean(int keep, sb *out)
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    aic_path_join(dir, sizeof(dir), g_dir, "backups");
-    rc = aic_backup_clean(dir, keep < 1 ? 1 : keep, &removed, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "清理失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    dsc_path_join(dir, sizeof(dir), g_dir, "backups");
+    rc = dsc_backup_clean(dir, keep < 1 ? 1 : keep, &removed, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "清理失败"); return; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -768,8 +768,8 @@ static void cmd_backup_clean(int keep, sb *out)
 
 /* ---------- 导出 / 导入（路径由 Java 选好，位于应用私有目录） ---------- */
 /* 导出范围（技术设计 8.1）：range=current|all|days7、withAvatars=0|1。
- * conv_buf 由调用方给：aic_export_scope 里存的是指针，不能指向栈上的临时串。 */
-static int fill_export_scope(const jv *root, aic_export_scope *sc, char *conv_buf, size_t conv_cap)
+ * conv_buf 由调用方给：dsc_export_scope 里存的是指针，不能指向栈上的临时串。 */
+static int fill_export_scope(const jv *root, dsc_export_scope *sc, char *conv_buf, size_t conv_cap)
 {
     const char *range = jv_get_str(root, "range", "all");
 
@@ -780,12 +780,12 @@ static int fill_export_scope(const jv *root, aic_export_scope *sc, char *conv_bu
         const char *c = jv_get_str(root, "conv", "");
         if (!c[0]) c = current_conv();
         if (!c[0]) return 0;
-        aic_strlcpy_utf8(conv_buf, conv_cap, c);
+        dsc_strlcpy_utf8(conv_buf, conv_cap, c);
         sc->scope = 1;
         sc->conv_id = conv_buf;
     } else if (strcmp(range, "days7") == 0) {
         sc->scope = 2;
-        sc->to_ms = aic_now_ms();
+        sc->to_ms = dsc_now_ms();
         sc->from_ms = sc->to_ms - 7LL * 24LL * 3600LL * 1000LL;
     } else {
         sc->scope = 0;   /* all：按模式导出全部会话 */
@@ -793,7 +793,7 @@ static int fill_export_scope(const jv *root, aic_export_scope *sc, char *conv_bu
     return 1;
 }
 
-static const char *scope_tag(const aic_export_scope *sc)
+static const char *scope_tag(const dsc_export_scope *sc)
 {
     if (!sc) return "all";
     if (sc->scope == 1) return "current";
@@ -801,34 +801,34 @@ static const char *scope_tag(const aic_export_scope *sc)
     return "all";
 }
 
-static void cmd_export_json(const char *path, const aic_export_scope *sc, sb *out)
+static void cmd_export_json(const char *path, const dsc_export_scope *sc, sb *out)
 {
     char err[256] = { 0 };
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!path || !path[0]) { reply_err(out, "导出路径为空"); return; }
-    rc = aic_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导出失败"); return; }
+    rc = dsc_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导出失败"); return; }
     reply_ok_note(out, path);
 }
 
 static void cmd_import_json(const char *path, int policy, sb *out)
 {
     char err[256] = { 0 };
-    aic_import_preview pv;
-    aic_import_result ir;
+    dsc_import_preview pv;
+    dsc_import_result ir;
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (!path || !path[0] || !aic_path_exists(path)) { reply_err(out, "导入文件不存在"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (!path || !path[0] || !dsc_path_exists(path)) { reply_err(out, "导入文件不存在"); return; }
     memset(&pv, 0, sizeof(pv));
-    rc = aic_transfer_preview(g_db, path, &pv, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入文件无法识别"); return; }
+    rc = dsc_transfer_preview(g_db, path, &pv, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导入文件无法识别"); return; }
     memset(&ir, 0, sizeof(ir));
-    rc = aic_transfer_import(g_db, path, (aic_conflict_policy)policy, &ir, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入失败"); return; }
+    rc = dsc_transfer_import(g_db, path, (dsc_conflict_policy)policy, &ir, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导入失败"); return; }
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -849,12 +849,12 @@ static void cmd_import_json(const char *path, int policy, sb *out)
 /* ---------- 插件 ---------- */
 static void cmd_plugin_list(sb *out)
 {
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     size_t n = 0, i;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (aic_plugin_list(g_db, -1, &arr, &n) != AIC_OK) { arr = NULL; n = 0; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (dsc_plugin_list(g_db, -1, &arr, &n) != DSC_OK) { arr = NULL; n = 0; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -877,7 +877,7 @@ static void cmd_plugin_list(sb *out)
     }
     jw_arr_end(&w);
     jw_obj_end(&w);
-    if (arr) aic_plugin_free_array(arr, n);
+    if (arr) dsc_plugin_free_array(arr, n);
 }
 
 /* 插件 zip 先解到临时目录并定位清单（优先 plugin.json，兼容 manifest.json）；成功时 *work 是临时目录，
@@ -890,48 +890,48 @@ static int unpack_plugin_zip(const char *zip, char *work, size_t workcap,
     int rc, n;
 
     if (err && errlen) err[0] = '\0';
-    if (!zip || !zip[0] || !aic_path_exists(zip)) {
+    if (!zip || !zip[0] || !dsc_path_exists(zip)) {
         if (err) snprintf(err, errlen, "插件包不存在");
-        return AIC_E_INVAL;
+        return DSC_E_INVAL;
     }
-    aic_uuid4(uuid);
-    aic_path_join(tmp, sizeof(tmp), g_dir, "tmp");
-    aic_mkdir_p(tmp);
-    aic_path_join(child, sizeof(child), tmp, uuid);
-    aic_mkdir_p(child);
-    aic_strlcpy_utf8(work, workcap, child);
-    rc = aic_zip_extract(zip, child, err, errlen);
-    if (rc != AIC_OK) {
+    dsc_uuid4(uuid);
+    dsc_path_join(tmp, sizeof(tmp), g_dir, "tmp");
+    dsc_mkdir_p(tmp);
+    dsc_path_join(child, sizeof(child), tmp, uuid);
+    dsc_mkdir_p(child);
+    dsc_strlcpy_utf8(work, workcap, child);
+    rc = dsc_zip_extract(zip, child, err, errlen);
+    if (rc != DSC_OK) {
         rm_tree(child);
         if (err && !err[0]) snprintf(err, errlen, "插件包解压失败");
         return rc;
     }
     /* 清单可能在包根，也可能在唯一的一层子目录里。 */
-    aic_path_join(manifest, mancap, child, "plugin.json");
-    if (!aic_path_exists(manifest)) {
-        aic_path_join(manifest, mancap, child, "manifest.json");
-        if (!aic_path_exists(manifest)) {
+    dsc_path_join(manifest, mancap, child, "plugin.json");
+    if (!dsc_path_exists(manifest)) {
+        dsc_path_join(manifest, mancap, child, "manifest.json");
+        if (!dsc_path_exists(manifest)) {
             sb_init(&names);
-            n = aic_dir_list(child, &names, '\n');
+            n = dsc_dir_list(child, &names, '\n');
             if (n > 0) {
                 const char *p = sb_cstr(&names);
                 char sub[256];
                 size_t k = 0;
                 while (*p && *p != '\n' && k + 1 < sizeof(sub)) sub[k++] = *p++;
                 sub[k] = '\0';
-                aic_path_join(inner, sizeof(inner), child, sub);
-                aic_path_join(manifest, mancap, inner, "plugin.json");
-                if (!aic_path_exists(manifest)) aic_path_join(manifest, mancap, inner, "manifest.json");
+                dsc_path_join(inner, sizeof(inner), child, sub);
+                dsc_path_join(manifest, mancap, inner, "plugin.json");
+                if (!dsc_path_exists(manifest)) dsc_path_join(manifest, mancap, inner, "manifest.json");
             }
             sb_free(&names);
-            if (!aic_path_exists(manifest)) {
+            if (!dsc_path_exists(manifest)) {
                 rm_tree(child);
                 if (err) snprintf(err, errlen, "插件包缺少 plugin.json");
-                return AIC_E_INVAL;
+                return DSC_E_INVAL;
             }
         }
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* pluginInstall：用户已确认后才调用；overwrite=1 表示覆盖同名已安装插件（技术设计 10.2）。 */
@@ -942,22 +942,22 @@ static void cmd_plugin_install(const char *zip, int allow_overwrite, sb *out)
 {
     char err[256] = { 0 };
     char work[900], manifest[1000], plugins[700];
-    aic_plugin pl;
+    dsc_plugin pl;
     jw w;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != AIC_OK) {
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != DSC_OK) {
         reply_err(out, err[0] ? err : "插件包处理失败");
         return;
     }
-    aic_path_join(plugins, sizeof(plugins), g_dir, "plugins");
-    aic_mkdir_p(plugins);
+    dsc_path_join(plugins, sizeof(plugins), g_dir, "plugins");
+    dsc_mkdir_p(plugins);
     memset(&pl, 0, sizeof(pl));
-    rc = aic_plugin_install_ex(g_db, plugins, manifest, "zip", allow_overwrite ? 1 : 0,
+    rc = dsc_plugin_install_ex(g_db, plugins, manifest, "zip", allow_overwrite ? 1 : 0,
                                &pl, err, sizeof(err));
     rm_tree(work);
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "插件安装失败"); return; }
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "插件安装失败"); return; }
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -972,19 +972,19 @@ static void cmd_plugin_install(const char *zip, int allow_overwrite, sb *out)
     jw_put_bool(&w, "overwriteAllowed", allow_overwrite ? 1 : 0);
     jw_put_str(&w, "note", "插件在独立进程里运行；安装后默认禁用，启用后才参与扩展点");
     jw_obj_end(&w);
-    aic_plugin_free(&pl);
+    dsc_plugin_free(&pl);
 }
 
 /* pluginPointList：列出声明了该扩展点的启用插件（Java 侧据此前去独立进程里执行）。 */
 static void cmd_plugin_point_list(const char *point, sb *out)
 {
-    aic_plugin *list = NULL;
+    dsc_plugin *list = NULL;
     size_t n = 0, i;
     jw w;
 
     if (!point || !point[0]) point = "ui.panel";
     sb_reset(out);
-    if (aic_plugin_list(g_db, -1, &list, &n) != AIC_OK) {
+    if (dsc_plugin_list(g_db, -1, &list, &n) != DSC_OK) {
         reply_err(out, "读取插件清单失败");
         return;
     }
@@ -1005,7 +1005,7 @@ static void cmd_plugin_point_list(const char *point, sb *out)
     }
     jw_arr_end(&w);
     jw_obj_end(&w);
-    if (list) aic_plugin_free_array(list, n);
+    if (list) dsc_plugin_free_array(list, n);
 }
 
 /* pluginCallPoint：把某个扩展点交给全部启用插件执行。
@@ -1023,7 +1023,7 @@ static void cmd_plugin_call_point(const char *point, const char *op, const char 
     if (!op || !op[0]) op = "describe";
     sb_reset(out);
     if (results_json && results_json[0]) {
-        if (jv_parse(results_json, strlen(results_json), &root, NULL, 0) == AIC_OK) {
+        if (jv_parse(results_json, strlen(results_json), &root, NULL, 0) == DSC_OK) {
             arr = (root->type == JV_ARR) ? root : NULL;
             if (arr) n = (int)jv_len(arr);
         }
@@ -1090,31 +1090,31 @@ static void cmd_plugin_inspect(const char *zip, sb *out)
     char work[900], manifest[1000];
     char *text = NULL;
     size_t len = 0;
-    aic_plugin_manifest mf;
-    aic_plugin exist;
+    dsc_plugin_manifest mf;
+    dsc_plugin exist;
     int rc, exists = 0;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != AIC_OK) {
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (unpack_plugin_zip(zip, work, sizeof(work), manifest, sizeof(manifest), err, sizeof(err)) != DSC_OK) {
         reply_err(out, err[0] ? err : "插件包处理失败");
         return;
     }
-    rc = aic_file_read_all(manifest, &text, &len);
-    if (rc != AIC_OK || !text) {
+    rc = dsc_file_read_all(manifest, &text, &len);
+    if (rc != DSC_OK || !text) {
         rm_tree(work);
         reply_err(out, "插件清单读取失败");
         return;
     }
     memset(&mf, 0, sizeof(mf));
-    rc = aic_plugin_parse_manifest(text, len, &mf, err, sizeof(err));
-    aic_xfree(text);
+    rc = dsc_plugin_parse_manifest(text, len, &mf, err, sizeof(err));
+    dsc_xfree(text);
     rm_tree(work);
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "插件清单格式不合法"); return; }
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "插件清单格式不合法"); return; }
 
     memset(&exist, 0, sizeof(exist));
-    exists = aic_plugin_get(g_db, mf.id, &exist) == AIC_OK;
-    if (exists) aic_plugin_free(&exist);
+    exists = dsc_plugin_get(g_db, mf.id, &exist) == DSC_OK;
+    if (exists) dsc_plugin_free(&exist);
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -1139,9 +1139,9 @@ static void cmd_plugin_set_enabled(const char *id, int enabled, sb *out)
     char err[256] = { 0 };
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    rc = aic_plugin_set_enabled(g_db, id, enabled ? 1 : 0, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "更新插件状态失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = dsc_plugin_set_enabled(g_db, id, enabled ? 1 : 0, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "更新插件状态失败"); return; }
     reply_ok_note(out, "Android 端的启用状态只登记清单，不会真正加载插件代码");
 }
 
@@ -1150,9 +1150,9 @@ static void cmd_plugin_uninstall(const char *id, int keep_data, sb *out)
     char err[256] = { 0 };
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    rc = aic_plugin_uninstall(g_db, id, keep_data ? 1 : 0, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "卸载插件失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = dsc_plugin_uninstall(g_db, id, keep_data ? 1 : 0, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "卸载插件失败"); return; }
     reply_ok(out);
 }
 
@@ -1175,10 +1175,10 @@ static void demo_reply(const char *body, char out1[400], char out2[400], char ou
     }
 }
 
-/* 签名要与 aic_llm_transport.post_stream 完全一致（最后两个前多一个 cancel 指针）：
+/* 签名要与 dsc_llm_transport.post_stream 完全一致（最后两个前多一个 cancel 指针）：
  * 离线演示是瞬时完成的，用不到取消标志，但指针位必须对上。 */
-static aic_llm_err demo_post(void *ud, const char *url, const char *api_key, const char *body,
-                             aic_sse_parser *parser, aic_llm_event_fn fn, void *cb_ud,
+static dsc_llm_err demo_post(void *ud, const char *url, const char *api_key, const char *body,
+                             dsc_sse_parser *parser, dsc_llm_event_fn fn, void *cb_ud,
                              volatile int *cancel, char *err, size_t errlen)
 {
     char p1[400], p2[400], p3[400];
@@ -1188,8 +1188,8 @@ static aic_llm_err demo_post(void *ud, const char *url, const char *api_key, con
 
     (void)ud; (void)url; (void)cancel;
     if (!api_key || !api_key[0]) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "尚未配置 API Key，请先到设置里填写");
-        return AIC_LLM_E_AUTH;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "尚未配置 API Key，请先到设置里填写");
+        return DSC_LLM_E_AUTH;
     }
     demo_reply(body, p1, p2, p3);
     parts[0] = p1; parts[1] = p2; parts[2] = p3;
@@ -1199,32 +1199,32 @@ static aic_llm_err demo_post(void *ud, const char *url, const char *api_key, con
         sb_append(&chunk, "data: {\"choices\":[{\"delta\":{\"content\":");
         jw_escape_into(&chunk, parts[i]);
         sb_append(&chunk, "}}]}\n\n");
-        aic_sse_feed(parser, sb_cstr(&chunk), chunk.len, fn, cb_ud);
+        dsc_sse_feed(parser, sb_cstr(&chunk), chunk.len, fn, cb_ud);
     }
     sb_reset(&chunk);
     sb_appendf(&chunk, "data: {\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d}}\n\n",
                48 + (int)(strlen(body ? body : "") / 3), 32);
-    aic_sse_feed(parser, sb_cstr(&chunk), chunk.len, fn, cb_ud);
-    aic_sse_feed(parser, "data: [DONE]\n\n", 14, fn, cb_ud);
-    aic_sse_finish(parser, fn, cb_ud);
+    dsc_sse_feed(parser, sb_cstr(&chunk), chunk.len, fn, cb_ud);
+    dsc_sse_feed(parser, "data: [DONE]\n\n", 14, fn, cb_ud);
+    dsc_sse_finish(parser, fn, cb_ud);
     sb_free(&chunk);
-    return AIC_LLM_OK;
+    return DSC_LLM_OK;
 }
 
-static aic_llm_err demo_probe(void *ud, const char *url, const char *api_key,
+static dsc_llm_err demo_probe(void *ud, const char *url, const char *api_key,
                               char *err, size_t errlen)
 {
     (void)ud; (void)url;
     if (!api_key || !api_key[0]) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "尚未配置 API Key");
-        return AIC_LLM_E_AUTH;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "尚未配置 API Key");
+        return DSC_LLM_E_AUTH;
     }
-    return AIC_LLM_OK;
+    return DSC_LLM_OK;
 }
 
-static aic_llm_transport demo_transport(void)
+static dsc_llm_transport demo_transport(void)
 {
-    aic_llm_transport tr;
+    dsc_llm_transport tr;
     memset(&tr, 0, sizeof(tr));
     tr.ud = NULL;
     tr.post_stream = demo_post;
@@ -1240,87 +1240,87 @@ static int ensure_env(void)
     const char *subs[5] = { "db", "plugins", "avatars", "backups", "exports" };
     int i;
 
-    if (g_db) return AIC_OK;
-    if (!g_dir[0]) { aic_strlcpy_utf8(g_err, sizeof(g_err), "尚未调用 init"); return AIC_E_STATE; }
+    if (g_db) return DSC_OK;
+    if (!g_dir[0]) { dsc_strlcpy_utf8(g_err, sizeof(g_err), "尚未调用 init"); return DSC_E_STATE; }
     for (i = 0; i < 5; i++) {
-        aic_path_join(sub, sizeof(sub), g_dir, subs[i]);
-        aic_mkdir_p(sub);
+        dsc_path_join(sub, sizeof(sub), g_dir, subs[i]);
+        dsc_mkdir_p(sub);
     }
-    aic_path_join(p, sizeof(p), g_dir, "db");
-    aic_path_join(sub, sizeof(sub), p, "aic.db");
-    rc = aic_db_open(sub, &g_db);
-    if (rc != AIC_OK) {
+    dsc_path_join(p, sizeof(p), g_dir, "db");
+    dsc_path_join(sub, sizeof(sub), p, "dsc.db");
+    rc = dsc_db_open(sub, &g_db);
+    if (rc != DSC_OK) {
         snprintf(g_err, sizeof(g_err), "数据库打开失败（%d）", rc);
         return rc;
     }
-    aic_path_join(p, sizeof(p), g_dir, "backups");
-    rc = aic_db_migrate(g_db, sub, p, NULL, NULL);
-    if (rc != AIC_OK) {
+    dsc_path_join(p, sizeof(p), g_dir, "backups");
+    rc = dsc_db_migrate(g_db, sub, p, NULL, NULL);
+    if (rc != DSC_OK) {
         snprintf(g_err, sizeof(g_err), "数据库迁移失败（%d）", rc);
         return rc;
     }
-    rc = aic_router_create(g_db, &g_router);
-    if (rc != AIC_OK) return rc;
-    rc = aic_engine_create(g_db, &g_eng);
-    if (rc != AIC_OK) return rc;
-    aic_engine_set_transport(g_eng, demo_transport());
-    aic_engine_set_context_messages(g_eng, aic_setting_get_int(g_db, AIC_SET_CONTEXT_N,
-                                                              AIC_CONTEXT_MESSAGES_DEFAULT));
+    rc = dsc_router_create(g_db, &g_router);
+    if (rc != DSC_OK) return rc;
+    rc = dsc_engine_create(g_db, &g_eng);
+    if (rc != DSC_OK) return rc;
+    dsc_engine_set_transport(g_eng, demo_transport());
+    dsc_engine_set_context_messages(g_eng, dsc_setting_get_int(g_db, DSC_SET_CONTEXT_N,
+                                                              DSC_CONTEXT_MESSAGES_DEFAULT));
     /* 恢复备份后会重新建引擎，内存里的 Key 要重新灌回去。 */
-    if (g_key[0]) aic_engine_set_api_key(g_eng, g_key);
+    if (g_key[0]) dsc_engine_set_api_key(g_eng, g_key);
     /* 设置里选的模型交给引擎作为 override，否则请求里会一直用会话默认模型。 */
-    aic_engine_set_model_override(g_eng, selected_model());
-    aic_engine_set_endpoint(g_eng, cur_endpoint());
+    dsc_engine_set_model_override(g_eng, selected_model());
+    dsc_engine_set_endpoint(g_eng, cur_endpoint());
     /* FR-31/34/35/36：错误中心要写 errors/ 明细、能力失败要写错误中心、
      * AI 发言修改要重建记忆、记忆条目要带来源设备，这四件事都依赖数据根目录。 */
-    aic_engine_set_data_root(g_eng, g_dir);
-    if (!g_device[0] && aic_device_id(g_db, g_device, sizeof(g_device)) != AIC_OK) g_device[0] = 0;
-    aic_engine_set_origin_device(g_eng, g_device);
-    aic_engine_set_memory_enabled(g_eng, 1);
-    aic_engine_set_capability_enabled(g_eng, 1);
+    dsc_engine_set_data_root(g_eng, g_dir);
+    if (!g_device[0] && dsc_device_id(g_db, g_device, sizeof(g_device)) != DSC_OK) g_device[0] = 0;
+    dsc_engine_set_origin_device(g_eng, g_device);
+    dsc_engine_set_memory_enabled(g_eng, 1);
+    dsc_engine_set_capability_enabled(g_eng, 1);
     install_cap_provider();
     /* 重启后把安全存储里的 Key 读回内存（FR-30）：界面与日志都不出现明文。 */
     load_key_from_store();
-    aic_router_boot(g_router);
-    aic_router_config_check(g_router);
-    return AIC_OK;
+    dsc_router_boot(g_router);
+    dsc_router_config_check(g_router);
+    return DSC_OK;
 }
 
 /* 聊天模式取唯一会话；问答模式取当前线程或最近一条。 */
 static const char *current_conv(void)
 {
-    aic_conversation c;
+    dsc_conversation c;
     size_t n = 0;
-    aic_conversation *arr = NULL;
+    dsc_conversation *arr = NULL;
 
     if (!g_db) return "";
-    if (aic_router_mode(g_router) == AIC_MODE_CHAT) {
-        if (aic_conv_get_chat(g_db, &c) == AIC_OK) {
-            aic_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
+    if (dsc_router_mode(g_router) == DSC_MODE_CHAT) {
+        if (dsc_conv_get_chat(g_db, &c) == DSC_OK) {
+            dsc_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
             return g_conv;
         }
-        if (aic_conv_ensure_chat(g_db, AIC_MODEL_FLASH, "", &c) == AIC_OK) {
-            aic_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
+        if (dsc_conv_ensure_chat(g_db, DSC_MODEL_FLASH, "", &c) == DSC_OK) {
+            dsc_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
             return g_conv;
         }
         return "";
     }
     if (g_conv[0]) return g_conv;
-    if (aic_conv_list(g_db, AIC_MODE_QA, &arr, &n) == AIC_OK && n > 0) {
-        aic_strlcpy_utf8(g_conv, sizeof(g_conv), arr[0].id);
-        aic_conv_free(arr, n);
+    if (dsc_conv_list(g_db, DSC_MODE_QA, &arr, &n) == DSC_OK && n > 0) {
+        dsc_strlcpy_utf8(g_conv, sizeof(g_conv), arr[0].id);
+        dsc_conv_free(arr, n);
         return g_conv;
     }
-    if (arr) aic_conv_free(arr, n);
+    if (arr) dsc_conv_free(arr, n);
     return "";
 }
 
 /* ---------- JSON 组装 ---------- */
 static void put_theme(jw *w)
 {
-    int pref = aic_setting_get_int(g_db, AIC_SET_THEME, 0);
+    int pref = dsc_setting_get_int(g_db, DSC_SET_THEME, 0);
     /* 第二个参数是系统当前是否深色：pref=system 时靠它决定实际令牌（FR-17）。 */
-    const aic_theme *th = aic_theme_resolve(pref, g_system_night);
+    const dsc_theme *th = dsc_theme_resolve(pref, g_system_night);
     int i;
 
     jw_obj_begin(w, "theme");
@@ -1328,10 +1328,10 @@ static void put_theme(jw *w)
     jw_put_str(w, "name", th->name);
     jw_put_bool(w, "night", th->night);
     jw_obj_begin(w, "tokens");
-    for (i = 0; i < AIC_TOK_COUNT; i++) {
+    for (i = 0; i < DSC_TOK_COUNT; i++) {
         char hex[16];
-        snprintf(hex, sizeof(hex), "#%06X", aic_theme_color(th, (aic_token)i) & 0xFFFFFFu);
-        jw_put_str(w, aic_token_name((aic_token)i), hex);
+        snprintf(hex, sizeof(hex), "#%06X", dsc_theme_color(th, (dsc_token)i) & 0xFFFFFFu);
+        jw_put_str(w, dsc_token_name((dsc_token)i), hex);
     }
     jw_obj_end(w);
     jw_obj_end(w);
@@ -1339,8 +1339,8 @@ static void put_theme(jw *w)
 
 static void put_motion(jw *w)
 {
-    aic_motion m = aic_motion_default();
-    if (aic_setting_get_int(g_db, AIC_SET_MOTION, 1) == 0) m = aic_motion_reduced();
+    dsc_motion m = dsc_motion_default();
+    if (dsc_setting_get_int(g_db, DSC_SET_MOTION, 1) == 0) m = dsc_motion_reduced();
     jw_obj_begin(w, "motion");
     jw_put_int(w, "modeSwitch", m.mode_switch_ms);
     jw_put_int(w, "tabSwitch", m.tab_switch_ms);
@@ -1354,9 +1354,9 @@ static void put_motion(jw *w)
 
 static void put_profile(jw *w)
 {
-    aic_profile p;
+    dsc_profile p;
     memset(&p, 0, sizeof(p));
-    aic_profile_get(g_db, &p);
+    dsc_profile_get(g_db, &p);
     jw_obj_begin(w, "profile");
     jw_put_str(w, "name", p.name);
     jw_put_str(w, "gender", p.gender);
@@ -1369,9 +1369,9 @@ static void put_profile(jw *w)
 
 static void put_persona(jw *w)
 {
-    aic_persona per;
+    dsc_persona per;
     memset(&per, 0, sizeof(per));
-    if (aic_persona_ensure_default(g_db, &per) != AIC_OK) {
+    if (dsc_persona_ensure_default(g_db, &per) != DSC_OK) {
         jw_put_null(w, "persona");
         return;
     }
@@ -1382,11 +1382,11 @@ static void put_persona(jw *w)
     jw_put_str(w, "prompt", per.base_prompt ? per.base_prompt : "");
     jw_put_int(w, "version", per.current_version);
     jw_obj_end(w);
-    aic_persona_free(&per);
+    dsc_persona_free(&per);
 }
 
 /* 一串消息写进 key 数组：界面只读这些字段，不需要碰核心结构。 */
-static void put_msg_items(jw *w, const char *key, aic_message *arr, size_t n)
+static void put_msg_items(jw *w, const char *key, dsc_message *arr, size_t n)
 {
     size_t i;
 
@@ -1411,26 +1411,26 @@ static void put_msg_items(jw *w, const char *key, aic_message *arr, size_t n)
 /* oldest 之前还有没有消息：拿 1 条探一下（比 COUNT 更省，且不依赖额外接口）。 */
 static int has_older_msgs(const char *conv_id, long long oldest)
 {
-    aic_message *arr = NULL;
+    dsc_message *arr = NULL;
     size_t n = 0;
     int more = 0;
 
     if (!conv_id || !conv_id[0] || oldest <= 0) return 0;
-    if (aic_msg_page(g_db, conv_id, oldest, 1, &arr, &n) == AIC_OK) {
+    if (dsc_msg_page(g_db, conv_id, oldest, 1, &arr, &n) == DSC_OK) {
         more = n > 0;
-        aic_msg_free_array(arr, n);
+        dsc_msg_free_array(arr, n);
     }
     return more;
 }
 
-/* 默认只给最近 AIC_MSG_PAGE 条 + hasMore/oldestSeq，向上翻页走 loadOlder。 */
+/* 默认只给最近 DSC_MSG_PAGE 条 + hasMore/oldestSeq，向上翻页走 loadOlder。 */
 static void put_msgs(jw *w, const char *conv_id)
 {
-    aic_message *arr = NULL;
+    dsc_message *arr = NULL;
     size_t n = 0;
     long long oldest = 0;
 
-    if (conv_id && conv_id[0] && aic_msg_page(g_db, conv_id, 0, AIC_MSG_PAGE, &arr, &n) != AIC_OK) {
+    if (conv_id && conv_id[0] && dsc_msg_page(g_db, conv_id, 0, DSC_MSG_PAGE, &arr, &n) != DSC_OK) {
         arr = NULL;
         n = 0;
     }
@@ -1438,17 +1438,17 @@ static void put_msgs(jw *w, const char *conv_id)
     if (n > 0) oldest = arr[0].seq;
     jw_put_int(w, "oldestSeq", oldest);
     jw_put_bool(w, "hasMore", has_older_msgs(conv_id, oldest) ? 1 : 0);
-    jw_put_int(w, "pageSize", AIC_MSG_PAGE);
-    if (arr) aic_msg_free_array(arr, n);
+    jw_put_int(w, "pageSize", DSC_MSG_PAGE);
+    if (arr) dsc_msg_free_array(arr, n);
 }
 
 static void put_threads(jw *w)
 {
-    aic_conversation *arr = NULL;
+    dsc_conversation *arr = NULL;
     size_t n = 0, i;
 
     jw_arr_begin(w, "threads");
-    if (aic_conv_list(g_db, -1, &arr, &n) == AIC_OK) {
+    if (dsc_conv_list(g_db, -1, &arr, &n) == DSC_OK) {
         for (i = 0; i < n; i++) {
             jw_obj_begin(w, NULL);
             jw_put_str(w, "id", arr[i].id);
@@ -1459,25 +1459,25 @@ static void put_threads(jw *w)
             jw_put_str(w, "updatedAt", arr[i].updated_at);
             jw_obj_end(w);
         }
-        aic_conv_free(arr, n);
+        dsc_conv_free(arr, n);
     }
     jw_arr_end(w);
 }
 
 static void put_guide(jw *w)
 {
-    aic_guide_state gs;
-    const aic_guide_step *steps = aic_guide_steps();
+    dsc_guide_state gs;
+    const dsc_guide_step *steps = dsc_guide_steps();
     int i;
 
     memset(&gs, 0, sizeof(gs));
-    aic_guide_state_get(g_db, &gs);
+    dsc_guide_state_get(g_db, &gs);
     jw_obj_begin(w, "guide");
     jw_put_int(w, "completed", gs.completed_count);
-    jw_put_int(w, "count", AIC_GUIDE_STEP_COUNT);
+    jw_put_int(w, "count", DSC_GUIDE_STEP_COUNT);
     jw_put_int(w, "next", gs.next_index);
     jw_arr_begin(w, "steps");
-    for (i = 0; i < AIC_GUIDE_STEP_COUNT; i++) {
+    for (i = 0; i < DSC_GUIDE_STEP_COUNT; i++) {
         jw_obj_begin(w, NULL);
         jw_put_str(w, "id", steps[i].id);
         jw_put_str(w, "title", steps[i].title);
@@ -1493,11 +1493,11 @@ static void put_guide(jw *w)
 
 static void put_usage(jw *w)
 {
-    aic_usage_summary sum;
+    dsc_usage_summary sum;
     char money[32];
     memset(&sum, 0, sizeof(sum));
-    aic_usage_summary_get(g_db, 0, &sum);
-    aic_llm_format_micros(sum.cost_micros, money, sizeof(money));
+    dsc_usage_summary_get(g_db, 0, &sum);
+    dsc_llm_format_micros(sum.cost_micros, money, sizeof(money));
     jw_obj_begin(w, "usage");
     jw_put_int(w, "requests", sum.requests);
     jw_put_int(w, "promptTokens", sum.prompt_tokens);
@@ -1510,10 +1510,10 @@ static void put_usage(jw *w)
 
 static void put_models(jw *w)
 {
-    size_t i, n = aic_llm_model_count();
+    size_t i, n = dsc_llm_model_count();
     jw_arr_begin(w, "models");
     for (i = 0; i < n; i++) {
-        const aic_llm_model *m = aic_llm_model_at(i);
+        const dsc_llm_model *m = dsc_llm_model_at(i);
         jw_obj_begin(w, NULL);
         jw_put_str(w, "id", m->id);
         jw_put_str(w, "name", m->name);
@@ -1525,25 +1525,25 @@ static void put_models(jw *w)
 
 static void put_plugins(jw *w)
 {
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     size_t n = 0, i, on = 0;
-    if (aic_plugin_list(g_db, -1, &arr, &n) == AIC_OK) {
+    if (dsc_plugin_list(g_db, -1, &arr, &n) == DSC_OK) {
         for (i = 0; i < n; i++) if (arr[i].enabled) on++;
     }
     jw_obj_begin(w, "plugins");
     jw_put_int(w, "total", (long long)n);
     jw_put_int(w, "enabled", (long long)on);
     jw_obj_end(w);
-    if (arr) aic_plugin_free_array(arr, n);
+    if (arr) dsc_plugin_free_array(arr, n);
 }
 
 static void put_conv(jw *w)
 {
     const char *id = current_conv();
-    aic_conversation c;
+    dsc_conversation c;
     memset(&c, 0, sizeof(c));
     jw_obj_begin(w, "conv");
-    if (id && id[0] && aic_conv_get(g_db, id, &c) == AIC_OK) {
+    if (id && id[0] && dsc_conv_get(g_db, id, &c) == DSC_OK) {
         jw_put_str(w, "id", c.id);
         jw_put_str(w, "title", c.title);
         jw_put_str(w, "mode", c.mode);
@@ -1560,28 +1560,28 @@ static void put_conv(jw *w)
 static void build_state(sb *out)
 {
     jw w;
-    aic_route_state st;
+    dsc_route_state st;
     int tab;
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
-    jw_put_str(&w, "mode", aic_router_mode(g_router) == AIC_MODE_QA ? "qa" : "chat");
-    jw_put_str(&w, "modeName", aic_router_mode(g_router) == AIC_MODE_QA ? "问答模式" : "聊天模式");
-    tab = (int)aic_router_tab(g_router);
+    jw_put_str(&w, "mode", dsc_router_mode(g_router) == DSC_MODE_QA ? "qa" : "chat");
+    jw_put_str(&w, "modeName", dsc_router_mode(g_router) == DSC_MODE_QA ? "问答模式" : "聊天模式");
+    tab = (int)dsc_router_tab(g_router);
     jw_put_int(&w, "tab", tab);
-    jw_put_str(&w, "tabName", aic_tab_name((aic_tab)tab));
-    st = aic_router_state(g_router);
-    jw_put_str(&w, "state", aic_route_state_name(st));
+    jw_put_str(&w, "tabName", dsc_tab_name((dsc_tab)tab));
+    st = dsc_router_state(g_router);
+    jw_put_str(&w, "state", dsc_route_state_name(st));
     /* 首启顺序（§2.3 / FR-30）：界面按 routerState 决定先给凭证页还是模式选择页。 */
-    jw_put_str(&w, "routerState", aic_route_state_name(st));
+    jw_put_str(&w, "routerState", dsc_route_state_name(st));
     jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
-    jw_put_bool(&w, "switching", aic_router_is_switching(g_router));
-    jw_put_int(&w, "overlay", (long long)aic_router_top_overlay(g_router));
-    jw_put_str(&w, "overlayName", aic_overlay_name(aic_router_top_overlay(g_router)));
-    jw_put_bool(&w, "hasKey", (aic_engine_has_key(g_eng) || g_key[0]) ? 1 : 0);
-    jw_put_str(&w, "model", aic_setting_get_int(g_db, AIC_SET_MODEL_DEFAULT, 0) == 1
-                                   ? AIC_MODEL_PRO : AIC_MODEL_FLASH);
+    jw_put_bool(&w, "switching", dsc_router_is_switching(g_router));
+    jw_put_int(&w, "overlay", (long long)dsc_router_top_overlay(g_router));
+    jw_put_str(&w, "overlayName", dsc_overlay_name(dsc_router_top_overlay(g_router)));
+    jw_put_bool(&w, "hasKey", (dsc_engine_has_key(g_eng) || g_key[0]) ? 1 : 0);
+    jw_put_str(&w, "model", dsc_setting_get_int(g_db, DSC_SET_MODEL_DEFAULT, 0) == 1
+                                   ? DSC_MODEL_PRO : DSC_MODEL_FLASH);
     /* 界面要用的运行时事实：系统深色、是否正在生成、插件能否运行、更新与备份状态。 */
     jw_put_bool(&w, "systemNight", g_system_night ? 1 : 0);
     jw_put_bool(&w, "streaming", g_gen.active ? 1 : 0);
@@ -1591,16 +1591,16 @@ static void build_state(sb *out)
     jw_put_str(&w, "pluginProcNote", "插件在独立进程里运行，超时或崩溃只终止该进程；数据目录与核心目录分离");
     jw_put_bool(&w, "hasBackup", g_backup_ok ? 1 : 0);
     /* FR-34：错误中心的未读数给聊天页的非侵入状态条用；FR-35：时间未授予时不进主页。 */
-    jw_put_int(&w, "errorUnread", (long long)aic_error_unread(g_db));
-    jw_put_bool(&w, "capGate", aic_cap_launch_gate(g_db) ? 1 : 0);
-    jw_put_int(&w, "balanceAlertCents", aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
-    jw_put_int(&w, "updateAuto", aic_setting_get_int(g_db, AIC_SET_UPDATE_AUTO, 1));
-    jw_put_int(&w, "updateIntervalHours", aic_setting_get_int(g_db, AIC_SET_UPDATE_INTERVAL, 24));
+    jw_put_int(&w, "errorUnread", (long long)dsc_error_unread(g_db));
+    jw_put_bool(&w, "capGate", dsc_cap_launch_gate(g_db) ? 1 : 0);
+    jw_put_int(&w, "balanceAlertCents", dsc_setting_get_int(g_db, DSC_SET_BALANCE_ALERT, 0));
+    jw_put_int(&w, "updateAuto", dsc_setting_get_int(g_db, DSC_SET_UPDATE_AUTO, 1));
+    jw_put_int(&w, "updateIntervalHours", dsc_setting_get_int(g_db, DSC_SET_UPDATE_INTERVAL, 24));
     {
         char murl[512] = { 0 };
         char lastc[32] = { 0 };
-        aic_setting_get(g_db, "update.manifest_url", murl, sizeof(murl));
-        aic_setting_get(g_db, "update.last_check_ms", lastc, sizeof(lastc));
+        dsc_setting_get(g_db, "update.manifest_url", murl, sizeof(murl));
+        dsc_setting_get(g_db, "update.last_check_ms", lastc, sizeof(lastc));
         jw_put_str(&w, "updateManifestUrl", murl);
         jw_put_int(&w, "lastUpdateCheckMs", (long long)atoll(lastc));
     }
@@ -1622,7 +1622,7 @@ static void build_state(sb *out)
 
 /* ---------- 命令处理 ---------- */
 /* 实体变更后把增量事件交给发件箱（§16.4）；未配对时直接忽略。定义见本文件后部。 */
-static void sync_touch(aic_sync_entity ent, aic_sync_op op, const char *entity_id);
+static void sync_touch(dsc_sync_entity ent, dsc_sync_op op, const char *entity_id);
 
 static void reply_ok(sb *out)
 {
@@ -1648,19 +1648,19 @@ static void reply_err(sb *out, const char *msg)
 
 static int cmd_send(const char *text, sb *out)
 {
-    aic_engine_result res;
+    dsc_engine_result res;
     char err[256] = { 0 };
     const char *conv = current_conv();
     jw w;
     int rc;
 
-    if (!conv[0]) return reply_err(out, "没有可用的会话"), AIC_E_STATE;
+    if (!conv[0]) return reply_err(out, "没有可用的会话"), DSC_E_STATE;
     memset(&res, 0, sizeof(res));
-    rc = aic_engine_send(g_eng, conv, text, &res, err, sizeof(err));
-    if (rc != AIC_OK) {
+    rc = dsc_engine_send(g_eng, conv, text, &res, err, sizeof(err));
+    if (rc != DSC_OK) {
         char msg[320];
-        snprintf(msg, sizeof(msg), "%s", err[0] ? err : aic_strerror(rc));
-        aic_engine_result_free(&res);
+        snprintf(msg, sizeof(msg), "%s", err[0] ? err : dsc_strerror(rc));
+        dsc_engine_result_free(&res);
         reply_err(out, msg);
         return rc;
     }
@@ -1676,28 +1676,28 @@ static int cmd_send(const char *text, sb *out)
     jw_put_str(&w, "userMsgId", res.user_msg_id);
     jw_put_str(&w, "assistantMsgId", res.assistant_msg_id);
     jw_obj_end(&w);
-    sync_touch(AIC_ENT_MESSAGE, AIC_OP_CREATE, res.user_msg_id);
-    sync_touch(AIC_ENT_MESSAGE, AIC_OP_CREATE, res.assistant_msg_id);
-    aic_engine_result_free(&res);
-    return AIC_OK;
+    sync_touch(DSC_ENT_MESSAGE, DSC_OP_CREATE, res.user_msg_id);
+    sync_touch(DSC_ENT_MESSAGE, DSC_OP_CREATE, res.assistant_msg_id);
+    dsc_engine_result_free(&res);
+    return DSC_OK;
 }
 
-static int cmd_export(const char *kind, const aic_export_scope *sc, sb *out)
+static int cmd_export(const char *kind, const dsc_export_scope *sc, sb *out)
 {
     char dir[512], path[512], name[160], err[256] = { 0 };
     int rc;
 
-    aic_path_join(dir, sizeof(dir), g_dir, "exports");
-    aic_mkdir_p(dir);
+    dsc_path_join(dir, sizeof(dir), g_dir, "exports");
+    dsc_mkdir_p(dir);
     snprintf(name, sizeof(name), "chat_record_%lld_%s.%s",
-             (long long)(aic_now_ms() / 1000), scope_tag(sc), strcmp(kind, "md") == 0 ? "md"
+             (long long)(dsc_now_ms() / 1000), scope_tag(sc), strcmp(kind, "md") == 0 ? "md"
                      : (strcmp(kind, "txt") == 0 ? "txt" : "json"));
-    aic_path_join(path, sizeof(path), dir, name);
-    if (strcmp(kind, "md") == 0) rc = aic_export_write_markdown_ex(g_db, -1, sc, path, err, sizeof(err));
-    else if (strcmp(kind, "txt") == 0) rc = aic_export_write_text_ex(g_db, -1, sc, path, err, sizeof(err));
-    else rc = aic_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    dsc_path_join(path, sizeof(path), dir, name);
+    if (strcmp(kind, "md") == 0) rc = dsc_export_write_markdown_ex(g_db, -1, sc, path, err, sizeof(err));
+    else if (strcmp(kind, "txt") == 0) rc = dsc_export_write_text_ex(g_db, -1, sc, path, err, sizeof(err));
+    else rc = dsc_export_write_json_ex(g_db, -1, sc, path, err, sizeof(err));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return rc;
     }
     {
@@ -1710,23 +1710,23 @@ static int cmd_export(const char *kind, const aic_export_scope *sc, sb *out)
         jw_put_str(&w, "path", path);
         jw_obj_end(&w);
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
 static int cmd_import(const char *path, int policy, sb *out)
 {
-    aic_import_preview pv;
-    aic_import_result ir;
+    dsc_import_preview pv;
+    dsc_import_result ir;
     char err[256] = { 0 };
     int rc;
     jw w;
 
     memset(&pv, 0, sizeof(pv));
-    rc = aic_transfer_preview(g_db, path, &pv, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入文件校验失败"); return rc; }
+    rc = dsc_transfer_preview(g_db, path, &pv, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导入文件校验失败"); return rc; }
     memset(&ir, 0, sizeof(ir));
-    rc = aic_transfer_import(g_db, path, (aic_conflict_policy)policy, &ir, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导入失败并已回滚"); return rc; }
+    rc = dsc_transfer_import(g_db, path, (dsc_conflict_policy)policy, &ir, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导入失败并已回滚"); return rc; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -1737,22 +1737,22 @@ static int cmd_import(const char *path, int policy, sb *out)
     jw_put_int(&w, "msgSkipped", (long long)ir.msg_skipped);
     jw_put_int(&w, "msgRenamed", (long long)ir.msg_renamed);
     jw_obj_end(&w);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* ---------- 消息分页：向上翻页（技术设计 13.3） ---------- */
 static void cmd_load_older(const char *conv_in, long long before_seq, sb *out)
 {
     const char *conv = (conv_in && conv_in[0]) ? conv_in : current_conv();
-    aic_message *arr = NULL;
+    dsc_message *arr = NULL;
     size_t n = 0;
     long long oldest = 0;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!conv || !conv[0]) { reply_err(out, "没有可用的会话"); return; }
     if (before_seq <= 0) { reply_err(out, "缺少翻页起点（oldestSeq）"); return; }
-    if (aic_msg_page(g_db, conv, before_seq, AIC_MSG_PAGE, &arr, &n) != AIC_OK) {
+    if (dsc_msg_page(g_db, conv, before_seq, DSC_MSG_PAGE, &arr, &n) != DSC_OK) {
         reply_err(out, "读取更早消息失败");
         return;
     }
@@ -1768,25 +1768,25 @@ static void cmd_load_older(const char *conv_in, long long before_seq, sb *out)
     jw_put_int(&w, "oldestSeq", oldest);
     jw_put_bool(&w, "hasMore", has_older_msgs(conv, oldest) ? 1 : 0);
     jw_obj_end(&w);
-    if (arr) aic_msg_free_array(arr, n);
+    if (arr) dsc_msg_free_array(arr, n);
 }
 
 /* ---------- 人设版本（FR-04）：列历史版本 + 用旧版本内容生成新版本 ---------- */
 static void cmd_persona_versions(sb *out)
 {
-    aic_persona per;
-    aic_prompt_version *arr = NULL;
+    dsc_persona per;
+    dsc_prompt_version *arr = NULL;
     size_t n = 0, i;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&per, 0, sizeof(per));
-    if (aic_persona_ensure_default(g_db, &per) != AIC_OK) {
-        aic_persona_free(&per);
+    if (dsc_persona_ensure_default(g_db, &per) != DSC_OK) {
+        dsc_persona_free(&per);
         reply_err(out, "人设读取失败");
         return;
     }
-    aic_persona_versions(g_db, per.id, &arr, &n);
+    dsc_persona_versions(g_db, per.id, &arr, &n);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -1808,28 +1808,28 @@ static void cmd_persona_versions(sb *out)
     }
     jw_arr_end(&w);
     jw_obj_end(&w);
-    if (arr) aic_prompt_version_free_array(arr, n);
-    aic_persona_free(&per);
+    if (arr) dsc_prompt_version_free_array(arr, n);
+    dsc_persona_free(&per);
 }
 
 /* 回退：把指定历史版本的内容当作一次「新的修改」写回去，历史不丢（版本号继续加）。 */
 static void cmd_persona_rollback(const char *version_id, int version, sb *out)
 {
-    aic_persona per, upd;
-    aic_prompt_version *arr = NULL;
+    dsc_persona per, upd;
+    dsc_prompt_version *arr = NULL;
     size_t n = 0, i;
     const char *pick = NULL;
     int rc;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&per, 0, sizeof(per));
-    if (aic_persona_ensure_default(g_db, &per) != AIC_OK) {
-        aic_persona_free(&per);
+    if (dsc_persona_ensure_default(g_db, &per) != DSC_OK) {
+        dsc_persona_free(&per);
         reply_err(out, "人设读取失败");
         return;
     }
-    aic_persona_versions(g_db, per.id, &arr, &n);
+    dsc_persona_versions(g_db, per.id, &arr, &n);
     for (i = 0; i < n; i++) {
         if (version_id && version_id[0]) {
             if (strcmp(arr[i].id, version_id) == 0) { pick = arr[i].content; break; }
@@ -1839,16 +1839,16 @@ static void cmd_persona_rollback(const char *version_id, int version, sb *out)
         }
     }
     if (!pick) {
-        if (arr) aic_prompt_version_free_array(arr, n);
-        aic_persona_free(&per);
+        if (arr) dsc_prompt_version_free_array(arr, n);
+        dsc_persona_free(&per);
         reply_err(out, "指定的历史版本不存在");
         return;
     }
     memset(&upd, 0, sizeof(upd));
-    rc = aic_persona_update(g_db, per.id, per.name, per.description, pick, &upd);
-    if (arr) aic_prompt_version_free_array(arr, n);
-    aic_persona_free(&per);
-    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+    rc = dsc_persona_update(g_db, per.id, per.name, per.description, pick, &upd);
+    if (arr) dsc_prompt_version_free_array(arr, n);
+    dsc_persona_free(&per);
+    if (rc != DSC_OK) { reply_err(out, dsc_strerror(rc)); return; }
 
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -1857,8 +1857,8 @@ static void cmd_persona_rollback(const char *version_id, int version, sb *out)
     jw_put_str(&w, "err", "");
     jw_put_int(&w, "version", upd.current_version);
     jw_obj_end(&w);
-    sync_touch(AIC_ENT_PERSONA, AIC_OP_UPDATE, upd.id);
-    aic_persona_free(&upd);
+    sync_touch(DSC_ENT_PERSONA, DSC_OP_UPDATE, upd.id);
+    dsc_persona_free(&upd);
 }
 
 /* 问答会话重命名（FR-20 的历史会话管理）。 */
@@ -1868,12 +1868,12 @@ static void cmd_rename_thread(const char *id_in, const char *title, sb *out)
     int rc;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!id || !id[0]) { reply_err(out, "没有可用的会话"); return; }
     if (!title || !title[0]) { reply_err(out, "标题不能为空"); return; }
-    rc = aic_conv_update_meta(g_db, id, title, NULL, NULL);
-    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
-    sync_touch(AIC_ENT_CONVERSATION, AIC_OP_UPDATE, id);
+    rc = dsc_conv_update_meta(g_db, id, title, NULL, NULL);
+    if (rc != DSC_OK) { reply_err(out, dsc_strerror(rc)); return; }
+    sync_touch(DSC_ENT_CONVERSATION, DSC_OP_UPDATE, id);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -1891,10 +1891,10 @@ static void cmd_rename_thread(const char *id_in, const char *title, sb *out)
  * 凭证：明文只出现在内存与系统安全存储；界面、日志、导出、备份都不带 Key。
  * 配对：同一局域网 UDP 广播发现 + TCP 直连；6 位配对码双向校验（只输一次）；
  *       同一时刻只与一个设备同步——会话对象只有一个，阻塞调用全部串行化。
- * 蓝牙：transport 只留接口（aic_transport_available 返回 0），界面如实说明。
+ * 蓝牙：transport 只留接口（dsc_transport_available 返回 0），界面如实说明。
  * ========================================================================== */
 
-static aic_session     *g_sess;
+static dsc_session     *g_sess;
 static pthread_mutex_t  g_sync_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int              g_pair_role;    /* 0 未定 / 1 被连接方（监听）/ 2 连接方 */
 static int              g_cred_avail = -1;
@@ -1903,7 +1903,7 @@ static int cred_has_key(void)
 {
     char v[8] = { 0 };
     if (!g_db) return 0;
-    if (aic_setting_get(g_db, AIC_SET_CRED_HAS_KEY, v, sizeof(v)) != AIC_OK) return 0;
+    if (dsc_setting_get(g_db, DSC_SET_CRED_HAS_KEY, v, sizeof(v)) != DSC_OK) return 0;
     return strcmp(v, "1") == 0;
 }
 
@@ -1912,7 +1912,7 @@ static int demo_mode(void)
 {
     char v[8] = { 0 };
     if (!g_db) return 0;
-    if (aic_setting_get(g_db, "app.demo_mode", v, sizeof(v)) != AIC_OK) return 0;
+    if (dsc_setting_get(g_db, "app.demo_mode", v, sizeof(v)) != DSC_OK) return 0;
     return strcmp(v, "1") == 0;
 }
 
@@ -1925,23 +1925,23 @@ static void load_key_from_store(void)
 
     if (!g_db || g_key[0]) return;
     memset(buf, 0, sizeof(buf));
-    rc = aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, buf, sizeof(buf),
+    rc = dsc_cred_load(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, buf, sizeof(buf),
                        err, sizeof(err));
-    if (rc != AIC_OK || !buf[0]) {
-        aic_secure_zero(buf, sizeof(buf));
+    if (rc != DSC_OK || !buf[0]) {
+        dsc_secure_zero(buf, sizeof(buf));
         return;
     }
-    aic_strlcpy_utf8(g_key, sizeof(g_key), buf);
-    aic_secure_zero(buf, sizeof(buf));
-    if (g_eng) aic_engine_set_api_key(g_eng, g_key);
-    if (!cred_has_key()) aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
+    dsc_strlcpy_utf8(g_key, sizeof(g_key), buf);
+    dsc_secure_zero(buf, sizeof(buf));
+    if (g_eng) dsc_engine_set_api_key(g_eng, g_key);
+    if (!cred_has_key()) dsc_setting_set(g_db, DSC_SET_CRED_HAS_KEY, "1");
 }
 
 static void session_close(void)
 {
     if (!g_sess) return;
     pthread_mutex_lock(&g_sync_mtx);
-    aic_session_destroy(g_sess);
+    dsc_session_destroy(g_sess);
     g_sess = NULL;
     g_pair_role = 0;
     pthread_mutex_unlock(&g_sync_mtx);
@@ -1950,22 +1950,22 @@ static void session_close(void)
 static int ensure_session(void)
 {
     int rc = ensure_env();
-    if (rc != AIC_OK) return rc;
-    if (g_sess) return AIC_OK;
-    rc = aic_session_create(g_db, &g_sess);
-    if (rc != AIC_OK) { g_sess = NULL; return rc; }
-    return AIC_OK;
+    if (rc != DSC_OK) return rc;
+    if (g_sess) return DSC_OK;
+    rc = dsc_session_create(g_db, &g_sess);
+    if (rc != DSC_OK) { g_sess = NULL; return rc; }
+    return DSC_OK;
 }
 
 /* 实体变更后把增量事件交给发件箱（§16.4）；未配对或链路未建立时直接忽略。 */
-static void sync_touch(aic_sync_entity ent, aic_sync_op op, const char *entity_id)
+static void sync_touch(dsc_sync_entity ent, dsc_sync_op op, const char *entity_id)
 {
     char err[256];
     if (!g_sess || !entity_id || !*entity_id) return;
     pthread_mutex_lock(&g_sync_mtx);
-    if (aic_session_is_paired(g_sess)) {
+    if (dsc_session_is_paired(g_sess)) {
         err[0] = '\0';
-        (void)aic_session_publish(g_sess, ent, op, entity_id, err, sizeof(err));
+        (void)dsc_session_publish(g_sess, ent, op, entity_id, err, sizeof(err));
     }
     pthread_mutex_unlock(&g_sync_mtx);
 }
@@ -1973,22 +1973,22 @@ static void sync_touch(aic_sync_entity ent, aic_sync_op op, const char *entity_i
 /* 凭证/模式变化后路由状态要重算：重建路由并重新走一遍配置检查（FR-30）。 */
 static void reopen_router(void)
 {
-    if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
+    if (g_router) { dsc_router_destroy(g_router); g_router = NULL; }
     if (!g_db) return;
-    if (aic_router_create(g_db, &g_router) != AIC_OK) { g_router = NULL; return; }
-    aic_router_boot(g_router);
-    aic_router_config_check(g_router);
+    if (dsc_router_create(g_db, &g_router) != DSC_OK) { g_router = NULL; return; }
+    dsc_router_boot(g_router);
+    dsc_router_config_check(g_router);
 }
 
-static const char *sync_phase_cn(aic_sync_state st)
+static const char *sync_phase_cn(dsc_sync_state st)
 {
     switch (st) {
-    case AIC_SYNC_IDLE:        return "未开始";
-    case AIC_SYNC_DISCOVERING: return "正在发现设备";
-    case AIC_SYNC_CONNECTING:  return "正在连接";
-    case AIC_SYNC_PAIRING:     return "等待配对校验";
-    case AIC_SYNC_PAIRED:      return "已配对（链路未同步）";
-    case AIC_SYNC_SYNCING:     return "同步中";
+    case DSC_SYNC_IDLE:        return "未开始";
+    case DSC_SYNC_DISCOVERING: return "正在发现设备";
+    case DSC_SYNC_CONNECTING:  return "正在连接";
+    case DSC_SYNC_PAIRING:     return "等待配对校验";
+    case DSC_SYNC_PAIRED:      return "已配对（链路未同步）";
+    case DSC_SYNC_SYNCING:     return "同步中";
     default:                   return "未知";
     }
 }
@@ -1996,45 +1996,45 @@ static const char *sync_phase_cn(aic_sync_state st)
 /* 同步状态一次性给全：界面只读这个对象，不需要自己拼状态。 */
 static void put_sync_fields(jw *w)
 {
-    aic_sync_state ph = AIC_SYNC_IDLE;
-    aic_pair_record rec;
+    dsc_sync_state ph = DSC_SYNC_IDLE;
+    dsc_pair_record rec;
     int outbox = 0, conflicts = 0, paired = 0;
     char ip[64] = { 0 };
     char code[16] = { 0 };
 
     memset(&rec, 0, sizeof(rec));
-    if (g_sess) ph = aic_session_phase(g_sess);
+    if (g_sess) ph = dsc_session_phase(g_sess);
     if (g_db) {
-        if (aic_pairing_current(g_db, &rec) == AIC_OK) paired = 1;
-        aic_sync_outbox_count(g_db, &outbox);
-        aic_sync_conflict_count(g_db, &conflicts);
+        if (dsc_pairing_current(g_db, &rec) == DSC_OK) paired = 1;
+        dsc_sync_outbox_count(g_db, &outbox);
+        dsc_sync_conflict_count(g_db, &conflicts);
     }
-    if (g_sess) aic_strlcpy_utf8(code, sizeof(code), aic_session_our_code(g_sess));
-    if (aic_transport_local_ip(ip, sizeof(ip)) != AIC_OK) ip[0] = '\0';
-    jw_put_str(w, "phase", aic_sync_state_name(ph));
+    if (g_sess) dsc_strlcpy_utf8(code, sizeof(code), dsc_session_our_code(g_sess));
+    if (dsc_transport_local_ip(ip, sizeof(ip)) != DSC_OK) ip[0] = '\0';
+    jw_put_str(w, "phase", dsc_sync_state_name(ph));
     jw_put_str(w, "phaseName", sync_phase_cn(ph));
     jw_put_bool(w, "isPaired", paired);
-    jw_put_bool(w, "syncing", ph == AIC_SYNC_SYNCING ? 1 : 0);
+    jw_put_bool(w, "syncing", ph == DSC_SYNC_SYNCING ? 1 : 0);
     jw_put_str(w, "ourCode", code);
     jw_put_str(w, "peerName", rec.peer_name);
     jw_put_str(w, "peerId", rec.peer_id);
     jw_put_str(w, "pairedAt", rec.paired_at);
-    jw_put_bool(w, "realtimeEnabled", g_db ? aic_sync_realtime_enabled(g_db) : 0);
+    jw_put_bool(w, "realtimeEnabled", g_db ? dsc_sync_realtime_enabled(g_db) : 0);
     jw_put_int(w, "outbox", outbox);
     jw_put_int(w, "conflicts", conflicts);
     jw_put_str(w, "localIp", ip);
-    jw_put_int(w, "port", AIC_TRANSPORT_DEFAULT_PORT);
-    jw_put_bool(w, "bluetoothAvailable", aic_transport_available(AIC_CH_BLUETOOTH) ? 1 : 0);
+    jw_put_int(w, "port", DSC_TRANSPORT_DEFAULT_PORT);
+    jw_put_bool(w, "bluetoothAvailable", dsc_transport_available(DSC_CH_BLUETOOTH) ? 1 : 0);
     jw_put_str(w, "transportNote", "蓝牙通道未实现，当前用同一局域网直连");
-    jw_put_int(w, "codeTtlSeconds", AIC_PAIR_CODE_TTL_MS / 1000);
-    jw_put_int(w, "codeMaxFails", AIC_PAIR_MAX_FAILS);
+    jw_put_int(w, "codeTtlSeconds", DSC_PAIR_CODE_TTL_MS / 1000);
+    jw_put_int(w, "codeMaxFails", DSC_PAIR_MAX_FAILS);
     jw_put_str(w, "scopeNote", "同步范围：用户资料、人设、会话、消息、提示词版本、设置白名单、插件清单");
     jw_put_str(w, "excludeNote", "不参与同步：凭证、插件二进制、用量流水、日志、备份包");
 }
 
 static void put_credential(jw *w)
 {
-    if (g_cred_avail < 0) g_cred_avail = aic_cred_available() ? 1 : 0;
+    if (g_cred_avail < 0) g_cred_avail = dsc_cred_available() ? 1 : 0;
     jw_obj_begin(w, "credential");
     jw_put_bool(w, "hasKey", cred_has_key());
     jw_put_bool(w, "inMemory", g_key[0] ? 1 : 0);
@@ -2073,7 +2073,7 @@ static void reply_router(sb *out, const char *note)
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
     jw_put_str(&w, "note", note ? note : "");
-    jw_put_str(&w, "routerState", aic_route_state_name(aic_router_state(g_router)));
+    jw_put_str(&w, "routerState", dsc_route_state_name(dsc_router_state(g_router)));
     jw_put_bool(&w, "hasKey", cred_has_key());
     jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
     jw_obj_end(&w);
@@ -2082,12 +2082,12 @@ static void reply_router(sb *out, const char *note)
 /* ---------- 凭证与默认模式（FR-30） ---------- */
 static void cmd_credential_status(sb *out)
 {
-    aic_route_state st;
+    dsc_route_state st;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     load_key_from_store();
-    st = aic_router_state(g_router);
+    st = dsc_router_state(g_router);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2095,11 +2095,11 @@ static void cmd_credential_status(sb *out)
     jw_put_str(&w, "err", "");
     jw_put_bool(&w, "hasKey", cred_has_key());
     jw_put_bool(&w, "inMemory", g_key[0] ? 1 : 0);
-    jw_put_bool(&w, "credAvailable", aic_cred_available());
+    jw_put_bool(&w, "credAvailable", dsc_cred_available());
     jw_put_bool(&w, "demo", demo_mode() ? 1 : 0);
-    jw_put_str(&w, "routerState", aic_route_state_name(st));
-    jw_put_bool(&w, "needCredential", st == AIC_ST_CREDENTIAL_SETUP ? 1 : 0);
-    jw_put_bool(&w, "needModeSelect", st == AIC_ST_MODE_SELECT ? 1 : 0);
+    jw_put_str(&w, "routerState", dsc_route_state_name(st));
+    jw_put_bool(&w, "needCredential", st == DSC_ST_CREDENTIAL_SETUP ? 1 : 0);
+    jw_put_bool(&w, "needModeSelect", st == DSC_ST_MODE_SELECT ? 1 : 0);
     jw_put_str(&w, "note", "凭证存在系统安全存储，界面与日志不出现明文");
     jw_obj_end(&w);
 }
@@ -2107,62 +2107,62 @@ static void cmd_credential_status(sb *out)
 static void cmd_save_credential(const char *key, sb *out)
 {
     char err[256] = { 0 };
-    aic_route_state st;
+    dsc_route_state st;
     size_t n;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (!key) key = "";
     n = strlen(key);
     if (n < 20 || strncmp(key, "sk-", 3) != 0) {
         reply_err(out, "API Key 格式不正确：应以 sk- 开头且长度不少于 20 个字符");
         return;
     }
-    if (!aic_cred_available()) {
+    if (!dsc_cred_available()) {
         reply_err(out, "系统安全存储不可用：这台设备无法保存凭证（可先用演示模式）");
         return;
     }
-    rc = aic_cred_save(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY, key, err, sizeof(err));
-    if (rc != AIC_OK) {
+    rc = dsc_cred_save(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY, key, err, sizeof(err));
+    if (rc != DSC_OK) {
         reply_err(out, err[0] ? err : "写入系统安全存储失败");
         return;
     }
-    aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
-    aic_setting_set(g_db, "app.demo_mode", "0");
-    aic_strlcpy_utf8(g_key, sizeof(g_key), key);
-    if (g_eng) aic_engine_set_api_key(g_eng, g_key);
-    aic_guide_mark(g_db, "api_key", 0);
-    st = aic_router_state(g_router);
-    if (st == AIC_ST_CREDENTIAL_SETUP) aic_router_credential_done(g_router);
-    else if (st == AIC_ST_CREDENTIAL_CHECK) aic_router_credential_check(g_router);
+    dsc_setting_set(g_db, DSC_SET_CRED_HAS_KEY, "1");
+    dsc_setting_set(g_db, "app.demo_mode", "0");
+    dsc_strlcpy_utf8(g_key, sizeof(g_key), key);
+    if (g_eng) dsc_engine_set_api_key(g_eng, g_key);
+    dsc_guide_mark(g_db, "api_key", 0);
+    st = dsc_router_state(g_router);
+    if (st == DSC_ST_CREDENTIAL_SETUP) dsc_router_credential_done(g_router);
+    else if (st == DSC_ST_CREDENTIAL_CHECK) dsc_router_credential_check(g_router);
     reply_router(out, "凭证已写入系统安全存储，接下来选择默认模式");
 }
 
 /* 演示模式：系统属性/环境在 Android 上设不了，只能由界面显式调用（界面上要显示「演示模式」）。 */
 static void cmd_demo_mode(sb *out)
 {
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, "1");
-    aic_setting_set(g_db, AIC_SET_FIRST_RUN_DONE, "1");
-    aic_setting_set(g_db, "app.demo_mode", "1");
-    aic_setting_set(g_db, AIC_SET_DEFAULT_MODE, "chat");
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    dsc_setting_set(g_db, DSC_SET_CRED_HAS_KEY, "1");
+    dsc_setting_set(g_db, DSC_SET_FIRST_RUN_DONE, "1");
+    dsc_setting_set(g_db, "app.demo_mode", "1");
+    dsc_setting_set(g_db, DSC_SET_DEFAULT_MODE, "chat");
     reopen_router();
     reply_router(out, "已进入演示模式：不写凭证、不发任何网络请求");
 }
 
 static void cmd_mode_select(const char *mode, sb *out)
 {
-    aic_mode target = (mode && strcmp(mode, "qa") == 0) ? AIC_MODE_QA : AIC_MODE_CHAT;
+    dsc_mode target = (mode && strcmp(mode, "qa") == 0) ? DSC_MODE_QA : DSC_MODE_CHAT;
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    rc = aic_router_mode_select(g_router, target);
-    if (rc != AIC_OK) {
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = dsc_router_mode_select(g_router, target);
+    if (rc != DSC_OK) {
         reply_err(out, "当前不在默认模式选择步骤：请重新进入应用");
         return;
     }
-    aic_guide_mark(g_db, "mode_intro", 0);
-    reply_router(out, target == AIC_MODE_QA ? "已进入问答模式" : "已进入聊天模式");
+    dsc_guide_mark(g_db, "mode_intro", 0);
+    reply_router(out, target == DSC_MODE_QA ? "已进入问答模式" : "已进入聊天模式");
 }
 
 /* ---------- 配对与实时同步（第十六章） ---------- */
@@ -2171,14 +2171,14 @@ static void cmd_pair_host(int port, sb *out)
     char err[256] = { 0 };
     int rc;
 
-    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (port <= 0 || port > 65535) port = DSC_TRANSPORT_DEFAULT_PORT;
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_host(g_sess, port, NULL, err, sizeof(err));
-    if (rc == AIC_OK) g_pair_role = 1;
+    rc = dsc_session_host(g_sess, port, NULL, err, sizeof(err));
+    if (rc == DSC_OK) g_pair_role = 1;
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     reply_sync(out, "已开始监听：把本端 6 位配对码念给对端，再等待其连入");
@@ -2186,22 +2186,22 @@ static void cmd_pair_host(int port, sb *out)
 
 static void cmd_pair_discover(int port, int wait_ms, sb *out)
 {
-    aic_peer peers[AIC_TRANSPORT_PEER_MAX];
+    dsc_peer peers[DSC_TRANSPORT_PEER_MAX];
     size_t n = 0, i;
     char err[256] = { 0 };
     int rc;
     jw w;
 
-    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
+    if (port <= 0 || port > 65535) port = DSC_TRANSPORT_DEFAULT_PORT;
     if (wait_ms <= 0 || wait_ms > 8000) wait_ms = 1500;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(peers, 0, sizeof(peers));
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_discover(g_sess, port, wait_ms, peers, AIC_TRANSPORT_PEER_MAX, &n,
+    rc = dsc_session_discover(g_sess, port, wait_ms, peers, DSC_TRANSPORT_PEER_MAX, &n,
                               err, sizeof(err));
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     sb_reset(out);
@@ -2218,7 +2218,7 @@ static void cmd_pair_discover(int port, int wait_ms, sb *out)
         jw_put_str(&w, "name", peers[i].name);
         jw_put_str(&w, "addr", peers[i].addr);
         jw_put_int(&w, "port", peers[i].port);
-        jw_put_str(&w, "channel", aic_channel_name(peers[i].channel));
+        jw_put_str(&w, "channel", dsc_channel_name(peers[i].channel));
         jw_obj_end(&w);
     }
     jw_arr_end(&w);
@@ -2232,15 +2232,15 @@ static void cmd_pair_connect(const char *addr, int port, int timeout_ms, sb *out
     int rc;
 
     if (!addr || !addr[0]) { reply_err(out, "请填写对端地址"); return; }
-    if (port <= 0 || port > 65535) port = AIC_TRANSPORT_DEFAULT_PORT;
+    if (port <= 0 || port > 65535) port = DSC_TRANSPORT_DEFAULT_PORT;
     if (timeout_ms <= 0 || timeout_ms > 30000) timeout_ms = 4000;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_connect(g_sess, addr, port, timeout_ms, NULL, err, sizeof(err));
-    if (rc == AIC_OK) g_pair_role = 2;
+    rc = dsc_session_connect(g_sess, addr, port, timeout_ms, NULL, err, sizeof(err));
+    if (rc == DSC_OK) g_pair_role = 2;
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     reply_sync(out, "已连上对端：输入对端屏幕上的 6 位码再点『握手』");
@@ -2251,12 +2251,12 @@ static void cmd_pair_connect(const char *addr, int port, int timeout_ms, sb *out
 static void cmd_pair_accept(int timeout_ms, sb *out)
 {
     char err[256] = { 0 };
-    int rc = AIC_E_TIMEOUT;
+    int rc = DSC_E_TIMEOUT;
     int waited = 0, slice, answered = 0;
 
     if (timeout_ms <= 0 || timeout_ms > 60000) timeout_ms = 20000;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    if (aic_session_phase(g_sess) == AIC_SYNC_IDLE) {
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (dsc_session_phase(g_sess) == DSC_SYNC_IDLE) {
         reply_err(out, "请先点『开始监听等待连入』，再等待对端连入");
         return;
     }
@@ -2264,22 +2264,22 @@ static void cmd_pair_accept(int timeout_ms, sb *out)
         slice = timeout_ms - waited;
         if (slice > 250) slice = 250;
         pthread_mutex_lock(&g_sync_mtx);
-        rc = aic_session_accept(g_sess, slice, err, sizeof(err));
-        if (rc == AIC_E_TIMEOUT) {
+        rc = dsc_session_accept(g_sess, slice, err, sizeof(err));
+        if (rc == DSC_E_TIMEOUT) {
             char derr[128] = { 0 };
             answered = 0;
-            aic_session_answer_discovery(g_sess, 100, &answered, derr, sizeof(derr));
+            dsc_session_answer_discovery(g_sess, 100, &answered, derr, sizeof(derr));
         }
         pthread_mutex_unlock(&g_sync_mtx);
-        if (rc != AIC_E_TIMEOUT) break;
+        if (rc != DSC_E_TIMEOUT) break;
         waited += slice;
     }
-    if (rc == AIC_E_TIMEOUT) {
+    if (rc == DSC_E_TIMEOUT) {
         reply_err(out, "等待超时：对端没有连入（确认两端在同一 Wi-Fi、地址与端口正确）");
         return;
     }
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     g_pair_role = 1;
@@ -2291,17 +2291,17 @@ static void cmd_pair_handshake(const char *code, const char *side, int timeout_m
     char err[256] = { 0 };
     int accept_side, rc;
 
-    if (!aic_pair_code_valid(code)) { reply_err(out, "配对码必须是 6 位数字"); return; }
+    if (!dsc_pair_code_valid(code)) { reply_err(out, "配对码必须是 6 位数字"); return; }
     if (timeout_ms <= 0 || timeout_ms > 30000) timeout_ms = 8000;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     if (side && side[0]) accept_side = strcmp(side, "accept") == 0;
     else accept_side = (g_pair_role == 1);
     pthread_mutex_lock(&g_sync_mtx);
-    rc = accept_side ? aic_session_handshake_accept(g_sess, code, timeout_ms, err, sizeof(err))
-                     : aic_session_handshake_connect(g_sess, code, timeout_ms, err, sizeof(err));
+    rc = accept_side ? dsc_session_handshake_accept(g_sess, code, timeout_ms, err, sizeof(err))
+                     : dsc_session_handshake_connect(g_sess, code, timeout_ms, err, sizeof(err));
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     reply_sync(out, "配对成功：实时同步已默认开启");
@@ -2309,7 +2309,7 @@ static void cmd_pair_handshake(const char *code, const char *side, int timeout_m
 
 static void cmd_pair_status(sb *out)
 {
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     reply_sync(out, "");
 }
 
@@ -2318,17 +2318,17 @@ static void cmd_pair_publish(const char *entity, const char *op, const char *id,
     char err[256] = { 0 };
     int ent, opr, rc;
 
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    ent = aic_sync_entity_parse(entity);
-    opr = aic_sync_op_parse(op);
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    ent = dsc_sync_entity_parse(entity);
+    opr = dsc_sync_op_parse(op);
     if (ent < 0) { reply_err(out, "未知的同步实体"); return; }
     if (opr < 0) { reply_err(out, "未知的同步操作"); return; }
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_publish(g_sess, (aic_sync_entity)ent, (aic_sync_op)opr,
+    rc = dsc_session_publish(g_sess, (dsc_sync_entity)ent, (dsc_sync_op)opr,
                              (id && id[0]) ? id : NULL, err, sizeof(err));
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     reply_sync(out, "已放入发件箱：下一轮同步发出");
@@ -2337,23 +2337,23 @@ static void cmd_pair_publish(const char *entity, const char *op, const char *id,
 static void cmd_pair_unpair(sb *out)
 {
     char err[256] = { 0 };
-    aic_pair_record rec;
+    dsc_pair_record rec;
     char peer[40] = { 0 };
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&rec, 0, sizeof(rec));
-    if (aic_pairing_current(g_db, &rec) == AIC_OK) aic_strlcpy_utf8(peer, sizeof(peer), rec.peer_id);
+    if (dsc_pairing_current(g_db, &rec) == DSC_OK) dsc_strlcpy_utf8(peer, sizeof(peer), rec.peer_id);
     if (g_sess) {
         pthread_mutex_lock(&g_sync_mtx);
-        aic_session_unpair(g_sess, err, sizeof(err));
+        dsc_session_unpair(g_sess, err, sizeof(err));
         pthread_mutex_unlock(&g_sync_mtx);
     }
     if (peer[0]) {
         /* 会话里已经解除时这里会返回 NOTFOUND，属正常情况。 */
-        rc = aic_pairing_unpair(g_db, peer, err, sizeof(err));
-        if (rc != AIC_OK && rc != AIC_E_NOTFOUND) {
-            reply_err(out, err[0] ? err : aic_strerror(rc));
+        rc = dsc_pairing_unpair(g_db, peer, err, sizeof(err));
+        if (rc != DSC_OK && rc != DSC_E_NOTFOUND) {
+            reply_err(out, err[0] ? err : dsc_strerror(rc));
             return;
         }
     }
@@ -2364,9 +2364,9 @@ static void cmd_sync_toggle(int enabled, sb *out)
 {
     int rc;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
-    rc = aic_sync_set_realtime(g_db, enabled ? 1 : 0);
-    if (rc != AIC_OK) { reply_err(out, aic_strerror(rc)); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    rc = dsc_sync_set_realtime(g_db, enabled ? 1 : 0);
+    if (rc != DSC_OK) { reply_err(out, dsc_strerror(rc)); return; }
     reply_sync(out, enabled ? "实时同步已开启" : "实时同步已暂停：新事件留在发件箱，恢复后补发");
 }
 
@@ -2378,12 +2378,12 @@ static void cmd_sync_pump(int timeout_ms, sb *out)
     jw w;
 
     if (timeout_ms < 0 || timeout_ms > 5000) timeout_ms = 30;
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_pump(g_sess, timeout_ms, &sent, &applied, err, sizeof(err));
+    rc = dsc_session_pump(g_sess, timeout_ms, &sent, &applied, err, sizeof(err));
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
-        reply_err(out, err[0] ? err : aic_strerror(rc));
+    if (rc != DSC_OK) {
+        reply_err(out, err[0] ? err : dsc_strerror(rc));
         return;
     }
     sb_reset(out);
@@ -2405,31 +2405,31 @@ static void cmd_sync_pump(int timeout_ms, sb *out)
  *   balanceFailed   -> 连请求都没发出去（无网络/超时） */
 static void balance_endpoint(char *out, size_t cap)
 {
-    char url[AIC_LLM_URL_MAX];
+    char url[DSC_LLM_URL_MAX];
     const char *slash;
 
-    aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
-    aic_setting_get(g_db, AIC_SET_CRED_ENDPOINT, url, sizeof(url));
-    if (!url[0]) aic_strlcpy_utf8(url, sizeof(url), AIC_LLM_MODEL_DEFAULT_URL);
+    dsc_strlcpy_utf8(url, sizeof(url), DSC_LLM_MODEL_DEFAULT_URL);
+    dsc_setting_get(g_db, DSC_SET_CRED_ENDPOINT, url, sizeof(url));
+    if (!url[0]) dsc_strlcpy_utf8(url, sizeof(url), DSC_LLM_MODEL_DEFAULT_URL);
     slash = strstr(url, "/chat/");
     if (slash) {
         size_t base = (size_t)(slash - url);
         if (base + 14 >= cap) base = cap > 14 ? cap - 14 : 0;
         memcpy(out, url, base);
-        aic_strlcpy_utf8(out + base, cap - base, "/user/balance");
+        dsc_strlcpy_utf8(out + base, cap - base, "/user/balance");
     } else {
-        aic_strlcpy_utf8(out, cap, "https://api.deepseek.com/user/balance");
+        dsc_strlcpy_utf8(out, cap, "https://api.deepseek.com/user/balance");
     }
 }
 
-static void put_balance(jw *w, const aic_llm_balance *bal, long long local_used, const char *note)
+static void put_balance(jw *w, const dsc_llm_balance *bal, long long local_used, const char *note)
 {
     char avail[32], pend[32], local[32], when[32];
 
-    aic_llm_format_micros(bal->available_micros, avail, sizeof(avail));
-    aic_llm_format_micros(bal->pending_micros, pend, sizeof(pend));
-    aic_llm_format_micros(local_used, local, sizeof(local));
-    aic_ms_to_iso8601(aic_now_ms(), when);
+    dsc_llm_format_micros(bal->available_micros, avail, sizeof(avail));
+    dsc_llm_format_micros(bal->pending_micros, pend, sizeof(pend));
+    dsc_llm_format_micros(local_used, local, sizeof(local));
+    dsc_ms_to_iso8601(dsc_now_ms(), when);
     jw_put_bool(w, "valid", bal->valid ? 1 : 0);
     jw_put_bool(w, "stale", bal->stale ? 1 : 0);
     jw_put_str(w, "available", avail);
@@ -2443,20 +2443,20 @@ static void put_balance(jw *w, const aic_llm_balance *bal, long long local_used,
 
 static void cmd_balance_info(sb *out)
 {
-    aic_usage_summary sum;
-    aic_llm_balance bal;
-    char url[AIC_LLM_URL_MAX];
+    dsc_usage_summary sum;
+    dsc_llm_balance bal;
+    char url[DSC_LLM_URL_MAX];
     int has_key;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&sum, 0, sizeof(sum));
     memset(&bal, 0, sizeof(bal));
-    aic_usage_summary_get(g_db, 0, &sum);
+    dsc_usage_summary_get(g_db, 0, &sum);
     balance_endpoint(url, sizeof(url));
-    has_key = aic_cred_load(AIC_CRED_SERVICE_DEFAULT, AIC_CRED_ACCOUNT_APIKEY,
-                            g_key, sizeof(g_key), NULL, 0) == AIC_OK && g_key[0] != 0;
-    aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+    has_key = dsc_cred_load(DSC_CRED_SERVICE_DEFAULT, DSC_CRED_ACCOUNT_APIKEY,
+                            g_key, sizeof(g_key), NULL, 0) == DSC_OK && g_key[0] != 0;
+    dsc_llm_balance_keep_last(&bal, NULL, dsc_now_ms());
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2473,36 +2473,36 @@ static void cmd_balance_info(sb *out)
 
 static void cmd_balance_apply(const char *body, int status, sb *out)
 {
-    aic_usage_summary sum;
-    aic_llm_balance bal;
+    dsc_usage_summary sum;
+    dsc_llm_balance bal;
     char err[256] = { 0 };
     char note[320];
     int rc, threshold;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&sum, 0, sizeof(sum));
     memset(&bal, 0, sizeof(bal));
-    aic_usage_summary_get(g_db, 0, &sum);
-    threshold = aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0);
+    dsc_usage_summary_get(g_db, 0, &sum);
+    threshold = dsc_setting_get_int(g_db, DSC_SET_BALANCE_ALERT, 0);
 
     if (status && status != 200) {
-        aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
-        bal.below_alert = aic_llm_balance_below(&bal, threshold);
+        dsc_llm_balance_keep_last(&bal, NULL, dsc_now_ms());
+        bal.below_alert = dsc_llm_balance_below(&bal, threshold);
         snprintf(note, sizeof(note), "查询失败（HTTP %d：%s），展示上次结果",
-                 status, aic_llm_err_text(aic_llm_classify_http(status)));
+                 status, dsc_llm_err_text(dsc_llm_classify_http(status)));
     } else {
-        rc = aic_llm_balance_parse(body ? body : "", body ? strlen(body) : 0, &bal, err, sizeof(err));
-        if (rc != AIC_OK) {
-            aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
+        rc = dsc_llm_balance_parse(body ? body : "", body ? strlen(body) : 0, &bal, err, sizeof(err));
+        if (rc != DSC_OK) {
+            dsc_llm_balance_keep_last(&bal, NULL, dsc_now_ms());
             snprintf(note, sizeof(note), "返回体无法解析（%s），展示本地账本与上次结果",
-                     err[0] ? err : aic_strerror(rc));
+                     err[0] ? err : dsc_strerror(rc));
         } else {
             bal.valid = 1;
             bal.stale = 0;
-            bal.queried_ms = aic_now_ms();
-            aic_strlcpy_utf8(bal.source, sizeof(bal.source), "账户接口");
-            bal.below_alert = aic_llm_balance_below(&bal, threshold);
+            bal.queried_ms = dsc_now_ms();
+            dsc_strlcpy_utf8(bal.source, sizeof(bal.source), "账户接口");
+            bal.below_alert = dsc_llm_balance_below(&bal, threshold);
             if (bal.below_alert)
                 snprintf(note, sizeof(note), "余额已低于提醒阈值（%.2f 元），请注意",
                          (double)threshold / 1000000.0);
@@ -2521,18 +2521,18 @@ static void cmd_balance_apply(const char *body, int status, sb *out)
 
 static void cmd_balance_failed(const char *reason, int status, sb *out)
 {
-    aic_usage_summary sum;
-    aic_llm_balance bal;
+    dsc_usage_summary sum;
+    dsc_llm_balance bal;
     char note[320];
     jw w;
 
     (void)status;
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&sum, 0, sizeof(sum));
     memset(&bal, 0, sizeof(bal));
-    aic_usage_summary_get(g_db, 0, &sum);
-    aic_llm_balance_keep_last(&bal, NULL, aic_now_ms());
-    bal.below_alert = aic_llm_balance_below(&bal, aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
+    dsc_usage_summary_get(g_db, 0, &sum);
+    dsc_llm_balance_keep_last(&bal, NULL, dsc_now_ms());
+    bal.below_alert = dsc_llm_balance_below(&bal, dsc_setting_get_int(g_db, DSC_SET_BALANCE_ALERT, 0));
     snprintf(note, sizeof(note), "查询失败（%s），展示上次结果",
              (reason && reason[0]) ? reason : "网络不可用");
     sb_reset(out);
@@ -2561,10 +2561,10 @@ static void cmd_bt_attach(const char *kind, int fd, sb *out)
 
     if (fd < 0) { reply_err(out, "需要有效的文件描述符"); return; }
     char err[256] = { 0 };
-    if (strcmp(kind, "listen") == 0) rc = aic_bt_attach_listen_fd(fd, err, sizeof(err));
-    else if (strcmp(kind, "incoming") == 0) rc = aic_bt_attach_incoming_fd(fd, err, sizeof(err));
-    else rc = aic_bt_attach_fd(fd, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : aic_strerror(rc)); return; }
+    if (strcmp(kind, "listen") == 0) rc = dsc_bt_attach_listen_fd(fd, err, sizeof(err));
+    else if (strcmp(kind, "incoming") == 0) rc = dsc_bt_attach_incoming_fd(fd, err, sizeof(err));
+    else rc = dsc_bt_attach_fd(fd, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : dsc_strerror(rc)); return; }
     reply_sync(out, strcmp(kind, "incoming") == 0 ? "蓝牙链路已建立（被连接方），可以配对了"
                                       : "蓝牙套接字已登记");
 }
@@ -2576,11 +2576,11 @@ static void cmd_bt_feed(const char *b64, sb *out)
     int rc;
 
     if (!b64 || !b64[0]) { reply_err(out, "没有可写入的字节"); return; }
-    rc = aic_base64_decode(b64, strlen(b64), &data, &len);
-    if (rc != AIC_OK) { reply_err(out, "字节流解码失败"); return; }
-    if (aic_bt_attached() == 0) { aic_xfree(data); reply_err(out, "蓝牙链路未建立"); return; }
-    room = aic_bt_feed(data, len);
-    aic_xfree(data);
+    rc = dsc_base64_decode(b64, strlen(b64), &data, &len);
+    if (rc != DSC_OK) { reply_err(out, "字节流解码失败"); return; }
+    if (dsc_bt_attached() == 0) { dsc_xfree(data); reply_err(out, "蓝牙链路未建立"); return; }
+    room = dsc_bt_feed(data, len);
+    dsc_xfree(data);
     sb_reset(out);
     {
         jw w;
@@ -2601,9 +2601,9 @@ static void cmd_bt_drain(sb *out)
     sb text;
     jw w;
 
-    aic_bt_drain(buf, cap, &n);
+    dsc_bt_drain(buf, cap, &n);
     sb_init(&text);
-    if (n > 0) aic_base64_encode(buf, n, &text);
+    if (n > 0) dsc_base64_encode(buf, n, &text);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2611,7 +2611,7 @@ static void cmd_bt_drain(sb *out)
     jw_put_str(&w, "err", "");
     jw_put_int(&w, "bytes", (int)n);
     jw_put_str(&w, "data", sb_cstr(&text));
-    jw_put_int(&w, "pending", (int)aic_bt_pending_out());
+    jw_put_int(&w, "pending", (int)dsc_bt_pending_out());
     jw_obj_end(&w);
     sb_free(&text);
 }
@@ -2620,27 +2620,27 @@ static void cmd_bt_peers_set(const char *json, sb *out)
 {
     jv *root = NULL;
     char perr[128] = { 0 };
-    aic_peer list[AIC_TRANSPORT_PEER_MAX];
+    dsc_peer list[DSC_TRANSPORT_PEER_MAX];
     size_t n = 0, i, cnt;
 
     if (!json || !json[0]) { reply_err(out, "缺少设备清单"); return; }
-    if (jv_parse(json, strlen(json), &root, perr, sizeof(perr)) != AIC_OK) {
+    if (jv_parse(json, strlen(json), &root, perr, sizeof(perr)) != DSC_OK) {
         reply_err(out, "设备清单不是合法 JSON");
         return;
     }
     memset(list, 0, sizeof(list));
     cnt = (size_t)jv_len(root);
-    for (i = 0; i < cnt && n < AIC_TRANSPORT_PEER_MAX; i++) {
+    for (i = 0; i < cnt && n < DSC_TRANSPORT_PEER_MAX; i++) {
         const jv *it = jv_at(root, (int)i);
-        aic_strlcpy_utf8(list[n].addr, sizeof(list[n].addr), jv_get_str(it, "addr", ""));
-        aic_strlcpy_utf8(list[n].name, sizeof(list[n].name), jv_get_str(it, "name", ""));
-        aic_strlcpy_utf8(list[n].device_id, sizeof(list[n].device_id), jv_get_str(it, "addr", ""));
-        list[n].port = (int)jv_get_int(it, "port", AIC_BT_CHANNEL_MIN);
-        list[n].channel = AIC_CH_BLUETOOTH;
+        dsc_strlcpy_utf8(list[n].addr, sizeof(list[n].addr), jv_get_str(it, "addr", ""));
+        dsc_strlcpy_utf8(list[n].name, sizeof(list[n].name), jv_get_str(it, "name", ""));
+        dsc_strlcpy_utf8(list[n].device_id, sizeof(list[n].device_id), jv_get_str(it, "addr", ""));
+        list[n].port = (int)jv_get_int(it, "port", DSC_BT_CHANNEL_MIN);
+        list[n].channel = DSC_CH_BLUETOOTH;
         if (list[n].addr[0]) n++;
     }
     jv_free(root);
-    aic_bt_peers_set(list, n);
+    dsc_bt_peers_set(list, n);
     sb_reset(out);
     {
         jw w;
@@ -2655,7 +2655,7 @@ static void cmd_bt_peers_set(const char *json, sb *out)
 
 static void cmd_bt_detach(sb *out)
 {
-    aic_bt_detach();
+    dsc_bt_detach();
     reply_sync(out, "蓝牙链路已清理");
 }
 
@@ -2664,16 +2664,16 @@ static void cmd_sync_channel(int channel, sb *out)
 {
     int rc;
 
-    if (ensure_session() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_session() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     pthread_mutex_lock(&g_sync_mtx);
-    rc = aic_session_use_channel(g_sess, channel);
+    rc = dsc_session_use_channel(g_sess, channel);
     pthread_mutex_unlock(&g_sync_mtx);
-    if (rc != AIC_OK) {
+    if (rc != DSC_OK) {
         reply_err(out, "链路已经建立，先解除配对或等当前连接结束后再换通道");
         return;
     }
-    reply_sync(out, channel == AIC_CH_BLUETOOTH ? "同步通道：蓝牙 RFCOMM"
-                                    : (channel == AIC_CH_LAN ? "同步通道：局域网" : "同步通道：自动"));
+    reply_sync(out, channel == DSC_CH_BLUETOOTH ? "同步通道：蓝牙 RFCOMM"
+                                    : (channel == DSC_CH_LAN ? "同步通道：局域网" : "同步通道：自动"));
 }
 
 static void cmd_conflict_list(sb *out)
@@ -2681,9 +2681,9 @@ static void cmd_conflict_list(sb *out)
     sb items;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     sb_init(&items);
-    if (aic_sync_conflicts_json(g_db, &items) != AIC_OK) sb_reset(&items);
+    if (dsc_sync_conflicts_json(g_db, &items) != DSC_OK) sb_reset(&items);
     if (!sb_cstr(&items)[0]) sb_append(&items, "[]");
     sb_reset(out);
     jw_init(&w, out, 0);
@@ -2702,11 +2702,11 @@ static void cmd_conflict_list(sb *out)
  * ========================================================================== */
 
 /* 知识库首次使用时解析一次；失败按"功能不可用"处理，不影响其它页面。 */
-static aic_kb *kb_get(void)
+static dsc_kb *kb_get(void)
 {
     char err[256] = { 0 };
     if (g_kb) return g_kb;
-    if (aic_kb_load(&g_kb, err, sizeof(err)) != AIC_OK) {
+    if (dsc_kb_load(&g_kb, err, sizeof(err)) != DSC_OK) {
         JLOG("内置知识库载入失败：%s", err[0] ? err : "未知原因");
         g_kb = NULL;
     }
@@ -2716,7 +2716,7 @@ static aic_kb *kb_get(void)
 /* kbOpen：章节树 + 书签/最近阅读。知识包随包分发，不联网（§17）。 */
 static void cmd_kb_open(sb *out)
 {
-    aic_kb *kb = kb_get();
+    dsc_kb *kb = kb_get();
     sb bm, rc;
     jw w;
     int gi, ai;
@@ -2724,36 +2724,36 @@ static void cmd_kb_open(sb *out)
     if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
     sb_init(&bm);
     sb_init(&rc);
-    aic_kb_bookmark_list(g_db, &bm);
-    aic_kb_recent_list(g_db, &rc);
+    dsc_kb_bookmark_list(g_db, &bm);
+    dsc_kb_recent_list(g_db, &rc);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
-    jw_put_str(&w, "version", aic_kb_version(kb));
-    jw_put_str(&w, "updatedAt", aic_kb_updated_at(kb));
-    jw_put_str(&w, "changelog", aic_kb_changelog(kb));
+    jw_put_str(&w, "version", dsc_kb_version(kb));
+    jw_put_str(&w, "updatedAt", dsc_kb_updated_at(kb));
+    jw_put_str(&w, "changelog", dsc_kb_changelog(kb));
     jw_put_raw(&w, "bookmarks", sb_cstr(&bm));
     jw_put_raw(&w, "recent", sb_cstr(&rc));
-    jw_put_int(&w, "bookmarkCount", (long long)aic_kb_bookmark_count(g_db));
+    jw_put_int(&w, "bookmarkCount", (long long)dsc_kb_bookmark_count(g_db));
     jw_arr_begin(&w, "groups");
-    for (gi = 0; gi < aic_kb_group_count(kb); gi++) {
-        const aic_kb_group *gr = aic_kb_group_at(kb, gi);
+    for (gi = 0; gi < dsc_kb_group_count(kb); gi++) {
+        const dsc_kb_group *gr = dsc_kb_group_at(kb, gi);
         if (!gr) continue;
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "id", gr->id);
         jw_put_str(&w, "title", gr->title);
         jw_put_str(&w, "summary", gr->summary);
         jw_arr_begin(&w, "articles");
-        for (ai = 0; ai < aic_kb_article_count(kb, gi); ai++) {
-            const aic_kb_article *ar = aic_kb_article_at(kb, gi, ai);
+        for (ai = 0; ai < dsc_kb_article_count(kb, gi); ai++) {
+            const dsc_kb_article *ar = dsc_kb_article_at(kb, gi, ai);
             if (!ar) continue;
             jw_obj_begin(&w, NULL);
             jw_put_str(&w, "id", ar->id);
             jw_put_str(&w, "title", ar->title);
             jw_put_str(&w, "summary", ar->summary);
-            jw_put_bool(&w, "bookmarked", aic_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
+            jw_put_bool(&w, "bookmarked", dsc_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
             jw_obj_end(&w);
         }
         jw_arr_end(&w);
@@ -2768,15 +2768,15 @@ static void cmd_kb_open(sb *out)
 /* kbArticle：一篇的正文档段、示意图节点、示例、要点、来源（FR-32）。 */
 static void cmd_kb_article(const char *id, sb *out)
 {
-    aic_kb *kb = kb_get();
-    const aic_kb_article *ar;
+    dsc_kb *kb = kb_get();
+    const dsc_kb_article *ar;
     jw w;
     int i, n;
 
     if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
-    ar = aic_kb_find(kb, id ? id : "");
+    ar = dsc_kb_find(kb, id ? id : "");
     if (!ar) { reply_err(out, "知识条目不存在"); return; }
-    aic_kb_recent_push(g_db, ar->id);
+    dsc_kb_recent_push(g_db, ar->id);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2786,13 +2786,13 @@ static void cmd_kb_article(const char *id, sb *out)
     jw_put_str(&w, "title", ar->title);
     jw_put_str(&w, "summary", ar->summary);
     jw_put_str(&w, "example", ar->example);
-    jw_put_bool(&w, "bookmarked", aic_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
+    jw_put_bool(&w, "bookmarked", dsc_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
     jw_arr_begin(&w, "paragraphs");
-    n = aic_kb_paragraph_count(ar);
+    n = dsc_kb_paragraph_count(ar);
     for (i = 0; i < n; i++) {
         int len = 0;
-        const char *p = aic_kb_paragraph(ar, i, &len);
-        char buf[AIC_KB_BODY_CAP + 1];
+        const char *p = dsc_kb_paragraph(ar, i, &len);
+        char buf[DSC_KB_BODY_CAP + 1];
         if (!p || len <= 0) continue;
         if ((size_t)len > sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
         memcpy(buf, p, (size_t)len);
@@ -2823,7 +2823,7 @@ static void cmd_kb_article(const char *id, sb *out)
     jw_arr_end(&w);
     jw_arr_begin(&w, "points");
     {
-        char line[AIC_KB_POINT_CAP];
+        char line[DSC_KB_POINT_CAP];
         size_t k = 0;
         const char *s = ar->points;
         while (s && *s) {
@@ -2844,14 +2844,14 @@ static void cmd_kb_article(const char *id, sb *out)
     jw_arr_begin(&w, "sources");
     for (i = 0; i < ar->source_n; i++) {
         char sl[480];
-        const aic_kb_source *src = &ar->sources[i];
+        const dsc_kb_source *src = &ar->sources[i];
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "title", src->title);
         jw_put_str(&w, "author", src->author);
         jw_put_str(&w, "url", src->url);
         jw_put_str(&w, "license", src->license);
         jw_put_str(&w, "date", src->date);
-        jw_put_str(&w, "line", aic_kb_source_line(src, sl, sizeof(sl)));
+        jw_put_str(&w, "line", dsc_kb_source_line(src, sl, sizeof(sl)));
         jw_obj_end(&w);
     }
     jw_arr_end(&w);
@@ -2861,7 +2861,7 @@ static void cmd_kb_article(const char *id, sb *out)
 /* kbSearch：中文两字词 + 英文整词，标题权重最高（§17 全文检索）。 */
 static void cmd_kb_search(const char *q, sb *out)
 {
-    aic_kb *kb = kb_get();
+    dsc_kb *kb = kb_get();
     char ids[32][64];
     int n, i, hit = 0;
     jw w;
@@ -2869,7 +2869,7 @@ static void cmd_kb_search(const char *q, sb *out)
     if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
     if (!q || !q[0]) { reply_err(out, "请先输入要检索的关键词"); return; }
     memset(ids, 0, sizeof(ids));
-    n = aic_kb_search(kb, q, &ids[0][0], sizeof(ids[0]), 32, &hit);
+    n = dsc_kb_search(kb, q, &ids[0][0], sizeof(ids[0]), 32, &hit);
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2878,7 +2878,7 @@ static void cmd_kb_search(const char *q, sb *out)
     jw_put_int(&w, "count", (long long)hit);
     jw_arr_begin(&w, "hits");
     for (i = 0; i < n && i < 32; i++) {
-        const aic_kb_article *ar = aic_kb_find(kb, ids[i]);
+        const dsc_kb_article *ar = dsc_kb_find(kb, ids[i]);
         if (!ar) continue;
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "id", ar->id);
@@ -2897,7 +2897,7 @@ static void cmd_kb_bookmark(const char *id, sb *out)
     jw w;
 
     if (!kb_get()) { reply_err(out, "内置知识库载入失败"); return; }
-    if (aic_kb_bookmark_toggle(g_db, id ? id : "", &on) != AIC_OK) {
+    if (dsc_kb_bookmark_toggle(g_db, id ? id : "", &on) != DSC_OK) {
         reply_err(out, "书签保存失败");
         return;
     }
@@ -2907,27 +2907,27 @@ static void cmd_kb_bookmark(const char *id, sb *out)
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
     jw_put_bool(&w, "on", on);
-    jw_put_int(&w, "count", (long long)aic_kb_bookmark_count(g_db));
+    jw_put_int(&w, "count", (long long)dsc_kb_bookmark_count(g_db));
     jw_obj_end(&w);
 }
 
 /* kbCite：把选中的那一段 + 一行来源写成注入片段（不携全文）。 */
 static void cmd_kb_cite(const char *id, int para, sb *out)
 {
-    aic_kb *kb = kb_get();
+    dsc_kb *kb = kb_get();
     sb frag;
     jw w;
     int rc;
 
     if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
     sb_init(&frag);
-    rc = aic_kb_cite(kb, id ? id : "", para, &frag);
-    if (rc != AIC_OK) {
+    rc = dsc_kb_cite(kb, id ? id : "", para, &frag);
+    if (rc != DSC_OK) {
         sb_free(&frag);
-        reply_err(out, rc == AIC_E_NOTFOUND ? "知识条目不存在" : "该段不能被引用");
+        reply_err(out, rc == DSC_E_NOTFOUND ? "知识条目不存在" : "该段不能被引用");
         return;
     }
-    aic_setting_set(g_db, AIC_SET_KB_CITE, sb_cstr(&frag));
+    dsc_setting_set(g_db, DSC_SET_KB_CITE, sb_cstr(&frag));
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -2941,8 +2941,8 @@ static void cmd_kb_cite(const char *id, int para, sb *out)
 /* kbCiteClear：清掉注入区里的引用片段。 */
 static void cmd_kb_cite_clear(sb *out)
 {
-    int rc = aic_setting_del(g_db, AIC_SET_KB_CITE);
-    if (rc != AIC_OK && rc != AIC_E_NOTFOUND) { reply_err(out, "清除引用失败"); return; }
+    int rc = dsc_setting_del(g_db, DSC_SET_KB_CITE);
+    if (rc != DSC_OK && rc != DSC_E_NOTFOUND) { reply_err(out, "清除引用失败"); return; }
     reply_ok(out);
 }
 
@@ -2952,24 +2952,24 @@ static void cmd_kb_cite_clear(sb *out)
 static void record_llm_error(int le, const char *msg, const char *conv, const char *detail)
 {
     if (!g_db) return;
-    aic_error_record(g_db, g_dir, aic_error_category_from_llm(le), aic_error_code_from_llm(le),
+    dsc_error_record(g_db, g_dir, dsc_error_category_from_llm(le), dsc_error_code_from_llm(le),
                      msg, (conv && conv[0]) ? conv : NULL, NULL, detail, NULL);
 }
 
 static void cmd_error_list(const char *category, int only_unack, int limit, sb *out)
 {
-    aic_error_filter f;
-    aic_error_entry items[64];
+    dsc_error_filter f;
+    dsc_error_entry items[64];
     int n = 0, i;
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     memset(&f, 0, sizeof(f));
     f.category = (category && category[0] && strcmp(category, "all") != 0) ? category : NULL;
     f.only_unack = only_unack ? 1 : 0;
     f.limit = (limit > 0) ? limit : 64;
     memset(items, 0, sizeof(items));
-    if (aic_error_query(g_db, &f, items, 64, &n) != AIC_OK) {
+    if (dsc_error_query(g_db, &f, items, 64, &n) != DSC_OK) {
         reply_err(out, "读取错误中心失败");
         return;
     }
@@ -2978,24 +2978,24 @@ static void cmd_error_list(const char *category, int only_unack, int limit, sb *
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
-    jw_put_int(&w, "unread", (long long)aic_error_unread(g_db));
-    jw_put_int(&w, "total", (long long)aic_error_count(g_db, 0));
-    jw_put_int(&w, "retention", (long long)aic_error_retention_days(g_db));
+    jw_put_int(&w, "unread", (long long)dsc_error_unread(g_db));
+    jw_put_int(&w, "total", (long long)dsc_error_count(g_db, 0));
+    jw_put_int(&w, "retention", (long long)dsc_error_retention_days(g_db));
     jw_arr_begin(&w, "items");
     for (i = 0; i < n && i < 64; i++) {
-        aic_error_action act = aic_error_action_for(items[i].category);
+        dsc_error_action act = dsc_error_action_for(items[i].category);
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "id", items[i].id);
         jw_put_str(&w, "time", items[i].occurred_at);
         jw_put_str(&w, "category", items[i].category);
-        jw_put_str(&w, "categoryText", aic_error_category_text(items[i].category));
+        jw_put_str(&w, "categoryText", dsc_error_category_text(items[i].category));
         jw_put_str(&w, "code", items[i].code);
         jw_put_str(&w, "message", items[i].message);
         jw_put_str(&w, "conv", items[i].conversation_id);
         jw_put_str(&w, "detail", items[i].detail_path);
         jw_put_bool(&w, "ack", items[i].acknowledged);
         jw_put_int(&w, "action", (long long)act);
-        jw_put_str(&w, "actionText", aic_error_action_text(act));
+        jw_put_str(&w, "actionText", dsc_error_action_text(act));
         jw_obj_end(&w);
     }
     jw_arr_end(&w);
@@ -3004,7 +3004,7 @@ static void cmd_error_list(const char *category, int only_unack, int limit, sb *
 
 static void cmd_error_ack(sb *out)
 {
-    if (aic_error_ack_all(g_db) != AIC_OK) { reply_err(out, "标记已读失败"); return; }
+    if (dsc_error_ack_all(g_db) != DSC_OK) { reply_err(out, "标记已读失败"); return; }
     reply_ok(out);
 }
 
@@ -3013,7 +3013,7 @@ static void cmd_error_clear(long long before_ms, sb *out)
     int removed = 0;
     jw w;
 
-    if (aic_error_clear(g_db, (int64_t)before_ms, &removed) != AIC_OK) {
+    if (dsc_error_clear(g_db, (int64_t)before_ms, &removed) != DSC_OK) {
         reply_err(out, "清除失败");
         return;
     }
@@ -3034,8 +3034,8 @@ static void cmd_error_diag(const char *path, sb *out)
     jw w;
 
     if (!path || !path[0]) { reply_err(out, "诊断包路径为空"); return; }
-    rc = aic_error_export_diagnostic(g_db, path, err, sizeof(err));
-    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导出诊断包失败"); return; }
+    rc = dsc_error_export_diagnostic(g_db, path, err, sizeof(err));
+    if (rc != DSC_OK) { reply_err(out, err[0] ? err : "导出诊断包失败"); return; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
@@ -3053,31 +3053,31 @@ static int android_cap_value(const char *kind, char *buf, size_t cap)
 {
     char key[64];
     char v[1024];
-    if (!g_db) return AIC_E_STATE;
+    if (!g_db) return DSC_E_STATE;
     snprintf(key, sizeof(key), "capability.%s.value", kind);
     v[0] = 0;
-    if (aic_setting_get(g_db, key, v, sizeof(v)) != AIC_OK || !v[0]) return AIC_E_STATE;
-    aic_strlcpy_utf8(buf, cap, v);
-    return AIC_OK;
+    if (dsc_setting_get(g_db, key, v, sizeof(v)) != DSC_OK || !v[0]) return DSC_E_STATE;
+    dsc_strlcpy_utf8(buf, cap, v);
+    return DSC_OK;
 }
 
 /* provider 的五个回调不带能力名，各自转一次。 */
 static int cap_prov_location(char *buf, size_t cap, void *ud)
-{ (void)ud; return android_cap_value(AIC_CAP_LOCATION, buf, cap); }
+{ (void)ud; return android_cap_value(DSC_CAP_LOCATION, buf, cap); }
 static int cap_prov_weather(char *buf, size_t cap, void *ud)
-{ (void)ud; return android_cap_value(AIC_CAP_WEATHER, buf, cap); }
+{ (void)ud; return android_cap_value(DSC_CAP_WEATHER, buf, cap); }
 static int cap_prov_media(char *buf, size_t cap, void *ud)
-{ (void)ud; return android_cap_value(AIC_CAP_MEDIA, buf, cap); }
+{ (void)ud; return android_cap_value(DSC_CAP_MEDIA, buf, cap); }
 static int cap_prov_apps(char *buf, size_t cap, void *ud)
-{ (void)ud; return android_cap_value(AIC_CAP_APPS, buf, cap); }
+{ (void)ud; return android_cap_value(DSC_CAP_APPS, buf, cap); }
 static int cap_prov_files(char *buf, size_t cap, void *ud)
-{ (void)ud; return android_cap_value(AIC_CAP_FILES, buf, cap); }
+{ (void)ud; return android_cap_value(DSC_CAP_FILES, buf, cap); }
 
 /* 时间走核心自带的本地时钟（真实现）；位置与天气、图片、软件列表、文件
  * 在 Android 上必须由 Java 侧取（权限与选择器都在 Java），核心只读用户选中的那一条。 */
 static void install_cap_provider(void)
 {
-    aic_cap_provider p;
+    dsc_cap_provider p;
     memset(&p, 0, sizeof(p));
     p.time_now = NULL;
     p.location = cap_prov_location;
@@ -3086,35 +3086,35 @@ static void install_cap_provider(void)
     p.apps_pick = cap_prov_apps;
     p.files_pick = cap_prov_files;
     p.ud = NULL;
-    aic_cap_set_provider(&p);
+    dsc_cap_set_provider(&p);
 }
 
 static void cmd_cap_list(sb *out)
 {
-    size_t i, n = aic_cap_count();
+    size_t i, n = dsc_cap_count();
     jw w;
 
-    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    if (ensure_env() != DSC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
-    jw_put_bool(&w, "launchGate", aic_cap_launch_gate(g_db) ? 1 : 0);
+    jw_put_bool(&w, "launchGate", dsc_cap_launch_gate(g_db) ? 1 : 0);
     jw_arr_begin(&w, "items");
     for (i = 0; i < n; i++) {
-        const char *kind = aic_cap_kind_at(i);
-        aic_cap_status st;
+        const char *kind = dsc_cap_kind_at(i);
+        dsc_cap_status st;
         memset(&st, 0, sizeof(st));
-        if (aic_cap_status_load(g_db, kind, &st) != AIC_OK) aic_strlcpy_utf8(st.state, sizeof(st.state), "unset");
+        if (dsc_cap_status_load(g_db, kind, &st) != DSC_OK) dsc_strlcpy_utf8(st.state, sizeof(st.state), "unset");
         jw_obj_begin(&w, NULL);
         jw_put_str(&w, "kind", kind);
-        jw_put_str(&w, "name", aic_cap_name(kind));
-        jw_put_str(&w, "purpose", aic_cap_purpose(kind));
+        jw_put_str(&w, "name", dsc_cap_name(kind));
+        jw_put_str(&w, "purpose", dsc_cap_purpose(kind));
         jw_put_str(&w, "state", st.state);
         jw_put_bool(&w, "granted", st.granted);
-        jw_put_bool(&w, "required", aic_cap_required(kind));
-        jw_put_bool(&w, "revocable", aic_cap_revocable(kind));
+        jw_put_bool(&w, "required", dsc_cap_required(kind));
+        jw_put_bool(&w, "revocable", dsc_cap_revocable(kind));
         jw_put_str(&w, "lastUsed", st.last_used_at);
         jw_put_int(&w, "denyCount", (long long)st.deny_count);
         jw_obj_end(&w);
@@ -3130,16 +3130,16 @@ static void cmd_cap_request(const char *kind, sb *out)
     int rc;
     jw w;
 
-    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
-    rc = aic_cap_request(g_db, kind, purpose, sizeof(purpose));
-    if (rc != AIC_OK) { reply_err(out, "能力申请失败"); return; }
+    if (!dsc_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = dsc_cap_request(g_db, kind, purpose, sizeof(purpose));
+    if (rc != DSC_OK) { reply_err(out, "能力申请失败"); return; }
     sb_reset(out);
     jw_init(&w, out, 0);
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
     jw_put_str(&w, "kind", kind);
-    jw_put_str(&w, "name", aic_cap_name(kind));
+    jw_put_str(&w, "name", dsc_cap_name(kind));
     jw_put_str(&w, "purpose", purpose);
     jw_obj_end(&w);
 }
@@ -3147,28 +3147,28 @@ static void cmd_cap_request(const char *kind, sb *out)
 static void cmd_cap_grant(const char *kind, sb *out)
 {
     int rc;
-    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
-    rc = aic_cap_grant(g_db, kind, aic_now_ms());
-    if (rc != AIC_OK) { reply_err(out, "授予失败"); return; }
+    if (!dsc_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = dsc_cap_grant(g_db, kind, dsc_now_ms());
+    if (rc != DSC_OK) { reply_err(out, "授予失败"); return; }
     reply_ok(out);
 }
 
 static void cmd_cap_deny(const char *kind, sb *out)
 {
     int rc;
-    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
-    rc = aic_cap_deny(g_db, kind);
-    if (rc != AIC_OK) { reply_err(out, "记录拒绝失败"); return; }
+    if (!dsc_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = dsc_cap_deny(g_db, kind);
+    if (rc != DSC_OK) { reply_err(out, "记录拒绝失败"); return; }
     reply_ok(out);
 }
 
 static void cmd_cap_revoke(const char *kind, sb *out)
 {
     int rc;
-    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
-    rc = aic_cap_revoke(g_db, kind);
-    if (rc == AIC_E_STATE) { reply_err(out, "时间能力是必需的，不能撤销"); return; }
-    if (rc != AIC_OK) { reply_err(out, "撤销失败"); return; }
+    if (!dsc_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = dsc_cap_revoke(g_db, kind);
+    if (rc == DSC_E_STATE) { reply_err(out, "时间能力是必需的，不能撤销"); return; }
+    if (rc != DSC_OK) { reply_err(out, "撤销失败"); return; }
     reply_ok(out);
 }
 
@@ -3178,17 +3178,17 @@ static void cmd_cap_provide(const char *kind, const char *text, sb *out)
     char key[64];
     int rc;
 
-    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
-    if (strcmp(kind, AIC_CAP_TIME) == 0) { reply_err(out, "时间能力由本机时钟提供"); return; }
+    if (!dsc_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    if (strcmp(kind, DSC_CAP_TIME) == 0) { reply_err(out, "时间能力由本机时钟提供"); return; }
     snprintf(key, sizeof(key), "capability.%s.value", kind);
     if (!text || !text[0]) {
-        rc = aic_setting_del(g_db, key);
-        if (rc != AIC_OK && rc != AIC_E_NOTFOUND) { reply_err(out, "清除失败"); return; }
+        rc = dsc_setting_del(g_db, key);
+        if (rc != DSC_OK && rc != DSC_E_NOTFOUND) { reply_err(out, "清除失败"); return; }
         reply_ok(out);
         return;
     }
-    rc = aic_setting_set(g_db, key, text);
-    if (rc != AIC_OK) { reply_err(out, "保存失败"); return; }
+    rc = dsc_setting_set(g_db, key, text);
+    if (rc != DSC_OK) { reply_err(out, "保存失败"); return; }
     reply_ok(out);
 }
 
@@ -3196,12 +3196,12 @@ static void cmd_cap_provide(const char *kind, const char *text, sb *out)
 
 static void cmd_memory_list(const char *query, sb *out)
 {
-    aic_mem_entry items[32];
+    dsc_mem_entry items[32];
     int n = 0, i;
     jw w;
 
     memset(items, 0, sizeof(items));
-    if (aic_mem_search(g_db, query ? query : "", items, 32, &n) != AIC_OK) {
+    if (dsc_mem_search(g_db, query ? query : "", items, 32, &n) != DSC_OK) {
         reply_err(out, "读取记忆失败");
         return;
     }
@@ -3210,7 +3210,7 @@ static void cmd_memory_list(const char *query, sb *out)
     jw_obj_begin(&w, NULL);
     jw_put_bool(&w, "ok", 1);
     jw_put_str(&w, "err", "");
-    jw_put_int(&w, "count", (long long)aic_mem_count(g_db));
+    jw_put_int(&w, "count", (long long)dsc_mem_count(g_db));
     jw_arr_begin(&w, "items");
     for (i = 0; i < n && i < 32; i++) {
         jw_obj_begin(&w, NULL);
@@ -3226,7 +3226,7 @@ static void cmd_memory_list(const char *query, sb *out)
 
 static void cmd_memory_clear(sb *out)
 {
-    if (aic_mem_clear(g_db) != AIC_OK) { reply_err(out, "清空记忆失败"); return; }
+    if (dsc_mem_clear(g_db) != DSC_OK) { reply_err(out, "清空记忆失败"); return; }
     reply_ok(out);
 }
 
@@ -3238,7 +3238,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
     int rc;
 
     g_err[0] = 0;
-    if (jv_parse(req_text, req_len, &root, perr, sizeof(perr)) != AIC_OK) {
+    if (jv_parse(req_text, req_len, &root, perr, sizeof(perr)) != DSC_OK) {
         reply_err(out, "请求不是合法 JSON");
         return;
     }
@@ -3246,86 +3246,86 @@ static void handle(const char *req_text, size_t req_len, sb *out)
     (void)rc;
 
     if (strcmp(cmd, "init") == 0) {
-        aic_strlcpy_utf8(g_dir, sizeof(g_dir), jv_get_str(root, "dir", ""));
+        dsc_strlcpy_utf8(g_dir, sizeof(g_dir), jv_get_str(root, "dir", ""));
         rc = ensure_env();
-        if (rc != AIC_OK) reply_err(out, g_err[0] ? g_err : aic_strerror(rc));
+        if (rc != DSC_OK) reply_err(out, g_err[0] ? g_err : dsc_strerror(rc));
         else {
             /* models.json（技术设计 9.3）：存在就加载，失败只记日志，不影响启动。 */
             char mpath[600];
-            aic_path_join(mpath, sizeof(mpath), g_dir, "models.json");
-            if (aic_path_exists(mpath)) {
+            dsc_path_join(mpath, sizeof(mpath), g_dir, "models.json");
+            if (dsc_path_exists(mpath)) {
                 char merr[256] = { 0 };
-                if (aic_llm_models_load_file(mpath, merr, sizeof(merr)) != AIC_OK) {
+                if (dsc_llm_models_load_file(mpath, merr, sizeof(merr)) != DSC_OK) {
                     JLOG("models.json 加载失败，已忽略：%s", merr[0] ? merr : "未知原因");
                 }
             }
             reply_ok(out);
         }
     } else if (strcmp(cmd, "state") == 0) {
-        if (ensure_env() != AIC_OK) { reply_err(out, g_err); }
+        if (ensure_env() != DSC_OK) { reply_err(out, g_err); }
         else build_state(out);
     } else if (strcmp(cmd, "switchMode") == 0) {
-        aic_mode target = strcmp(jv_get_str(root, "mode", "chat"), "qa") == 0
-                          ? AIC_MODE_QA : AIC_MODE_CHAT;
-        rc = aic_router_switch_mode(g_router, target);
-        if (rc == AIC_E_BUSY) reply_err(out, "正在切换中，请稍候");
-        else if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
-        else { aic_router_finish_switch(g_router); g_conv[0] = 0; reply_ok(out); }
+        dsc_mode target = strcmp(jv_get_str(root, "mode", "chat"), "qa") == 0
+                          ? DSC_MODE_QA : DSC_MODE_CHAT;
+        rc = dsc_router_switch_mode(g_router, target);
+        if (rc == DSC_E_BUSY) reply_err(out, "正在切换中，请稍候");
+        else if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
+        else { dsc_router_finish_switch(g_router); g_conv[0] = 0; reply_ok(out); }
     } else if (strcmp(cmd, "setTab") == 0) {
-        rc = aic_router_set_tab(g_router, (aic_tab)jv_get_int(root, "tab", AIC_TAB_CHAT));
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_router_set_tab(g_router, (dsc_tab)jv_get_int(root, "tab", DSC_TAB_CHAT));
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "openThread") == 0) {
         const char *id = jv_get_str(root, "id", "");
-        rc = aic_router_set_thread(g_router, id);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
-        else { aic_strlcpy_utf8(g_conv, sizeof(g_conv), id); reply_ok(out); }
+        rc = dsc_router_set_thread(g_router, id);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
+        else { dsc_strlcpy_utf8(g_conv, sizeof(g_conv), id); reply_ok(out); }
     } else if (strcmp(cmd, "closeThread") == 0) {
-        aic_router_set_thread(g_router, "");
+        dsc_router_set_thread(g_router, "");
         g_conv[0] = 0;
         reply_ok(out);
     } else if (strcmp(cmd, "newThread") == 0) {
-        aic_conversation c;
+        dsc_conversation c;
         char title[128];
         snprintf(title, sizeof(title), "%s", jv_get_str(root, "title", "新会话"));
-        rc = aic_conv_create(g_db, AIC_MODE_QA, title, "", AIC_MODEL_FLASH, &c);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
+        rc = dsc_conv_create(g_db, DSC_MODE_QA, title, "", DSC_MODEL_FLASH, &c);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
         else {
-            aic_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
-            aic_router_set_thread(g_router, c.id);
-            sync_touch(AIC_ENT_CONVERSATION, AIC_OP_CREATE, c.id);
+            dsc_strlcpy_utf8(g_conv, sizeof(g_conv), c.id);
+            dsc_router_set_thread(g_router, c.id);
+            sync_touch(DSC_ENT_CONVERSATION, DSC_OP_CREATE, c.id);
             reply_ok(out);
         }
     } else if (strcmp(cmd, "send") == 0) {
         cmd_send(jv_get_str(root, "text", ""), out);
     } else if (strcmp(cmd, "recall") == 0) {
         char err[256] = { 0 };
-        rc = aic_engine_recall(g_eng, jv_get_str(root, "id", ""),
-                               aic_setting_get_int(g_db, AIC_SET_RECALL_WINDOW,
-                                                   AIC_RECALL_WINDOW_DEFAULT), err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
-        else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_RECALL, jv_get_str(root, "id", "")); reply_ok(out); }
+        rc = dsc_engine_recall(g_eng, jv_get_str(root, "id", ""),
+                               dsc_setting_get_int(g_db, DSC_SET_RECALL_WINDOW,
+                                                   DSC_RECALL_WINDOW_DEFAULT), err, sizeof(err));
+        if (rc != DSC_OK) reply_err(out, err[0] ? err : dsc_strerror(rc));
+        else { sync_touch(DSC_ENT_MESSAGE, DSC_OP_RECALL, jv_get_str(root, "id", "")); reply_ok(out); }
     } else if (strcmp(cmd, "edit") == 0) {
         /* FR-36：改 AI 发言要在同一事务里重建记忆（先删后抽），改用户发言不动记忆。 */
         char err[256] = { 0 };
         const char *mid = jv_get_str(root, "id", "");
-        aic_message em;
+        dsc_message em;
         int is_ai = 0;
         memset(&em, 0, sizeof(em));
-        if (aic_msg_get(g_db, mid, &em) == AIC_OK) {
-            is_ai = strcmp(em.role, aic_role_name(AIC_ROLE_ASSISTANT)) == 0;
-            aic_msg_free(&em);
+        if (dsc_msg_get(g_db, mid, &em) == DSC_OK) {
+            is_ai = strcmp(em.role, dsc_role_name(DSC_ROLE_ASSISTANT)) == 0;
+            dsc_msg_free(&em);
         }
         if (is_ai) {
             int removed = 0, added = 0;
             jw ew;
-            rc = aic_engine_edit_ai(g_eng, mid, jv_get_str(root, "text", ""),
+            rc = dsc_engine_edit_ai(g_eng, mid, jv_get_str(root, "text", ""),
                                     &removed, &added, err, sizeof(err));
-            if (rc != AIC_OK) {
-                reply_err(out, err[0] ? err : aic_strerror(rc));
+            if (rc != DSC_OK) {
+                reply_err(out, err[0] ? err : dsc_strerror(rc));
             } else {
                 /* 记忆替换也走同步实体 memory（§16.4 修改 op 的扩展），两端记忆保持一致。 */
-                sync_touch(AIC_ENT_MEMORY, AIC_OP_UPDATE, mid);
-                sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, mid);
+                sync_touch(DSC_ENT_MEMORY, DSC_OP_UPDATE, mid);
+                sync_touch(DSC_ENT_MESSAGE, DSC_OP_EDIT, mid);
                 sb_reset(out);
                 jw_init(&ew, out, 0);
                 jw_obj_begin(&ew, NULL);
@@ -3337,38 +3337,38 @@ static void handle(const char *req_text, size_t req_len, sb *out)
                 jw_obj_end(&ew);
             }
         } else {
-            rc = aic_engine_edit(g_eng, mid, jv_get_str(root, "text", ""), err, sizeof(err));
-            if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
-            else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, mid); reply_ok(out); }
+            rc = dsc_engine_edit(g_eng, mid, jv_get_str(root, "text", ""), err, sizeof(err));
+            if (rc != DSC_OK) reply_err(out, err[0] ? err : dsc_strerror(rc));
+            else { sync_touch(DSC_ENT_MESSAGE, DSC_OP_EDIT, mid); reply_ok(out); }
         }
     } else if (strcmp(cmd, "setProfile") == 0) {
-        aic_profile p;
+        dsc_profile p;
         char err[256] = { 0 };
         memset(&p, 0, sizeof(p));
-        aic_profile_get(g_db, &p);
-        aic_strlcpy_utf8(p.name, sizeof(p.name), jv_get_str(root, "name", p.name));
-        aic_strlcpy_utf8(p.gender, sizeof(p.gender), jv_get_str(root, "gender", p.gender));
-        aic_strlcpy_utf8(p.birthday, sizeof(p.birthday), jv_get_str(root, "birthday", p.birthday));
-        aic_strlcpy_utf8(p.occupation, sizeof(p.occupation),
+        dsc_profile_get(g_db, &p);
+        dsc_strlcpy_utf8(p.name, sizeof(p.name), jv_get_str(root, "name", p.name));
+        dsc_strlcpy_utf8(p.gender, sizeof(p.gender), jv_get_str(root, "gender", p.gender));
+        dsc_strlcpy_utf8(p.birthday, sizeof(p.birthday), jv_get_str(root, "birthday", p.birthday));
+        dsc_strlcpy_utf8(p.occupation, sizeof(p.occupation),
                          jv_get_str(root, "occupation", p.occupation));
-        aic_strlcpy_utf8(p.extra_note, sizeof(p.extra_note),
+        dsc_strlcpy_utf8(p.extra_note, sizeof(p.extra_note),
                          jv_get_str(root, "extraNote", p.extra_note));
-        rc = aic_profile_set(g_db, &p, err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
-        else { sync_touch(AIC_ENT_PROFILE, AIC_OP_UPDATE, "1"); reply_ok(out); }
+        rc = dsc_profile_set(g_db, &p, err, sizeof(err));
+        if (rc != DSC_OK) reply_err(out, err[0] ? err : dsc_strerror(rc));
+        else { sync_touch(DSC_ENT_PROFILE, DSC_OP_UPDATE, "1"); reply_ok(out); }
     } else if (strcmp(cmd, "setPersona") == 0) {
-        aic_persona per, upd;
+        dsc_persona per, upd;
         char err[256] = { 0 };
         memset(&per, 0, sizeof(per));
-        if (aic_persona_ensure_default(g_db, &per) != AIC_OK) { reply_err(out, "人设读取失败"); }
+        if (dsc_persona_ensure_default(g_db, &per) != DSC_OK) { reply_err(out, "人设读取失败"); }
         else {
             memset(&upd, 0, sizeof(upd));
-            rc = aic_persona_update(g_db, per.id,
+            rc = dsc_persona_update(g_db, per.id,
                                     jv_get_str(root, "name", per.name),
                                     jv_get_str(root, "description", per.description),
                                     jv_get_str(root, "prompt", per.base_prompt ? per.base_prompt : ""),
                                     &upd);
-            if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
+            if (rc != DSC_OK) reply_err(out, err[0] ? err : dsc_strerror(rc));
             else {
                 jw w;
                 sb_reset(out);
@@ -3378,61 +3378,61 @@ static void handle(const char *req_text, size_t req_len, sb *out)
                 jw_put_str(&w, "err", "");
                 jw_put_int(&w, "version", upd.current_version);
                 jw_obj_end(&w);
-                sync_touch(AIC_ENT_PERSONA, AIC_OP_UPDATE, upd.id);
-                aic_persona_free(&upd);
+                sync_touch(DSC_ENT_PERSONA, DSC_OP_UPDATE, upd.id);
+                dsc_persona_free(&upd);
             }
-            aic_persona_free(&per);
+            dsc_persona_free(&per);
         }
     } else if (strcmp(cmd, "guideMark") == 0) {
-        rc = aic_guide_mark(g_db, jv_get_str(root, "step", ""), jv_get_bool(root, "skip", 0));
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_guide_mark(g_db, jv_get_str(root, "step", ""), jv_get_bool(root, "skip", 0));
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "guideReset") == 0) {
-        rc = aic_guide_reset(g_db);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_guide_reset(g_db);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "setTheme") == 0) {
         const char *pref = jv_get_str(root, "pref", "day");
         int v = strcmp(pref, "night") == 0 ? 1 : (strcmp(pref, "system") == 0 ? 2 : 0);
-        rc = aic_setting_set_int(g_db, AIC_SET_THEME, v);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
-        else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_THEME); reply_ok(out); }
+        rc = dsc_setting_set_int(g_db, DSC_SET_THEME, v);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
+        else { sync_touch(DSC_ENT_SETTING, DSC_OP_UPDATE, DSC_SET_THEME); reply_ok(out); }
     } else if (strcmp(cmd, "setMotion") == 0) {
-        rc = aic_setting_set_int(g_db, AIC_SET_MOTION, jv_get_bool(root, "on", 1) ? 1 : 0);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
-        else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_MOTION); reply_ok(out); }
+        rc = dsc_setting_set_int(g_db, DSC_SET_MOTION, jv_get_bool(root, "on", 1) ? 1 : 0);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
+        else { sync_touch(DSC_ENT_SETTING, DSC_OP_UPDATE, DSC_SET_MOTION); reply_ok(out); }
     } else if (strcmp(cmd, "setModel") == 0) {
-        const char *id = jv_get_str(root, "id", AIC_MODEL_FLASH);
-        if (!aic_llm_model_find(id)) reply_err(out, "未知模型");
+        const char *id = jv_get_str(root, "id", DSC_MODEL_FLASH);
+        if (!dsc_llm_model_find(id)) reply_err(out, "未知模型");
         else {
-            rc = aic_setting_set_int(g_db, AIC_SET_MODEL_DEFAULT,
-                                     strcmp(id, AIC_MODEL_PRO) == 0 ? 1 : 0);
-            if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
-            else { sync_touch(AIC_ENT_SETTING, AIC_OP_UPDATE, AIC_SET_MODEL_DEFAULT); reply_ok(out); }
+            rc = dsc_setting_set_int(g_db, DSC_SET_MODEL_DEFAULT,
+                                     strcmp(id, DSC_MODEL_PRO) == 0 ? 1 : 0);
+            if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
+            else { sync_touch(DSC_ENT_SETTING, DSC_OP_UPDATE, DSC_SET_MODEL_DEFAULT); reply_ok(out); }
         }
     } else if (strcmp(cmd, "setKey") == 0) {
         /* Android 侧凭证保存需要系统安全存储（Keystore）；未接入前只在本次进程内使用。 */
         const char *key = jv_get_str(root, "key", "");
-        aic_engine_set_api_key(g_eng, key);
-        aic_strlcpy_utf8(g_key, sizeof(g_key), key);   /* 三段协议要用它拼 Authorization */
-        aic_setting_set(g_db, AIC_SET_CRED_HAS_KEY, (key && key[0]) ? "0" : "0");
+        dsc_engine_set_api_key(g_eng, key);
+        dsc_strlcpy_utf8(g_key, sizeof(g_key), key);   /* 三段协议要用它拼 Authorization */
+        dsc_setting_set(g_db, DSC_SET_CRED_HAS_KEY, (key && key[0]) ? "0" : "0");
         if (key && key[0]) reply_ok(out); else reply_err(out, "API Key 不能为空");
     } else if (strcmp(cmd, "probe") == 0) {
         char err[256] = { 0 };
-        aic_llm_transport tr = demo_transport();
-        aic_llm_err le = tr.probe(tr.ud, "https://api.deepseek.com/chat/completions",
-                                  aic_engine_has_key(g_eng) ? "in-memory" : "", err, sizeof(err));
-        if (le == AIC_LLM_OK) reply_ok(out);
-        else reply_err(out, err[0] ? err : aic_llm_err_text(le));
+        dsc_llm_transport tr = demo_transport();
+        dsc_llm_err le = tr.probe(tr.ud, "https://api.deepseek.com/chat/completions",
+                                  dsc_engine_has_key(g_eng) ? "in-memory" : "", err, sizeof(err));
+        if (le == DSC_LLM_OK) reply_ok(out);
+        else reply_err(out, err[0] ? err : dsc_llm_err_text(le));
     } else if (strcmp(cmd, "export") == 0) {
-        aic_export_scope sc;
+        dsc_export_scope sc;
         char conv_buf[64] = { 0 };
-        if (ensure_env() != AIC_OK) reply_err(out, g_err[0] ? g_err : "初始化失败");
+        if (ensure_env() != DSC_OK) reply_err(out, g_err[0] ? g_err : "初始化失败");
         else if (!fill_export_scope(root, &sc, conv_buf, sizeof(conv_buf)))
             reply_err(out, "没有可导出的当前会话");
         else cmd_export(jv_get_str(root, "kind", "json"), &sc, out);
     } else if (strcmp(cmd, "import") == 0) {
         cmd_import(jv_get_str(root, "path", ""), jv_get_int(root, "policy", 0), out);
     } else if (strcmp(cmd, "back") == 0) {
-        aic_back_action act = aic_router_back(g_router);
+        dsc_back_action act = dsc_router_back(g_router);
         jw w;
         sb_reset(out);
         jw_init(&w, out, 0);
@@ -3441,20 +3441,20 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         jw_put_str(&w, "err", "");
         jw_put_int(&w, "action", (long long)act);
         jw_obj_end(&w);
-        if (act == AIC_BACK_CLOSED_OVERLAY) g_conv[0] = 0;
+        if (act == DSC_BACK_CLOSED_OVERLAY) g_conv[0] = 0;
     } else if (strcmp(cmd, "openOverlay") == 0) {
-        rc = aic_router_open_overlay(g_router, (aic_overlay_kind)jv_get_int(root, "kind", 1));
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_router_open_overlay(g_router, (dsc_overlay_kind)jv_get_int(root, "kind", 1));
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "closeOverlay") == 0) {
-        rc = aic_router_close_overlay(g_router);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_router_close_overlay(g_router);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "deleteThread") == 0) {
-        rc = aic_conv_delete(g_db, jv_get_str(root, "id", ""));
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc));
+        rc = dsc_conv_delete(g_db, jv_get_str(root, "id", ""));
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc));
         else { if (strcmp(g_conv, jv_get_str(root, "id", "")) == 0) g_conv[0] = 0; reply_ok(out); }
     } else if (strcmp(cmd, "pinThread") == 0) {
-        rc = aic_conv_set_pinned(g_db, jv_get_str(root, "id", ""), jv_get_bool(root, "pinned", 1));
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_conv_set_pinned(g_db, jv_get_str(root, "id", ""), jv_get_bool(root, "pinned", 1));
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "balance") == 0) {
         cmd_balance_info(out);
     } else if (strcmp(cmd, "balanceApply") == 0) {
@@ -3470,12 +3470,12 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         jw_put_bool(&w, "ok", 1);
         jw_put_str(&w, "err", "");
         jw_arr_begin(&w, "metrics");
-        for (i = 0; i < AIC_PERF_METRIC_COUNT; i++) {
+        for (i = 0; i < DSC_PERF_METRIC_COUNT; i++) {
             jw_obj_begin(&w, NULL);
-            jw_put_str(&w, "metric", aic_perf_metric_name((aic_perf_metric)i));
+            jw_put_str(&w, "metric", dsc_perf_metric_name((dsc_perf_metric)i));
             jw_put_int(&w, "budget",
-                       (long long)aic_perf_budget_value(AIC_PLATFORM_MOBILE, (aic_perf_metric)i));
-            jw_put_str(&w, "unit", aic_perf_metric_unit((aic_perf_metric)i));
+                       (long long)dsc_perf_budget_value(DSC_PLATFORM_MOBILE, (dsc_perf_metric)i));
+            jw_put_str(&w, "unit", dsc_perf_metric_unit((dsc_perf_metric)i));
             jw_obj_end(&w);
         }
         jw_arr_end(&w);
@@ -3506,8 +3506,8 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_install_update(jv_get_str(root, "path", ""), jv_get_bool(root, "backupOk", 0), out);
     } else if (strcmp(cmd, "setUpdateManifestUrl") == 0) {
         const char *url = jv_get_str(root, "url", "");
-        rc = aic_setting_set(g_db, "update.manifest_url", url);
-        if (rc != AIC_OK) reply_err(out, aic_strerror(rc)); else reply_ok(out);
+        rc = dsc_setting_set(g_db, "update.manifest_url", url);
+        if (rc != DSC_OK) reply_err(out, dsc_strerror(rc)); else reply_ok(out);
     } else if (strcmp(cmd, "backupCreate") == 0) {
         cmd_backup_create(jv_get_str(root, "version", "1.0.0"), out);
     } else if (strcmp(cmd, "backupList") == 0) {
@@ -3517,7 +3517,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
     } else if (strcmp(cmd, "backupClean") == 0) {
         cmd_backup_clean((int)jv_get_int(root, "keep", 5), out);
     } else if (strcmp(cmd, "exportJson") == 0) {
-        aic_export_scope sc;
+        dsc_export_scope sc;
         char conv_buf[64] = { 0 };
         if (!fill_export_scope(root, &sc, conv_buf, sizeof(conv_buf)))
             reply_err(out, "没有可导出的当前会话");
@@ -3540,7 +3540,7 @@ static void handle(const char *req_text, size_t req_len, sb *out)
             sb tmp;
             sb_init(&tmp);
             jv_serialize(ra, &tmp);
-            aic_strlcpy_utf8(rj, sizeof(rj), sb_cstr(&tmp));
+            dsc_strlcpy_utf8(rj, sizeof(rj), sb_cstr(&tmp));
             sb_free(&tmp);
         }
         cmd_plugin_call_point(jv_get_str(root, "point", "ui.panel"), jv_get_str(root, "op", "describe"),
@@ -3553,8 +3553,8 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_load_older(jv_get_str(root, "conv", ""), jv_get_int(root, "beforeSeq", 0), out);
     } else if (strcmp(cmd, "restoreEdit") == 0) {
         /* 撤销修改（FR-07）：content 回滚 original_content，清空 edited_at / original_content。 */
-        rc = aic_msg_restore(g_db, jv_get_str(root, "id", ""));
-        if (rc != AIC_OK) reply_err(out, "这条消息没有可撤销的修改");
+        rc = dsc_msg_restore(g_db, jv_get_str(root, "id", ""));
+        if (rc != DSC_OK) reply_err(out, "这条消息没有可撤销的修改");
         else reply_ok(out);
     } else if (strcmp(cmd, "personaVersions") == 0) {
         cmd_persona_versions(out);
@@ -3571,13 +3571,13 @@ static void handle(const char *req_text, size_t req_len, sb *out)
     } else if (strcmp(cmd, "modeSelect") == 0) {
         cmd_mode_select(jv_get_str(root, "mode", "chat"), out);
     } else if (strcmp(cmd, "pairHost") == 0) {
-        cmd_pair_host((int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT), out);
+        cmd_pair_host((int)jv_get_int(root, "port", DSC_TRANSPORT_DEFAULT_PORT), out);
     } else if (strcmp(cmd, "pairDiscover") == 0) {
-        cmd_pair_discover((int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT),
+        cmd_pair_discover((int)jv_get_int(root, "port", DSC_TRANSPORT_DEFAULT_PORT),
                           (int)jv_get_int(root, "waitMs", 1500), out);
     } else if (strcmp(cmd, "pairConnect") == 0) {
         cmd_pair_connect(jv_get_str(root, "addr", ""),
-                         (int)jv_get_int(root, "port", AIC_TRANSPORT_DEFAULT_PORT),
+                         (int)jv_get_int(root, "port", DSC_TRANSPORT_DEFAULT_PORT),
                          (int)jv_get_int(root, "timeoutMs", 4000), out);
     } else if (strcmp(cmd, "pairAccept") == 0) {
         cmd_pair_accept((int)jv_get_int(root, "timeoutMs", 20000), out);
@@ -3741,7 +3741,7 @@ static jstring utf8_to_jstr(JNIEnv *env, const char *s)
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_sai_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
+Java_com_dsc_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
 {
     char *req;
     sb out;
@@ -3763,7 +3763,7 @@ Java_com_sai_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
  * 用 byte[] 而不是 String，避免在网络分块处切断多字节字符。
  * 句柄只用于日志与错配排查：C 侧同一时刻只允许一条活动流（sendBegin 会拒绝并发）。 */
 JNIEXPORT jstring JNICALL
-Java_com_sai_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray chunk)
+Java_com_dsc_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray chunk)
 {
     sb out;
     jstring ret;
@@ -3794,13 +3794,13 @@ Java_com_sai_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray
 }
 
 JNIEXPORT void JNICALL
-Java_com_sai_app_Native_shutdown(JNIEnv *env, jclass cls)
+Java_com_dsc_app_Native_shutdown(JNIEnv *env, jclass cls)
 {
     (void)env; (void)cls;
     gen_lock();
     if (g_gen.active) {
         g_gen.cancel = 1;
-        if (g_eng) aic_engine_stop(g_eng);
+        if (g_eng) dsc_engine_stop(g_eng);
     }
     gen_reset();
     gen_unlock();

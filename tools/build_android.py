@@ -43,14 +43,14 @@ def main():
             shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
 
-    # 1. 核心层 + JNI 桥 -> libaic.so（arm64-v8a）
+    # 1. 核心层 + JNI 桥 -> libdsc.so（arm64-v8a）
     srcs = sorted(glob.glob(os.path.join(ROOT, 'src', 'core', '*.c')))
-    # 平台层（transport_android.c 提供 aic_transport_*，是配对/同步的底座）与
+    # 平台层（transport_android.c 提供 dsc_transport_*，是配对/同步的底座）与
     # Android 的凭证实现（credential_android.c 走 Keystore）。共享库允许未解析符号，
     # 漏掉它们编译不会报错、运行到 dlopen 才失败，所以这里必须显式列上。
     srcs += sorted(glob.glob(os.path.join(ROOT, 'src', 'platform', 'android', '*.c')))
     srcs += [os.path.join(ROOT, 'third_party', 'sqlite', 'sqlite3.c'),
-             os.path.join(APP, 'cpp', 'aic_jni.c'),
+             os.path.join(APP, 'cpp', 'dsc_jni.c'),
              os.path.join(APP, 'cpp', 'credential_android.c')]
     objs = []
     for i, s in enumerate(srcs):
@@ -67,12 +67,12 @@ def main():
                     '-DSQLITE_DQS=0']
         run(cmd)
         objs.append(o)
-    so = os.path.join(OUT, 'libaic.so')
+    so = os.path.join(OUT, 'libdsc.so')
     run([CLANG, TARGET, '-shared', '-o', so] + objs + ['-lm', '-llog'])
-    print('libaic.so', os.path.getsize(so), 'bytes')
+    print('libdsc.so', os.path.getsize(so), 'bytes')
 
     # 2. javac
-    java_srcs = glob.glob(os.path.join(APP, 'java', 'com', 'sai', 'app', '*.java'))
+    java_srcs = glob.glob(os.path.join(APP, 'java', 'com', 'dsc', 'app', '*.java'))
     run([os.path.join(JDK, 'javac.exe'), '-source', '8', '-target', '8', '-encoding', 'UTF-8',
          '-nowarn', '-cp', PLATFORM, '-d', os.path.join(OUT, 'classes')] + java_srcs)
 
@@ -97,30 +97,30 @@ def main():
          '--target-sdk-version', '34', '--version-code', '5', '--version-name', '0.1.0',
          '--auto-add-overlay', flat_zip])
 
-    # 5. 塞入 classes.dex 与 lib/arm64-v8a/libaic.so
+    # 5. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so
     import zipfile
     with zipfile.ZipFile(base_apk, 'a', zipfile.ZIP_DEFLATED) as z:
         z.write(os.path.join(OUT, 'dex', 'classes.dex'), 'classes.dex')
-        z.write(so, 'lib/arm64-v8a/libaic.so')
+        z.write(so, 'lib/arm64-v8a/libdsc.so')
 
     # 6. zipalign
     aligned = os.path.join(OUT, 'aligned.apk')
     run([os.path.join(BT, 'zipalign.exe'), '-f', '-p', '4', base_apk, aligned])
 
     # 7. 自签名证书
-    ks = os.path.join(OUT, 'sai.keystore')
+    ks = os.path.join(OUT, 'dsc.keystore')
     if not os.path.exists(ks):
         run([os.path.join(JDK, 'keytool.exe'), '-genkeypair', '-keystore', ks,
-             '-alias', 'sai', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
-             '-storepass', 'sai123', '-keypass', 'sai123',
-             '-dname', 'CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN'])
+             '-alias', 'dsc', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
+             '-storepass', 'dsc123', '-keypass', 'dsc123',
+             '-dname', 'CN=DSC, OU=Dev, O=DSC, L=Local, ST=Local, C=CN'])
 
     # 8. apksigner 签名
-    signed = os.path.join(OUT, 'Sai.apk')
+    signed = os.path.join(OUT, 'DSC.apk')
     if os.path.exists(signed):
         os.remove(signed)
-    run([os.path.join(BT, 'apksigner.bat'), 'sign', '--ks', ks, '--ks-key-alias', 'sai',
-         '--ks-pass', 'pass:sai123', '--key-pass', 'pass:sai123',
+    run([os.path.join(BT, 'apksigner.bat'), 'sign', '--ks', ks, '--ks-key-alias', 'dsc',
+         '--ks-pass', 'pass:dsc123', '--key-pass', 'pass:dsc123',
          '--out', signed, aligned])
     run([os.path.join(BT, 'apksigner.bat'), 'verify', '--verbose', signed])
     print('APK', signed, os.path.getsize(signed), 'bytes')

@@ -4,7 +4,7 @@
  * <p>这个进程只做一件事：加载指定插件的 dex，反射调用它的入口，把结果写到
  * files/plugins/&lt;id&gt;/result_&lt;reqId&gt;.json，然后退出。主进程从不直接执行插件代码。</p>
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -16,13 +16,13 @@ import android.util.Log;
 /**
  * 插件进程的入口（PluginService 用 ProcessBuilder 再 fork 一次，argv 走 am broadcast）。
  *
- * <p>这个进程只做一件事：加载指定插件的 dex，反射调用它的 aic_plugin_call 等价入口，
+ * <p>这个进程只做一件事：加载指定插件的 dex，反射调用它的 dsc_plugin_call 等价入口，
  * 把结果写到 files/plugins/&lt;id&gt;/result_&lt;reqId&gt;.json，然后退出。
  * 主进程不再直接执行任何插件代码——插件崩溃或超时，死的只是这里。</p>
  */
 public final class PluginWorker {
 
-    private static final String TAG = "SaiPlugin";
+    private static final String TAG = "DscPlugin";
 
     private PluginWorker() {
     }

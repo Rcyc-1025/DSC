@@ -37,11 +37,11 @@ static void substitute_into(sb *out, const char *tpl, const var_map *vars, size_
     }
 }
 
-int aic_prompt_substitute(const char *tpl, const aic_profile *profile, sb *out)
+int dsc_prompt_substitute(const char *tpl, const dsc_profile *profile, sb *out)
 {
-    if (!out) return AIC_E_INVAL;
+    if (!out) return DSC_E_INVAL;
     var_map vars[5];
-    aic_profile empty;
+    dsc_profile empty;
     if (!profile) {
         memset(&empty, 0, sizeof(empty));
         profile = &empty;
@@ -52,7 +52,7 @@ int aic_prompt_substitute(const char *tpl, const aic_profile *profile, sb *out)
     vars[3].name = "user_occupation"; vars[3].value = profile->occupation;
     vars[4].name = "user_extra_note"; vars[4].value = profile->extra_note;
     substitute_into(out, tpl, vars, 5);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 static void append_block(sb *out, const char *title, const char *body)
@@ -66,28 +66,28 @@ static void append_block(sb *out, const char *title, const char *body)
     sb_append(out, body);
 }
 
-int aic_prompt_build(const aic_persona *persona, const aic_profile *profile,
+int dsc_prompt_build(const dsc_persona *persona, const dsc_profile *profile,
                      const char *plugin_fragments, sb *out)
 {
-    if (!out) return AIC_E_INVAL;
+    if (!out) return DSC_E_INVAL;
     sb_init(out);
 
     sb base;
     sb_init(&base);
-    aic_prompt_substitute(AIC_PROMPT_BASE, profile, &base);
+    dsc_prompt_substitute(DSC_PROMPT_BASE, profile, &base);
     sb_append(out, sb_cstr(&base));
     sb_free(&base);
 
     if (persona) {
         sb desc;
         sb_init(&desc);
-        aic_prompt_substitute(persona->description, profile, &desc);
+        dsc_prompt_substitute(persona->description, profile, &desc);
         append_block(out, "【人设】", sb_cstr(&desc));
         sb_free(&desc);
 
         sb prompt;
         sb_init(&prompt);
-        aic_prompt_substitute(persona->base_prompt ? persona->base_prompt : "", profile, &prompt);
+        dsc_prompt_substitute(persona->base_prompt ? persona->base_prompt : "", profile, &prompt);
         append_block(out, NULL, sb_cstr(&prompt));
         sb_free(&prompt);
     }
@@ -106,21 +106,21 @@ int aic_prompt_build(const aic_persona *persona, const aic_profile *profile,
     }
 
     if (plugin_fragments && *plugin_fragments) append_block(out, "【插件扩展】", plugin_fragments);
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_prompt_debug_view(const aic_persona *persona, const aic_profile *profile,
+int dsc_prompt_debug_view(const dsc_persona *persona, const dsc_profile *profile,
                           const char *plugin_fragments, sb *out)
 {
-    if (!out) return AIC_E_INVAL;
+    if (!out) return DSC_E_INVAL;
     sb tmp;
-    int rc = aic_prompt_build(persona, profile, plugin_fragments, &tmp);
-    if (rc != AIC_OK) return rc;
+    int rc = dsc_prompt_build(persona, profile, plugin_fragments, &tmp);
+    if (rc != DSC_OK) return rc;
     sb_init(out);
     /* 调试面板：整体展示，但必须过一遍敏感串扫描，命中即脱敏。 */
     sb hit;
     sb_init(&hit);
-    if (aic_scan_sensitive(sb_cstr(&tmp), &hit)) {
+    if (dsc_scan_sensitive(sb_cstr(&tmp), &hit)) {
         sb_append(out, "（提示词包含疑似凭证内容，已隐藏；命中位置：");
         sb_append(out, sb_cstr(&hit));
         sb_append(out, "）");
@@ -129,5 +129,5 @@ int aic_prompt_debug_view(const aic_persona *persona, const aic_profile *profile
     }
     sb_free(&hit);
     sb_free(&tmp);
-    return AIC_OK;
+    return DSC_OK;
 }

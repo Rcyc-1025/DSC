@@ -7,7 +7,7 @@
     python tools/clean.py --dry-run  只列出将删除的内容，不实际删除
 
 清理范围（全部在 .gitignore 覆盖范围内，删了不影响 git status）：
-    1. 仓库根的 aic_test_* 目录（单元测试与传输测试在 cwd 下建的临时目录）
+    1. 仓库根的 dsc_test_* 目录（单元测试与传输测试在 cwd 下建的临时目录）
     2. build/、build_android/（构建脚本可完整重建）
     3. 仓库根散落的临时文件：*.log、*.err、*.tmp、core.<pid>、nul
     4. dist/ 中的旧版本产物（只保留当前版本号的包与 .sha256；--all 时整个 dist/）
@@ -26,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CURRENT_VERSION = "0.1.0"
 
 BUILD_DIRS = ["build", "build_android"]
-ROOT_JUNK_PATTERNS = [r"^aic_test_", r"^core\.\d+$"]
+ROOT_JUNK_PATTERNS = [r"^dsc_test_", r"^core\.\d+$"]
 ROOT_JUNK_NAMES = ["nul", "NUL"]
 ROOT_JUNK_EXTS = [".log", ".err", ".tmp"]
 
@@ -72,7 +72,7 @@ def clean_dist(dry, removed, wipe_all):
     if wipe_all:
         _rm(dist, dry, removed)
         return
-    keep_prefix = "Sai-%s-" % CURRENT_VERSION
+    keep_prefix = "DSC-%s-" % CURRENT_VERSION
     for name in sorted(os.listdir(dist)):
         full = os.path.join(dist, name)
         if os.path.isdir(full) or not name.startswith(keep_prefix):
@@ -89,7 +89,7 @@ def clean_pycache(dry, removed):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="清理 Sai 本地构建与测试残留")
+    ap = argparse.ArgumentParser(description="清理 DSC 本地构建与测试残留")
     ap.add_argument("--all", action="store_true", help="连 dist/ 发布产物一起清空")
     ap.add_argument("--dry-run", action="store_true", help="只列出将删除的内容")
     args = ap.parse_args()

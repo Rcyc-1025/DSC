@@ -1,11 +1,11 @@
-/* aic_plugin_host.c —— 插件宿主进程（独立进程，崩溃不牵连主程序）。
+/* dsc_plugin_host.c —— 插件宿主进程（独立进程，崩溃不牵连主程序）。
  *
  * 用法（由主程序启动，不给人直接调用）：
- *   aic_plugin_host.exe <插件动态库路径> <请求 JSON 文件> <响应输出文件>
+ *   dsc_plugin_host.exe <插件动态库路径> <请求 JSON 文件> <响应输出文件>
  *
  * 进程退出码：
  *   0  插件正常返回
- *   2  动态库里没有 aic_plugin_call 符号
+ *   2  动态库里没有 dsc_plugin_call 符号
  *   3  动态库加载失败
  *   4  参数或文件读写失败
  * 插件自己崩溃（访问违例等）时不会是 0——父进程据此判为「插件进程异常退出」并禁用插件。
@@ -49,7 +49,7 @@ static int write_file(const char *path, const char *data, size_t len)
 int main(int argc, char **argv)
 {
     if (argc < 4) {
-        fprintf(stderr, "usage: aic_plugin_host <dll> <request.json> <response.json>\n");
+        fprintf(stderr, "usage: dsc_plugin_host <dll> <request.json> <response.json>\n");
         return 4;
     }
     const char *dll_path = argv[1];
@@ -69,9 +69,9 @@ int main(int argc, char **argv)
         free(request);
         return 3;
     }
-    aic_plugin_call_fn fn = (aic_plugin_call_fn)(void (*)(void))GetProcAddress(mod, AIC_PLUGIN_ENTRY_SYMBOL);
+    dsc_plugin_call_fn fn = (dsc_plugin_call_fn)(void (*)(void))GetProcAddress(mod, DSC_PLUGIN_ENTRY_SYMBOL);
     if (!fn) {
-        fprintf(stderr, "symbol %s not found in %s\n", AIC_PLUGIN_ENTRY_SYMBOL, dll_path);
+        fprintf(stderr, "symbol %s not found in %s\n", DSC_PLUGIN_ENTRY_SYMBOL, dll_path);
         FreeLibrary(mod);
         free(request);
         return 2;

@@ -87,52 +87,52 @@ static void utf8_to_wide(const char *in, WCHAR *out, int cap)
     out[cap - 1] = 0;
 }
 
-int aic_avatar_available(void) { return gp_init(); }
+int dsc_avatar_available(void) { return gp_init(); }
 
-int aic_avatar_import(const char *src_path, const char *root, char *out_rel, size_t cap,
+int dsc_avatar_import(const char *src_path, const char *root, char *out_rel, size_t cap,
                       char *err, size_t errlen)
 {
     if (err && errlen) err[0] = '\0';
-    if (!src_path || !root || !out_rel) return AIC_E_INVAL;
+    if (!src_path || !root || !out_rel) return DSC_E_INVAL;
     if (!gp_init()) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "系统不支持图片处理（GDI+ 不可用）");
-        return AIC_E_UNSUPPORTED;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "系统不支持图片处理（GDI+ 不可用）");
+        return DSC_E_UNSUPPORTED;
     }
     WCHAR wsrc[1024];
     utf8_to_wide(src_path, wsrc, 1024);
     void *img = NULL;
     if (gp.load(wsrc, &img) != 0 || !img) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "无法读取图片，请换一张 PNG/JPEG 图片");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "无法读取图片，请换一张 PNG/JPEG 图片");
+        return DSC_E_FORMAT;
     }
     UINT w = 0, h = 0;
     gp.get_w(img, &w);
     gp.get_h(img, &h);
     if (w == 0 || h == 0) {
         gp.dispose(img);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "图片尺寸异常");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "图片尺寸异常");
+        return DSC_E_FORMAT;
     }
     UINT tw = w, th = h;
-    if (w > AIC_AVATAR_MAX_EDGE || h > AIC_AVATAR_MAX_EDGE) {
-        if (w >= h) { tw = AIC_AVATAR_MAX_EDGE; th = (UINT)((long long)h * AIC_AVATAR_MAX_EDGE / w); }
-        else        { th = AIC_AVATAR_MAX_EDGE; tw = (UINT)((long long)w * AIC_AVATAR_MAX_EDGE / h); }
+    if (w > DSC_AVATAR_MAX_EDGE || h > DSC_AVATAR_MAX_EDGE) {
+        if (w >= h) { tw = DSC_AVATAR_MAX_EDGE; th = (UINT)((long long)h * DSC_AVATAR_MAX_EDGE / w); }
+        else        { th = DSC_AVATAR_MAX_EDGE; tw = (UINT)((long long)w * DSC_AVATAR_MAX_EDGE / h); }
         if (tw == 0) tw = 1;
         if (th == 0) th = 1;
     }
     void *thumb = NULL;
     if (gp.thumb(img, tw, th, &thumb, NULL, NULL) != 0 || !thumb) {
         gp.dispose(img);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "头像压缩失败");
-        return AIC_E_IO;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "头像压缩失败");
+        return DSC_E_IO;
     }
     char dir[1024], name[64], out[1200];
-    aic_path_join(dir, sizeof(dir), root, "avatars");
-    aic_mkdir_p(dir);
+    dsc_path_join(dir, sizeof(dir), root, "avatars");
+    dsc_mkdir_p(dir);
     char uuid[40];
-    aic_uuid4(uuid);
+    dsc_uuid4(uuid);
     snprintf(name, sizeof(name), "%s.jpg", uuid);
-    aic_path_join(out, sizeof(out), dir, name);
+    dsc_path_join(out, sizeof(out), dir, name);
 
     static const gp_guid jpeg_clsid = {
         0x557CF401, 0x1A04, 0x11D3, { 0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E }
@@ -143,28 +143,28 @@ int aic_avatar_import(const char *src_path, const char *root, char *out_rel, siz
     gp.dispose(thumb);
     gp.dispose(img);
     if (rc != 0) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "保存头像失败");
-        return AIC_E_IO;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "保存头像失败");
+        return DSC_E_IO;
     }
     snprintf(out_rel, cap, "avatars/%s", name);
-    return AIC_OK;
+    return DSC_OK;
 }
 
-void aic_avatar_remove(const char *root, const char *rel)
+void dsc_avatar_remove(const char *root, const char *rel)
 {
     if (!root || !rel || !rel[0]) return;
     char path[1200];
-    aic_path_join(path, sizeof(path), root, rel);
-    aic_file_remove(path);
+    dsc_path_join(path, sizeof(path), root, rel);
+    dsc_file_remove(path);
 }
 
-int aic_avatar_draw(void *hdc_v, const char *root, const char *rel, int x, int y, int size)
+int dsc_avatar_draw(void *hdc_v, const char *root, const char *rel, int x, int y, int size)
 {
     if (!hdc_v || !root || !rel || !rel[0] || size <= 0) return 0;
     if (!gp_init()) return 0;
     char path[1200];
-    aic_path_join(path, sizeof(path), root, rel);
-    if (!aic_path_exists(path)) return 0;
+    dsc_path_join(path, sizeof(path), root, rel);
+    if (!dsc_path_exists(path)) return 0;
     WCHAR wpath[1024];
     utf8_to_wide(path, wpath, 1024);
     void *img = NULL;

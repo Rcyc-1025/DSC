@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.sai.app"
+    package="com.dsc.app"
     android:versionCode="5"
     android:versionName="0.1.0">
 
@@ -50,8 +50,8 @@
 
         <!-- 私有目录文件的只读共享（导出记录分享、安装包交给系统安装器） -->
         <provider
-            android:name=".SaiFileProvider"
-            android:authorities="com.sai.app.fileprovider"
+            android:name=".DscFileProvider"
+            android:authorities="com.dsc.app.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>

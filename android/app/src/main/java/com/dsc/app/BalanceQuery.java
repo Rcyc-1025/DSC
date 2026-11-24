@@ -5,7 +5,7 @@
  * 返回体交回 C 侧解析并落成「账户余额 + 本地账本」两栏。凭证只在这条连接上出现，
  * 不写日志、不进界面。</p>
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.content.Context;
 

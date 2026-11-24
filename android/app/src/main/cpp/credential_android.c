@@ -14,7 +14,7 @@
 #include "util.h"
 
 static JavaVM   *g_vm;
-static jclass    g_cls;          /* com/sai/app/SecureStore 的全局引用 */
+static jclass    g_cls;          /* com/dsc/app/SecureStore 的全局引用 */
 static jmethodID g_m_avail;
 static jmethodID g_m_save;
 static jmethodID g_m_load;
@@ -65,7 +65,7 @@ static int resolve_cls(JNIEnv *env)
     jclass cls;
     if (g_cls) return 1;
     if (g_lookup_tried) return 0;
-    cls = (*env)->FindClass(env, "com/sai/app/SecureStore");
+    cls = (*env)->FindClass(env, "com/dsc/app/SecureStore");
     if (!cls) {
         (*env)->ExceptionClear(env);
         g_lookup_tried = 1;
@@ -101,7 +101,7 @@ static int clear_pending(JNIEnv *env)
     return 0;
 }
 
-int aic_cred_available(void)
+int dsc_cred_available(void)
 {
     cred_env e;
     jboolean ok;
@@ -116,35 +116,35 @@ int aic_cred_available(void)
     return avail;
 }
 
-int aic_cred_save(const char *service, const char *account, const char *secret,
+int dsc_cred_save(const char *service, const char *account, const char *secret,
                   char *err, size_t errlen)
 {
     cred_env e;
     jstring js = NULL, ja = NULL, jv = NULL;
     jboolean ok;
-    int rc = AIC_OK;
+    int rc = DSC_OK;
 
     if (err && errlen) err[0] = '\0';
-    if (!service || !account || !secret) return AIC_E_INVAL;
+    if (!service || !account || !secret) return DSC_E_INVAL;
     if (!get_env(&e)) {
         if (err && errlen) snprintf(err, errlen, "JNI 环境不可用，无法写入系统安全存储");
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
     if (!resolve_cls(e.env) || !g_m_save) {
         put_env(&e);
         if (err && errlen) snprintf(err, errlen, "系统安全存储不可用（SecureStore 未就绪）");
-        return AIC_E_UNSUPPORTED;
+        return DSC_E_UNSUPPORTED;
     }
     js = (*e.env)->NewStringUTF(e.env, service);
     ja = (*e.env)->NewStringUTF(e.env, account);
     jv = (*e.env)->NewStringUTF(e.env, secret);
     if (!js || !ja || !jv) {
         clear_pending(e.env);
-        rc = AIC_E_NOMEM;
+        rc = DSC_E_NOMEM;
     } else {
         ok = (*e.env)->CallStaticBooleanMethod(e.env, g_cls, g_m_save, js, ja, jv);
         if (clear_pending(e.env) || !ok) {
-            rc = AIC_E_IO;
+            rc = DSC_E_IO;
             if (err && errlen) snprintf(err, errlen, "写入系统安全存储失败（AndroidKeyStore 拒绝）");
         }
     }
@@ -155,25 +155,25 @@ int aic_cred_save(const char *service, const char *account, const char *secret,
     return rc;
 }
 
-int aic_cred_load(const char *service, const char *account, char *out, size_t cap,
+int dsc_cred_load(const char *service, const char *account, char *out, size_t cap,
                   char *err, size_t errlen)
 {
     cred_env e;
     jstring js = NULL, ja = NULL, jv;
     const char *utf;
-    int rc = AIC_OK;
+    int rc = DSC_OK;
 
     if (err && errlen) err[0] = '\0';
-    if (!service || !account || !out || cap == 0) return AIC_E_INVAL;
+    if (!service || !account || !out || cap == 0) return DSC_E_INVAL;
     out[0] = '\0';
     if (!get_env(&e)) {
         if (err && errlen) snprintf(err, errlen, "JNI 环境不可用，无法读取系统安全存储");
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
     if (!resolve_cls(e.env) || !g_m_load) {
         put_env(&e);
         if (err && errlen) snprintf(err, errlen, "系统安全存储不可用（SecureStore 未就绪）");
-        return AIC_E_UNSUPPORTED;
+        return DSC_E_UNSUPPORTED;
     }
     js = (*e.env)->NewStringUTF(e.env, service);
     ja = (*e.env)->NewStringUTF(e.env, account);
@@ -182,57 +182,57 @@ int aic_cred_load(const char *service, const char *account, char *out, size_t ca
         if (js) (*e.env)->DeleteLocalRef(e.env, js);
         if (ja) (*e.env)->DeleteLocalRef(e.env, ja);
         put_env(&e);
-        return AIC_E_NOMEM;
+        return DSC_E_NOMEM;
     }
     jv = (jstring)(*e.env)->CallStaticObjectMethod(e.env, g_cls, g_m_load, js, ja);
     if (clear_pending(e.env) || !jv) {
-        rc = AIC_E_NOTFOUND;   /* 不存在或密文解不开，都按「未配置」处理 */
+        rc = DSC_E_NOTFOUND;   /* 不存在或密文解不开，都按「未配置」处理 */
     } else {
         utf = (*e.env)->GetStringUTFChars(e.env, jv, NULL);
         if (!utf) {
             clear_pending(e.env);
-            rc = AIC_E_NOMEM;
+            rc = DSC_E_NOMEM;
         } else {
-            aic_strlcpy_utf8(out, cap, utf);
+            dsc_strlcpy_utf8(out, cap, utf);
             (*e.env)->ReleaseStringUTFChars(e.env, jv, utf);
-            rc = out[0] ? AIC_OK : AIC_E_NOTFOUND;
+            rc = out[0] ? DSC_OK : DSC_E_NOTFOUND;
         }
         (*e.env)->DeleteLocalRef(e.env, jv);
     }
     (*e.env)->DeleteLocalRef(e.env, js);
     (*e.env)->DeleteLocalRef(e.env, ja);
     put_env(&e);
-    if (rc == AIC_E_NOTFOUND && err && errlen) snprintf(err, errlen, "系统安全存储里没有这个凭证");
+    if (rc == DSC_E_NOTFOUND && err && errlen) snprintf(err, errlen, "系统安全存储里没有这个凭证");
     return rc;
 }
 
-int aic_cred_delete(const char *service, const char *account, char *err, size_t errlen)
+int dsc_cred_delete(const char *service, const char *account, char *err, size_t errlen)
 {
     cred_env e;
     jstring js = NULL, ja = NULL;
     jboolean ok;
-    int rc = AIC_OK;
+    int rc = DSC_OK;
 
     if (err && errlen) err[0] = '\0';
-    if (!service || !account) return AIC_E_INVAL;
+    if (!service || !account) return DSC_E_INVAL;
     if (!get_env(&e)) {
         if (err && errlen) snprintf(err, errlen, "JNI 环境不可用，无法清除系统安全存储里的凭证");
-        return AIC_E_STATE;
+        return DSC_E_STATE;
     }
     if (!resolve_cls(e.env) || !g_m_del) {
         put_env(&e);
         if (err && errlen) snprintf(err, errlen, "系统安全存储不可用（SecureStore 未就绪）");
-        return AIC_E_UNSUPPORTED;
+        return DSC_E_UNSUPPORTED;
     }
     js = (*e.env)->NewStringUTF(e.env, service);
     ja = (*e.env)->NewStringUTF(e.env, account);
     if (!js || !ja) {
         clear_pending(e.env);
-        rc = AIC_E_NOMEM;
+        rc = DSC_E_NOMEM;
     } else {
         ok = (*e.env)->CallStaticBooleanMethod(e.env, g_cls, g_m_del, js, ja);
         if (clear_pending(e.env) || !ok) {
-            rc = AIC_E_IO;
+            rc = DSC_E_IO;
             if (err && errlen) snprintf(err, errlen, "清除凭证失败");
         }
     }

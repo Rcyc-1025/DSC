@@ -50,7 +50,7 @@ jobs:
       - name: 逐条需求验收（FR-01 ~ FR-24）
         shell: pwsh
         run: |
-          .\build\aic.exe verify . build\verify
+          .\build\dsc-cli.exe verify . build\verify
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: 编译桌面客户端
@@ -62,10 +62,10 @@ jobs:
       - name: 归档产物
         uses: actions/upload-artifact@v4
         with:
-          name: sai-windows
+          name: dsc-windows
           path: |
-            build\Sai.exe
-            build\aic.exe
+            build\DSC.exe
+            build\dsc-cli.exe
             docs\FR-MATRIX.md
             CHANGELOG.md
             DEPENDENCIES.md

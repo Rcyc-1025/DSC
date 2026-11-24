@@ -10,12 +10,12 @@
  *   - 原始图片、原始文件、完整软件清单不上传；注入前脱敏；
  *   - 日志只记能力名与状态，不记坐标、文件名、图片内容。
  */
-#ifndef AIC_CAPABILITY_H
-#define AIC_CAPABILITY_H
+#ifndef DSC_CAPABILITY_H
+#define DSC_CAPABILITY_H
 
 #include <stddef.h>
 
-#include "aic_types.h"
+#include "dsc_types.h"
 #include "db.h"
 #include "util.h"
 
@@ -23,18 +23,18 @@
 extern "C" {
 #endif
 
-#define AIC_CAP_TIME      "time"
-#define AIC_CAP_LOCATION  "location"
-#define AIC_CAP_WEATHER   "weather"
-#define AIC_CAP_MEDIA     "media"
-#define AIC_CAP_APPS      "apps"
-#define AIC_CAP_FILES     "files"
+#define DSC_CAP_TIME      "time"
+#define DSC_CAP_LOCATION  "location"
+#define DSC_CAP_WEATHER   "weather"
+#define DSC_CAP_MEDIA     "media"
+#define DSC_CAP_APPS      "apps"
+#define DSC_CAP_FILES     "files"
 
-#define AIC_CAP_COUNT     6
-#define AIC_CAP_FILE_MAX  (64 * 1024)  /* 单文件最多读 64KB 供注入 */
+#define DSC_CAP_COUNT     6
+#define DSC_CAP_FILE_MAX  (64 * 1024)  /* 单文件最多读 64KB 供注入 */
 
 /* 授权状态。state 是库里的持久值，granted 是它的便捷形式。 */
-typedef struct aic_cap_status {
+typedef struct dsc_cap_status {
     char kind[24];
     int  granted;
     char state[16];        /* granted / denied / unset */
@@ -42,34 +42,34 @@ typedef struct aic_cap_status {
     char granted_at[32];
     char last_used_at[32];
     int  deny_count;
-} aic_cap_status;
+} dsc_cap_status;
 
-/* 能力元数据。顺序与 AIC_CAP_COUNT 一致。 */
-size_t      aic_cap_count(void);
-const char *aic_cap_kind_at(size_t i);
-const char *aic_cap_kind_valid(const char *kind);   /* 未知返回 NULL */
-const char *aic_cap_name(const char *kind);         /* 中文名，如"位置" */
-const char *aic_cap_purpose(const char *kind);      /* 申请前展示的用途说明 */
-int         aic_cap_required(const char *kind);     /* 时间返回 1 */
-int         aic_cap_revocable(const char *kind);    /* 时间返回 0 */
+/* 能力元数据。顺序与 DSC_CAP_COUNT 一致。 */
+size_t      dsc_cap_count(void);
+const char *dsc_cap_kind_at(size_t i);
+const char *dsc_cap_kind_valid(const char *kind);   /* 未知返回 NULL */
+const char *dsc_cap_name(const char *kind);         /* 中文名，如"位置" */
+const char *dsc_cap_purpose(const char *kind);      /* 申请前展示的用途说明 */
+int         dsc_cap_required(const char *kind);     /* 时间返回 1 */
+int         dsc_cap_revocable(const char *kind);    /* 时间返回 0 */
 
 /* 授权状态读写。行不存在时视为 unset。 */
-int aic_cap_status_load(aic_db *db, const char *kind, aic_cap_status *out);
-int aic_cap_is_granted(aic_db *db, const char *kind);
+int dsc_cap_status_load(dsc_db *db, const char *kind, dsc_cap_status *out);
+int dsc_cap_is_granted(dsc_db *db, const char *kind);
 /* 申请：写入 requested_at 并把状态置为 unset（等待用户答复），返回用途文案。 */
-int aic_cap_request(aic_db *db, const char *kind, char *purpose, size_t purpose_cap);
-int aic_cap_grant(aic_db *db, const char *kind, int64_t now_ms);
-int aic_cap_deny(aic_db *db, const char *kind);   /* 记一次拒绝，主流程继续 */
-int aic_cap_revoke(aic_db *db, const char *kind); /* 时间能力返回 AIC_E_STATE */
+int dsc_cap_request(dsc_db *db, const char *kind, char *purpose, size_t purpose_cap);
+int dsc_cap_grant(dsc_db *db, const char *kind, int64_t now_ms);
+int dsc_cap_deny(dsc_db *db, const char *kind);   /* 记一次拒绝，主流程继续 */
+int dsc_cap_revoke(dsc_db *db, const char *kind); /* 时间能力返回 DSC_E_STATE */
 /* 首次启动门：时间未授予返回 0（不进主页）。 */
-int aic_cap_launch_gate(aic_db *db);
+int dsc_cap_launch_gate(dsc_db *db);
 
 /* ---------- 平台侧实现 ----------
- * 平台注入六个取值函数；返回 AIC_OK 表示本次确有一份可注入的值写进了 buf。
- * 返回 AIC_E_STATE 表示平台不支持或用户这次没有选中任何条目（能力已授权也不算错），
+ * 平台注入六个取值函数；返回 DSC_OK 表示本次确有一份可注入的值写进了 buf。
+ * 返回 DSC_E_STATE 表示平台不支持或用户这次没有选中任何条目（能力已授权也不算错），
  * 其它错误按 §9.4 写错误中心。
- * 未注入 provider 时：时间用本地时钟真实现，其余一律 AIC_E_STATE。 */
-typedef struct aic_cap_provider {
+ * 未注入 provider 时：时间用本地时钟真实现，其余一律 DSC_E_STATE。 */
+typedef struct dsc_cap_provider {
     int (*time_now)(char *buf, size_t cap, void *ud);
     int (*location)(char *buf, size_t cap, void *ud);
     int (*weather)(char *buf, size_t cap, void *ud);
@@ -77,25 +77,25 @@ typedef struct aic_cap_provider {
     int (*apps_pick)(char *buf, size_t cap, void *ud);
     int (*files_pick)(char *buf, size_t cap, void *ud);
     void *ud;
-} aic_cap_provider;
+} dsc_cap_provider;
 
-void aic_cap_set_provider(const aic_cap_provider *p);
-void aic_cap_clear_provider(void);
+void dsc_cap_set_provider(const dsc_cap_provider *p);
+void dsc_cap_clear_provider(void);
 
 /* 取一次能力值（已授权才取）。成功把简短文本写进 out，并更新 last_used_at。
  * data_root 非空时失败按 §9.4 写错误中心（只有能力名与状态，没有参数）。 */
-int aic_cap_invoke(aic_db *db, const char *kind, const char *data_root, sb *out);
+int dsc_cap_invoke(dsc_db *db, const char *kind, const char *data_root, sb *out);
 
 /* 注入用片段：只包含已授权且本次取到值的能力，注入前统一脱敏。
- * 无任何可注入项时 out 置空并返回 AIC_OK。 */
-int aic_cap_build_context(aic_db *db, const char *data_root, sb *out);
+ * 无任何可注入项时 out 置空并返回 DSC_OK。 */
+int dsc_cap_build_context(dsc_db *db, const char *data_root, sb *out);
 
 /* 只读用户指定的单个文件（拒绝目录、不递归），供"本地文件"能力使用。
- * 二进制或超限只取可读文本前缀；返回 AIC_OK 时 out 里是可直接注入的文本。 */
-int aic_cap_read_text_file(aic_db *db, const char *path, sb *out);
+ * 二进制或超限只取可读文本前缀；返回 DSC_OK 时 out 里是可直接注入的文本。 */
+int dsc_cap_read_text_file(dsc_db *db, const char *path, sb *out);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* AIC_CAPABILITY_H */
+#endif /* DSC_CAPABILITY_H */

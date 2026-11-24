@@ -3,7 +3,7 @@
  * 界面层只通过 Native.call(json) 与核心层交换数据，不直接持有任何 C 指针，
  * 因此核心层崩溃不会把 Java 侧的视图状态带坏。
  */
-package com.sai.app;
+package com.dsc.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -724,7 +724,7 @@ public class MainActivity extends Activity {
     }
 
     private void messageMenu(final String id) {
-        /* 条目按消息实际状态拼：只有「改过且留着原文」的消息才给「撤销修改」（核心 aic_msg_restore）。 */
+        /* 条目按消息实际状态拼：只有「改过且留着原文」的消息才给「撤销修改」（核心 dsc_msg_restore）。 */
         JSONObject cur = findMsg(id);
         boolean hasOriginal = cur != null && cur.optBoolean("hasOriginal", false);
         /* 生成中先给「停止」：这是用户最想按的那个键。 */
@@ -752,7 +752,7 @@ public class MainActivity extends Activity {
                         } else if ("复制".equals(action)) {
                             android.content.ClipboardManager cm =
                                     (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("Sai", findContent(id)));
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("DSC", findContent(id)));
                             toast("已复制");
                         } else if ("撤回（2 分钟内）".equals(action)) {
                             JSONObject extra = new JSONObject();
@@ -2082,7 +2082,7 @@ public class MainActivity extends Activity {
 
     /** 起一个工作线程。 */
     private void work(final Runnable r) {
-        new Thread(r, "sai-work").start();
+        new Thread(r, "dsc-work").start();
     }
 
     /** 回主线程。 */
@@ -2314,12 +2314,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "Sai 0.1.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.0", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("关于 Sai")
-                        .setMessage("Sai 0.1.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setTitle("关于 DSC")
+                        .setMessage("DSC 0.1.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")
@@ -2355,7 +2355,7 @@ public class MainActivity extends Activity {
 
     private void confirmExit() {
         new AlertDialog.Builder(this)
-                .setTitle("退出 Sai？")
+                .setTitle("退出 DSC？")
                 .setMessage("会话记录保存在本地，不会丢失。")
                 .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -2381,7 +2381,7 @@ public class MainActivity extends Activity {
         col.addView(h);
 
         TextView d = new TextView(this);
-        d.setText("Sai 直接调用 DeepSeek，不经第三方服务器，所以要先填你自己的 API Key。\n"
+        d.setText("DSC 直接调用 DeepSeek，不经第三方服务器，所以要先填你自己的 API Key。\n"
                 + "凭证存在系统安全存储，界面与日志不出现明文；导出包与备份包都不含凭证。\n"
                 + "Key 以 sk- 开头、长度不少于 20 个字符。");
         d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -2839,7 +2839,7 @@ public class MainActivity extends Activity {
     private void btListen() {
         ensureBtPermission();
         btListenStarted = true;
-        pairLog("正在打开蓝牙监听（服务名 Sai Sync），等待对端连入，最长 60 秒…");
+        pairLog("正在打开蓝牙监听（服务名 DSC Sync），等待对端连入，最长 60 秒…");
         work(new Runnable() {
             @Override
             public void run() {
@@ -3378,7 +3378,7 @@ public class MainActivity extends Activity {
     /**
      * 问答 / 聊天双模式切换。
      * 切换有一小段动画与路由状态迁移，期间重复点击会撞上 router 的 switching 忙状态，
-     * 所以先在界面层拦一次（也避免把 AIC_E_BUSY 当错误弹给用户）。
+     * 所以先在界面层拦一次（也避免把 DSC_E_BUSY 当错误弹给用户）。
      */
     private void switchMode() {
         if (opt(st, "switching")) {
@@ -3532,7 +3532,7 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            Uri uri = SaiFileProvider.uriFor(this, file);
+            Uri uri = DscFileProvider.uriFor(this, file);
             String name = file.getName().toLowerCase();
             String type = "application/octet-stream";
             if (name.endsWith(".json")) type = "application/json";
@@ -3553,7 +3553,7 @@ public class MainActivity extends Activity {
     private void doImport() {
         new AlertDialog.Builder(this)
                 .setTitle("记录导入")
-                .setMessage("选一个 Sai 导出的 JSON 记录文件。先校验格式，再按冲突策略在一个事务里写入；失败整体回滚。")
+                .setMessage("选一个 DSC 导出的 JSON 记录文件。先校验格式，再按冲突策略在一个事务里写入；失败整体回滚。")
                 .setPositiveButton("选文件", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
@@ -3606,7 +3606,7 @@ public class MainActivity extends Activity {
 
     /**
      * 插件清单与扩展点。插件由 Java 在独立进程里运行（PluginService 单独进程 + PluginWorker 再 fork 一次），
-     * 崩溃或超时只终止那个进程，主程序继续；调用入口是核心层的 aic_plugin_call_point。
+     * 崩溃或超时只终止那个进程，主程序继续；调用入口是核心层的 dsc_plugin_call_point。
      */
     private void showPlugins() {
         work(new Runnable() {
@@ -3679,7 +3679,7 @@ public class MainActivity extends Activity {
                     results = PluginHostService.remoteCallAndWait(MainActivity.this,
                             "ui.panel", "describe", "{}", 5000);
                 }
-                /* 第三段：结果回灌核心层汇总（与桌面端 aic_plugin_call_point 同一份口径）。 */
+                /* 第三段：结果回灌核心层汇总（与桌面端 dsc_plugin_call_point 同一份口径）。 */
                 JSONObject submit = new JSONObject();
                 JSONObject r;
                 try {
@@ -3872,7 +3872,7 @@ public class MainActivity extends Activity {
                             + (r.optBoolean("mandatory", false) ? "\n强制更新" : "")
                             + "\n\n" + optStr(r, "notes", "");
                     /* 有可用更新 → 系统通知（没有通知权限时退回界面提示）。 */
-                    Notifier.post(MainActivity.this, Notifier.ID_UPDATE, "Sai 有新版本 " + ver, "点开查看更新说明");
+                    Notifier.post(MainActivity.this, Notifier.ID_UPDATE, "DSC 有新版本 " + ver, "点开查看更新说明");
                 } else if ("up_to_date".equals(status)) {
                     updatePlan = null;
                     msg = "已是最新版本（" + optStr(r, "currentVersion", "1.0.0") + "）";
@@ -3979,7 +3979,7 @@ public class MainActivity extends Activity {
         final String[] items = new String[]{"立即备份", "查看备份列表", "从备份恢复", "清理旧备份（保留 5 份）"};
         new AlertDialog.Builder(this)
                 .setTitle("数据管理")
-                .setMessage("数据库：db/aic.db\n备份目录：backups/\n导出目录：exports/\n\n备份包内含数据库、头像与插件清单，可整体恢复。")
+                .setMessage("数据库：db/dsc.db\n备份目录：backups/\n导出目录：exports/\n\n备份包内含数据库、头像与插件清单，可整体恢复。")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface d, int which) {
@@ -4229,7 +4229,7 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** 会话重命名：桥命令 renameThread → aic_conv_update_meta（只改 title，模型/人设不动）。 */
+    /** 会话重命名：桥命令 renameThread → dsc_conv_update_meta（只改 title，模型/人设不动）。 */
     private void renameThread(final String id, String current) {
         final EditText e = new EditText(this);
         e.setText(current);

@@ -15,7 +15,7 @@
 
 static int id_valid(const char *id)
 {
-    if (!id || !id[0] || strlen(id) >= AIC_PLUGIN_ID_MAX) return 0;
+    if (!id || !id[0] || strlen(id) >= DSC_PLUGIN_ID_MAX) return 0;
     for (const char *p = id; *p; p++) {
         int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
                  *p == '_' || *p == '-';
@@ -50,87 +50,87 @@ static void flatten(const jv *root, const char *key, char *dst, size_t cap)
             dst[used] = '\0';
         }
     } else if (v->type == JV_STR) {
-        aic_strlcpy_utf8(dst, cap, jv_string(v));
+        dsc_strlcpy_utf8(dst, cap, jv_string(v));
     }
 }
 
-int aic_plugin_parse_manifest(const char *json, size_t len, aic_plugin_manifest *out,
+int dsc_plugin_parse_manifest(const char *json, size_t len, dsc_plugin_manifest *out,
                               char *err, size_t errlen)
 {
-    if (!json || !out) return AIC_E_INVAL;
+    if (!json || !out) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
     memset(out, 0, sizeof(*out));
 
     jv *root = NULL;
     int rc = jv_parse(json, len, &root, err, errlen);
-    if (rc != AIC_OK) return rc;
+    if (rc != DSC_OK) return rc;
     if (!root || root->type != JV_OBJ) {
         jv_free(root);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单不是 JSON 对象");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件清单不是 JSON 对象");
+        return DSC_E_FORMAT;
     }
 
     const char *v = jv_get_str(root, "id", NULL);
     if (!id_valid(v)) {
         jv_free(root);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单的 id 非法（只允许字母数字下划线连字符）");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件清单的 id 非法（只允许字母数字下划线连字符）");
+        return DSC_E_FORMAT;
     }
-    aic_strlcpy_utf8(out->id, sizeof(out->id), v);
+    dsc_strlcpy_utf8(out->id, sizeof(out->id), v);
 
     v = jv_get_str(root, "name", NULL);
-    aic_strlcpy_utf8(out->name, sizeof(out->name), v && v[0] ? v : out->id);
+    dsc_strlcpy_utf8(out->name, sizeof(out->name), v && v[0] ? v : out->id);
 
     v = jv_get_str(root, "version", NULL);
-    if (!aic_version_valid(v)) {
+    if (!dsc_version_valid(v)) {
         jv_free(root);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单的 version 非法");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件清单的 version 非法");
+        return DSC_E_FORMAT;
     }
-    aic_strlcpy_utf8(out->version, sizeof(out->version), v);
+    dsc_strlcpy_utf8(out->version, sizeof(out->version), v);
 
     v = jv_get_str(root, "author", NULL);
-    aic_strlcpy_utf8(out->author, sizeof(out->author), v ? v : "");
+    dsc_strlcpy_utf8(out->author, sizeof(out->author), v ? v : "");
 
     v = jv_get_str(root, "entry", NULL);
     if (!v || !v[0]) {
         jv_free(root);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单缺少 entry（动态库文件名）");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件清单缺少 entry（动态库文件名）");
+        return DSC_E_FORMAT;
     }
-    if (!aic_is_local_relative_path(v)) {
+    if (!dsc_is_local_relative_path(v)) {
         jv_free(root);
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件 entry 必须是相对路径");
-        return AIC_E_FORMAT;
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件 entry 必须是相对路径");
+        return DSC_E_FORMAT;
     }
-    aic_strlcpy_utf8(out->entry, sizeof(out->entry), v);
+    dsc_strlcpy_utf8(out->entry, sizeof(out->entry), v);
 
     flatten(root, "permissions", out->permissions, sizeof(out->permissions));
     flatten(root, "extension_points", out->extension_points, sizeof(out->extension_points));
 
     v = jv_get_str(root, "sha256", NULL);
     if (v) {
-        if (!aic_hex_valid(v, 64)) {
+        if (!dsc_hex_valid(v, 64)) {
             jv_free(root);
-            if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件清单的 sha256 必须是 64 位十六进制串");
-            return AIC_E_FORMAT;
+            if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件清单的 sha256 必须是 64 位十六进制串");
+            return DSC_E_FORMAT;
         }
-        aic_strlcpy_utf8(out->sha256, sizeof(out->sha256), v);
+        dsc_strlcpy_utf8(out->sha256, sizeof(out->sha256), v);
     }
 
     jv_free(root);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* 递归复制目录（只处理文件与一级子目录，插件目录足够）。 */
 static int copy_tree(const char *src_dir, const char *dst_dir)
 {
-    int rc = aic_mkdir_p(dst_dir);
-    if (rc != AIC_OK) return rc;
+    int rc = dsc_mkdir_p(dst_dir);
+    if (rc != DSC_OK) return rc;
     sb names;
     sb_init(&names);
-    /* aic_dir_list 成功时返回条目数（>=0），只有负值才是错误。 */
-    rc = aic_dir_list(src_dir, &names, '\n');
+    /* dsc_dir_list 成功时返回条目数（>=0），只有负值才是错误。 */
+    rc = dsc_dir_list(src_dir, &names, '\n');
     if (rc < 0) { sb_free(&names); return rc; }
     const char *p = sb_cstr(&names);
     while (p && *p) {
@@ -142,114 +142,114 @@ static int copy_tree(const char *src_dir, const char *dst_dir)
         name[len] = '\0';
         if (name[0]) {
             char from[1024], to[1024];
-            aic_path_join(from, sizeof(from), src_dir, name);
-            aic_path_join(to, sizeof(to), dst_dir, name);
-            if (aic_is_dir(from)) {
+            dsc_path_join(from, sizeof(from), src_dir, name);
+            dsc_path_join(to, sizeof(to), dst_dir, name);
+            if (dsc_is_dir(from)) {
                 copy_tree(from, to);
             } else {
-                aic_file_copy(from, to);
+                dsc_file_copy(from, to);
             }
         }
         if (!nl) break;
         p = nl + 1;
     }
     sb_free(&names);
-    return AIC_OK;
+    return DSC_OK;
 }
 
-static void read_row(aic_stmt *st, aic_plugin *p)
+static void read_row(dsc_stmt *st, dsc_plugin *p)
 {
     memset(p, 0, sizeof(*p));
     const char *s;
-    s = aic_stmt_text(st, 0);  aic_strlcpy_utf8(p->id, sizeof(p->id), s ? s : "");
-    s = aic_stmt_text(st, 1);  aic_strlcpy_utf8(p->name, sizeof(p->name), s ? s : "");
-    s = aic_stmt_text(st, 2);  aic_strlcpy_utf8(p->version, sizeof(p->version), s ? s : "");
-    s = aic_stmt_text(st, 3);  aic_strlcpy_utf8(p->author, sizeof(p->author), s ? s : "");
-    s = aic_stmt_text(st, 4);  aic_strlcpy_utf8(p->entry, sizeof(p->entry), s ? s : "");
-    s = aic_stmt_text(st, 5);  aic_strlcpy_utf8(p->permissions, sizeof(p->permissions), s ? s : "");
-    s = aic_stmt_text(st, 6);  aic_strlcpy_utf8(p->extension_points, sizeof(p->extension_points), s ? s : "");
-    s = aic_stmt_text(st, 7);  aic_strlcpy_utf8(p->import_source, sizeof(p->import_source), s ? s : "file");
-    p->enabled = aic_stmt_int(st, 8);
-    s = aic_stmt_text(st, 9);  aic_strlcpy_utf8(p->installed_at, sizeof(p->installed_at), s ? s : "");
-    s = aic_stmt_text(st, 10); aic_strlcpy_utf8(p->dir, sizeof(p->dir), s ? s : "");
+    s = dsc_stmt_text(st, 0);  dsc_strlcpy_utf8(p->id, sizeof(p->id), s ? s : "");
+    s = dsc_stmt_text(st, 1);  dsc_strlcpy_utf8(p->name, sizeof(p->name), s ? s : "");
+    s = dsc_stmt_text(st, 2);  dsc_strlcpy_utf8(p->version, sizeof(p->version), s ? s : "");
+    s = dsc_stmt_text(st, 3);  dsc_strlcpy_utf8(p->author, sizeof(p->author), s ? s : "");
+    s = dsc_stmt_text(st, 4);  dsc_strlcpy_utf8(p->entry, sizeof(p->entry), s ? s : "");
+    s = dsc_stmt_text(st, 5);  dsc_strlcpy_utf8(p->permissions, sizeof(p->permissions), s ? s : "");
+    s = dsc_stmt_text(st, 6);  dsc_strlcpy_utf8(p->extension_points, sizeof(p->extension_points), s ? s : "");
+    s = dsc_stmt_text(st, 7);  dsc_strlcpy_utf8(p->import_source, sizeof(p->import_source), s ? s : "file");
+    p->enabled = dsc_stmt_int(st, 8);
+    s = dsc_stmt_text(st, 9);  dsc_strlcpy_utf8(p->installed_at, sizeof(p->installed_at), s ? s : "");
+    s = dsc_stmt_text(st, 10); dsc_strlcpy_utf8(p->dir, sizeof(p->dir), s ? s : "");
 }
 
-int aic_plugin_install(aic_db *db, const char *plugins_root, const char *manifest_path,
-                       const char *import_source, aic_plugin *out, char *err, size_t errlen)
+int dsc_plugin_install(dsc_db *db, const char *plugins_root, const char *manifest_path,
+                       const char *import_source, dsc_plugin *out, char *err, size_t errlen)
 {
-    return aic_plugin_install_ex(db, plugins_root, manifest_path, import_source, 0, out, err, errlen);
+    return dsc_plugin_install_ex(db, plugins_root, manifest_path, import_source, 0, out, err, errlen);
 }
 
-int aic_plugin_install_ex(aic_db *db, const char *plugins_root, const char *manifest_path,
+int dsc_plugin_install_ex(dsc_db *db, const char *plugins_root, const char *manifest_path,
                           const char *import_source, int allow_overwrite,
-                          aic_plugin *out, char *err, size_t errlen)
+                          dsc_plugin *out, char *err, size_t errlen)
 {
-    if (!db || !plugins_root || !manifest_path) return AIC_E_INVAL;
+    if (!db || !plugins_root || !manifest_path) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
 
     char *raw = NULL;
     size_t raw_len = 0;
-    int rc = aic_file_read_all(manifest_path, &raw, &raw_len);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "读取插件清单失败");
+    int rc = dsc_file_read_all(manifest_path, &raw, &raw_len);
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "读取插件清单失败");
         return rc;
     }
-    aic_plugin_manifest mf;
-    rc = aic_plugin_parse_manifest(raw, raw_len, &mf, err, errlen);
-    aic_xfree(raw);
-    if (rc != AIC_OK) return rc;
+    dsc_plugin_manifest mf;
+    rc = dsc_plugin_parse_manifest(raw, raw_len, &mf, err, errlen);
+    dsc_xfree(raw);
+    if (rc != DSC_OK) return rc;
 
     /* 已安装：默认提示冲突，用户确认覆盖时走更新语义（技术设计 10.2「提示覆盖或取消」）。 */
-    aic_plugin existing;
-    int has_existing = (aic_plugin_get(db, mf.id, &existing) == AIC_OK);
+    dsc_plugin existing;
+    int has_existing = (dsc_plugin_get(db, mf.id, &existing) == DSC_OK);
     if (has_existing && !allow_overwrite) {
         if (err && errlen) snprintf(err, errlen, "插件 %s 已安装（版本 %s）", mf.id, existing.version);
-        return AIC_E_CONFLICT;
+        return DSC_E_CONFLICT;
     }
 
     /* 源目录：清单所在目录；entry 必须在源目录里存在。 */
     char src_dir[1024];
-    aic_strlcpy_utf8(src_dir, sizeof(src_dir), manifest_path);
+    dsc_strlcpy_utf8(src_dir, sizeof(src_dir), manifest_path);
     char *slash = strrchr(src_dir, '/');
     char *bslash = strrchr(src_dir, '\\');
     if (bslash && (!slash || bslash > slash)) slash = bslash;
     if (slash) *slash = '\0';
-    else aic_strlcpy_utf8(src_dir, sizeof(src_dir), ".");
+    else dsc_strlcpy_utf8(src_dir, sizeof(src_dir), ".");
 
     char entry_path[1024];
-    aic_path_join(entry_path, sizeof(entry_path), src_dir, mf.entry);
-    if (!aic_path_exists(entry_path)) {
+    dsc_path_join(entry_path, sizeof(entry_path), src_dir, mf.entry);
+    if (!dsc_path_exists(entry_path)) {
         if (err && errlen) snprintf(err, errlen, "插件入口文件不存在：%s", mf.entry);
-        return AIC_E_NOTFOUND;
+        return DSC_E_NOTFOUND;
     }
 
     /* 清单声明了 sha256 就先校验源文件（技术设计 10.2「校验签名或哈希」）。 */
     if (mf.sha256[0]) {
         char *data = NULL;
         size_t len = 0;
-        rc = aic_file_read_all(entry_path, &data, &len);
-        if (rc != AIC_OK) {
-            if (err && errlen) aic_strlcpy_utf8(err, errlen, "读取插件入口文件失败");
+        rc = dsc_file_read_all(entry_path, &data, &len);
+        if (rc != DSC_OK) {
+            if (err && errlen) dsc_strlcpy_utf8(err, errlen, "读取插件入口文件失败");
             return rc;
         }
         char sha[65];
-        aic_sha256_hex(data, len, sha);
-        aic_xfree(data);
+        dsc_sha256_hex(data, len, sha);
+        dsc_xfree(data);
         if (strcmp(sha, mf.sha256) != 0) {
             if (err && errlen) snprintf(err, errlen, "插件入口文件哈希校验失败（期望 %s，实际 %s）", mf.sha256, sha);
-            return AIC_E_CHECKSUM;
+            return DSC_E_CHECKSUM;
         }
     }
 
-    char dst_dir[AIC_PLUGIN_PATH_MAX];
+    char dst_dir[DSC_PLUGIN_PATH_MAX];
     char joined[1024];
-    aic_path_join(joined, sizeof(joined), plugins_root, mf.id);
-    aic_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
-    if (aic_path_exists(dst_dir)) {
+    dsc_path_join(joined, sizeof(joined), plugins_root, mf.id);
+    dsc_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
+    if (dsc_path_exists(dst_dir)) {
         /* 上一次残留或覆盖安装：先清掉，避免新旧文件混杂。 */
         sb names;
         sb_init(&names);
-        aic_dir_list(dst_dir, &names, '\n');
+        dsc_dir_list(dst_dir, &names, '\n');
         const char *p = sb_cstr(&names);
         while (p && *p) {
             const char *nl = strchr(p, '\n');
@@ -260,8 +260,8 @@ int aic_plugin_install_ex(aic_db *db, const char *plugins_root, const char *mani
             name[len] = '\0';
             if (name[0]) {
                 char f[1024];
-                aic_path_join(f, sizeof(f), dst_dir, name);
-                aic_file_remove(f);
+                dsc_path_join(f, sizeof(f), dst_dir, name);
+                dsc_file_remove(f);
             }
             if (!nl) break;
             p = nl + 1;
@@ -269,157 +269,157 @@ int aic_plugin_install_ex(aic_db *db, const char *plugins_root, const char *mani
         sb_free(&names);
     }
     rc = copy_tree(src_dir, dst_dir);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "复制插件文件失败");
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "复制插件文件失败");
         return rc;
     }
 
     char ts[32];
-    aic_now_iso8601(ts);
+    dsc_now_iso8601(ts);
     const char *src_label = (import_source && import_source[0]) ? import_source : "file";
     if (has_existing) {
-        aic_stmt *st = aic_db_prepare(db,
+        dsc_stmt *st = dsc_db_prepare(db,
             "UPDATE plugin SET name=?2, version=?3, author=?4, entry_path=?5, permissions=?6, "
             "extension_points=?7, import_source=?8, data_dir=?9 WHERE id=?1;");
-        if (!st) return AIC_E_DB;
-        aic_stmt_bind_text(st, 1, mf.id);
-        aic_stmt_bind_text(st, 2, mf.name);
-        aic_stmt_bind_text(st, 3, mf.version);
-        aic_stmt_bind_text(st, 4, mf.author);
-        aic_stmt_bind_text(st, 5, mf.entry);
-        aic_stmt_bind_text(st, 6, mf.permissions);
-        aic_stmt_bind_text(st, 7, mf.extension_points);
-        aic_stmt_bind_text(st, 8, src_label);
-        aic_stmt_bind_text(st, 9, dst_dir);
-        rc = aic_stmt_step(st);
-        aic_stmt_finalize(st);
-        if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
-        if (rc != AIC_OK) return rc;
+        if (!st) return DSC_E_DB;
+        dsc_stmt_bind_text(st, 1, mf.id);
+        dsc_stmt_bind_text(st, 2, mf.name);
+        dsc_stmt_bind_text(st, 3, mf.version);
+        dsc_stmt_bind_text(st, 4, mf.author);
+        dsc_stmt_bind_text(st, 5, mf.entry);
+        dsc_stmt_bind_text(st, 6, mf.permissions);
+        dsc_stmt_bind_text(st, 7, mf.extension_points);
+        dsc_stmt_bind_text(st, 8, src_label);
+        dsc_stmt_bind_text(st, 9, dst_dir);
+        rc = dsc_stmt_step(st);
+        dsc_stmt_finalize(st);
+        if (rc == DSC_E_NOTFOUND) rc = DSC_OK;
+        if (rc != DSC_OK) return rc;
     } else {
-        aic_stmt *st = aic_db_prepare(db,
+        dsc_stmt *st = dsc_db_prepare(db,
             "INSERT INTO plugin (" PLUGIN_COLS ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0,?9,?10);");
-        if (!st) return AIC_E_DB;
-        aic_stmt_bind_text(st, 1, mf.id);
-        aic_stmt_bind_text(st, 2, mf.name);
-        aic_stmt_bind_text(st, 3, mf.version);
-        aic_stmt_bind_text(st, 4, mf.author);
-        aic_stmt_bind_text(st, 5, mf.entry);
-        aic_stmt_bind_text(st, 6, mf.permissions);
-        aic_stmt_bind_text(st, 7, mf.extension_points);
-        aic_stmt_bind_text(st, 8, src_label);
-        aic_stmt_bind_text(st, 9, ts);
-        aic_stmt_bind_text(st, 10, dst_dir);
-        rc = aic_stmt_step(st);
-        aic_stmt_finalize(st);
-        if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
-        if (rc != AIC_OK) return rc;
+        if (!st) return DSC_E_DB;
+        dsc_stmt_bind_text(st, 1, mf.id);
+        dsc_stmt_bind_text(st, 2, mf.name);
+        dsc_stmt_bind_text(st, 3, mf.version);
+        dsc_stmt_bind_text(st, 4, mf.author);
+        dsc_stmt_bind_text(st, 5, mf.entry);
+        dsc_stmt_bind_text(st, 6, mf.permissions);
+        dsc_stmt_bind_text(st, 7, mf.extension_points);
+        dsc_stmt_bind_text(st, 8, src_label);
+        dsc_stmt_bind_text(st, 9, ts);
+        dsc_stmt_bind_text(st, 10, dst_dir);
+        rc = dsc_stmt_step(st);
+        dsc_stmt_finalize(st);
+        if (rc == DSC_E_NOTFOUND) rc = DSC_OK;
+        if (rc != DSC_OK) return rc;
     }
 
     if (out) {
         memset(out, 0, sizeof(*out));
-        aic_strlcpy_utf8(out->id, sizeof(out->id), mf.id);
-        aic_strlcpy_utf8(out->name, sizeof(out->name), mf.name);
-        aic_strlcpy_utf8(out->version, sizeof(out->version), mf.version);
-        aic_strlcpy_utf8(out->author, sizeof(out->author), mf.author);
-        aic_strlcpy_utf8(out->entry, sizeof(out->entry), mf.entry);
-        aic_strlcpy_utf8(out->permissions, sizeof(out->permissions), mf.permissions);
-        aic_strlcpy_utf8(out->extension_points, sizeof(out->extension_points), mf.extension_points);
-        aic_strlcpy_utf8(out->import_source, sizeof(out->import_source), src_label);
-        aic_strlcpy_utf8(out->dir, sizeof(out->dir), dst_dir);
-        aic_strlcpy_utf8(out->installed_at, sizeof(out->installed_at), ts);
+        dsc_strlcpy_utf8(out->id, sizeof(out->id), mf.id);
+        dsc_strlcpy_utf8(out->name, sizeof(out->name), mf.name);
+        dsc_strlcpy_utf8(out->version, sizeof(out->version), mf.version);
+        dsc_strlcpy_utf8(out->author, sizeof(out->author), mf.author);
+        dsc_strlcpy_utf8(out->entry, sizeof(out->entry), mf.entry);
+        dsc_strlcpy_utf8(out->permissions, sizeof(out->permissions), mf.permissions);
+        dsc_strlcpy_utf8(out->extension_points, sizeof(out->extension_points), mf.extension_points);
+        dsc_strlcpy_utf8(out->import_source, sizeof(out->import_source), src_label);
+        dsc_strlcpy_utf8(out->dir, sizeof(out->dir), dst_dir);
+        dsc_strlcpy_utf8(out->installed_at, sizeof(out->installed_at), ts);
         out->enabled = has_existing ? existing.enabled : 0;
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_plugin_get(aic_db *db, const char *id, aic_plugin *out)
+int dsc_plugin_get(dsc_db *db, const char *id, dsc_plugin *out)
 {
-    if (!db || !id || !out) return AIC_E_INVAL;
-    aic_stmt *st = aic_db_prepare(db, "SELECT " PLUGIN_COLS " FROM plugin WHERE id = ?1;");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_text(st, 1, id);
-    int rc = aic_stmt_step(st);
-    if (rc == AIC_ROW) read_row(st, out);
-    aic_stmt_finalize(st);
-    return rc == AIC_ROW ? AIC_OK : (rc == AIC_DONE ? AIC_E_NOTFOUND : rc);
+    if (!db || !id || !out) return DSC_E_INVAL;
+    dsc_stmt *st = dsc_db_prepare(db, "SELECT " PLUGIN_COLS " FROM plugin WHERE id = ?1;");
+    if (!st) return DSC_E_DB;
+    dsc_stmt_bind_text(st, 1, id);
+    int rc = dsc_stmt_step(st);
+    if (rc == DSC_ROW) read_row(st, out);
+    dsc_stmt_finalize(st);
+    return rc == DSC_ROW ? DSC_OK : (rc == DSC_DONE ? DSC_E_NOTFOUND : rc);
 }
 
-int aic_plugin_list(aic_db *db, int enabled, aic_plugin **out, size_t *out_n)
+int dsc_plugin_list(dsc_db *db, int enabled, dsc_plugin **out, size_t *out_n)
 {
-    if (!db || !out || !out_n) return AIC_E_INVAL;
+    if (!db || !out || !out_n) return DSC_E_INVAL;
     *out = NULL;
     *out_n = 0;
     const char *sql = enabled < 0
         ? "SELECT " PLUGIN_COLS " FROM plugin ORDER BY installed_at ASC;"
         : "SELECT " PLUGIN_COLS " FROM plugin WHERE enabled = ?1 ORDER BY installed_at ASC;";
-    aic_stmt *st = aic_db_prepare(db, sql);
-    if (!st) return AIC_E_DB;
-    if (enabled >= 0) aic_stmt_bind_ll(st, 1, enabled ? 1 : 0);
+    dsc_stmt *st = dsc_db_prepare(db, sql);
+    if (!st) return DSC_E_DB;
+    if (enabled >= 0) dsc_stmt_bind_ll(st, 1, enabled ? 1 : 0);
     size_t cap = 0, n = 0;
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     int rc;
-    while ((rc = aic_stmt_step(st)) == AIC_ROW) {
+    while ((rc = dsc_stmt_step(st)) == DSC_ROW) {
         if (n == cap) {
             cap = cap ? cap * 2 : 8;
-            arr = (aic_plugin *)aic_xrealloc(arr, cap * sizeof(aic_plugin));
+            arr = (dsc_plugin *)dsc_xrealloc(arr, cap * sizeof(dsc_plugin));
         }
         read_row(st, &arr[n++]);
     }
-    aic_stmt_finalize(st);
-    if (rc != AIC_DONE && rc != AIC_ROW) {
-        aic_xfree(arr);
+    dsc_stmt_finalize(st);
+    if (rc != DSC_DONE && rc != DSC_ROW) {
+        dsc_xfree(arr);
         return rc;
     }
     *out = arr;
     *out_n = n;
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_plugin_set_enabled(aic_db *db, const char *id, int enabled, char *err, size_t errlen)
+int dsc_plugin_set_enabled(dsc_db *db, const char *id, int enabled, char *err, size_t errlen)
 {
-    if (!db || !id) return AIC_E_INVAL;
+    if (!db || !id) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
-    aic_plugin p;
-    int rc = aic_plugin_get(db, id, &p);
-    if (rc != AIC_OK) return rc;
+    dsc_plugin p;
+    int rc = dsc_plugin_get(db, id, &p);
+    if (rc != DSC_OK) return rc;
     if (enabled) {
         char entry[1024];
-        aic_path_join(entry, sizeof(entry), p.dir, p.entry);
-        if (!aic_path_exists(entry)) {
+        dsc_path_join(entry, sizeof(entry), p.dir, p.entry);
+        if (!dsc_path_exists(entry)) {
             if (err && errlen) snprintf(err, errlen, "插件文件缺失：%s", p.entry);
-            return AIC_E_NOTFOUND;
+            return DSC_E_NOTFOUND;
         }
     }
-    aic_stmt *st = aic_db_prepare(db, "UPDATE plugin SET enabled = ?1 WHERE id = ?2;");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_ll(st, 1, enabled ? 1 : 0);
-    aic_stmt_bind_text(st, 2, id);
-    rc = aic_stmt_step(st);
-    aic_stmt_finalize(st);
-    if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
+    dsc_stmt *st = dsc_db_prepare(db, "UPDATE plugin SET enabled = ?1 WHERE id = ?2;");
+    if (!st) return DSC_E_DB;
+    dsc_stmt_bind_ll(st, 1, enabled ? 1 : 0);
+    dsc_stmt_bind_text(st, 2, id);
+    rc = dsc_stmt_step(st);
+    dsc_stmt_finalize(st);
+    if (rc == DSC_E_NOTFOUND) rc = DSC_OK;
     return rc;
 }
 
-int aic_plugin_uninstall(aic_db *db, const char *id, int keep_data, char *err, size_t errlen)
+int dsc_plugin_uninstall(dsc_db *db, const char *id, int keep_data, char *err, size_t errlen)
 {
-    if (!db || !id) return AIC_E_INVAL;
+    if (!db || !id) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
-    aic_plugin p;
-    int rc = aic_plugin_get(db, id, &p);
-    if (rc != AIC_OK) return rc;
+    dsc_plugin p;
+    int rc = dsc_plugin_get(db, id, &p);
+    if (rc != DSC_OK) return rc;
 
     /* 先删库记录（失败就不动文件，避免出现「文件没了记录还在」）。 */
-    aic_stmt *st = aic_db_prepare(db, "DELETE FROM plugin WHERE id = ?1;");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_text(st, 1, id);
-    rc = aic_stmt_step(st);
-    aic_stmt_finalize(st);
-    if (rc != AIC_OK && rc != AIC_E_NOTFOUND) return rc;
+    dsc_stmt *st = dsc_db_prepare(db, "DELETE FROM plugin WHERE id = ?1;");
+    if (!st) return DSC_E_DB;
+    dsc_stmt_bind_text(st, 1, id);
+    rc = dsc_stmt_step(st);
+    dsc_stmt_finalize(st);
+    if (rc != DSC_OK && rc != DSC_E_NOTFOUND) return rc;
 
     if (!keep_data) {
         sb names;
         sb_init(&names);
-        aic_dir_list(p.dir, &names, '\n');
+        dsc_dir_list(p.dir, &names, '\n');
         const char *q = sb_cstr(&names);
         while (q && *q) {
             const char *nl = strchr(q, '\n');
@@ -430,18 +430,18 @@ int aic_plugin_uninstall(aic_db *db, const char *id, int keep_data, char *err, s
             name[len] = '\0';
             if (name[0]) {
                 char f[1024];
-                aic_path_join(f, sizeof(f), p.dir, name);
-                aic_file_remove(f);
+                dsc_path_join(f, sizeof(f), p.dir, name);
+                dsc_file_remove(f);
             }
             if (!nl) break;
             q = nl + 1;
         }
         sb_free(&names);
     }
-    return AIC_OK;
+    return DSC_OK;
 }
 
-int aic_plugin_ext_point_index(const char *name)
+int dsc_plugin_ext_point_index(const char *name)
 {
     static const char *points[] = {
         "prompt.fragment",     /* 提示词片段 */
@@ -457,144 +457,144 @@ int aic_plugin_ext_point_index(const char *name)
 }
 
 /* 片段文件：插件目录下的 prompt_fragment.txt；缺失时按清单生成一行说明。 */
-int aic_plugin_build_fragment(aic_db *db, sb *out, char *err, size_t errlen)
+int dsc_plugin_build_fragment(dsc_db *db, sb *out, char *err, size_t errlen)
 {
-    if (!db || !out) return AIC_E_INVAL;
+    if (!db || !out) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
     sb_reset(out);
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     size_t n = 0;
-    int rc = aic_plugin_list(db, 1, &arr, &n);
-    if (rc != AIC_OK) return rc;
+    int rc = dsc_plugin_list(db, 1, &arr, &n);
+    if (rc != DSC_OK) return rc;
     /* 按扩展点声明的顺序拼接（提示词片段优先）。 */
     for (size_t i = 0; i < n; i++) {
         if (!strstr(arr[i].extension_points, "prompt.fragment")) continue;
         char f[1024];
-        aic_path_join(f, sizeof(f), arr[i].dir, "prompt_fragment.txt");
+        dsc_path_join(f, sizeof(f), arr[i].dir, "prompt_fragment.txt");
         char *piece = NULL;
         size_t piece_len = 0;
-        if (aic_file_read_all(f, &piece, &piece_len) == AIC_OK) {
+        if (dsc_file_read_all(f, &piece, &piece_len) == DSC_OK) {
             sb_appendn(out, piece, piece_len);
             sb_appendc(out, '\n');
         }
-        aic_xfree(piece);
+        dsc_xfree(piece);
     }
-    aic_plugin_free_array(arr, n);
-    return AIC_OK;
+    dsc_plugin_free_array(arr, n);
+    return DSC_OK;
 }
 
-void aic_plugin_free(aic_plugin *p)
+void dsc_plugin_free(dsc_plugin *p)
 {
     (void)p;   /* 结构内没有堆内存 */
 }
 
-void aic_plugin_free_array(aic_plugin *arr, size_t n)
+void dsc_plugin_free_array(dsc_plugin *arr, size_t n)
 {
     (void)n;
-    aic_xfree(arr);
+    dsc_xfree(arr);
 }
 
 /* 插件进程崩溃或超时后的收尾（FR-05 + 异常处理章）：禁用插件、记录原因，主程序继续。 */
-int aic_plugin_disable_after_crash(aic_db *db, const char *id, const char *reason,
+int dsc_plugin_disable_after_crash(dsc_db *db, const char *id, const char *reason,
                                    char *err, size_t errlen)
 {
-    if (!db || !id || !id[0]) return AIC_E_INVAL;
-    aic_plugin p;
-    int rc = aic_plugin_get(db, id, &p);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "插件不存在");
+    if (!db || !id || !id[0]) return DSC_E_INVAL;
+    dsc_plugin p;
+    int rc = dsc_plugin_get(db, id, &p);
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "插件不存在");
         return rc;
     }
-    rc = aic_plugin_set_enabled(db, id, 0, err, errlen);
-    if (rc != AIC_OK) return rc;
+    rc = dsc_plugin_set_enabled(db, id, 0, err, errlen);
+    if (rc != DSC_OK) return rc;
 
     char key[96];
     snprintf(key, sizeof(key), "plugin.crash.%s", id);
     char ts[32];
-    aic_now_iso8601(ts);
+    dsc_now_iso8601(ts);
     char val[512];
     snprintf(val, sizeof(val), "%s %s", ts, (reason && reason[0]) ? reason : "插件异常退出");
-    aic_setting_set(db, key, val);
+    dsc_setting_set(db, key, val);
     if (err && errlen) snprintf(err, errlen, "插件「%s」已禁用：%s", p.name, val);
-    return AIC_OK;
+    return DSC_OK;
 }
 
 /* ---------------- 插件更新（技术设计 10.1：安装/启用/禁用/卸载/更新） ---------------- */
-int aic_plugin_update(aic_db *db, const char *plugins_root, const char *manifest_path,
-                      aic_plugin *out, char *err, size_t errlen)
+int dsc_plugin_update(dsc_db *db, const char *plugins_root, const char *manifest_path,
+                      dsc_plugin *out, char *err, size_t errlen)
 {
-    if (!db || !plugins_root || !manifest_path) return AIC_E_INVAL;
+    if (!db || !plugins_root || !manifest_path) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
 
     char *raw = NULL;
     size_t raw_len = 0;
-    int rc = aic_file_read_all(manifest_path, &raw, &raw_len);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "读取插件清单失败");
+    int rc = dsc_file_read_all(manifest_path, &raw, &raw_len);
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "读取插件清单失败");
         return rc;
     }
-    aic_plugin_manifest mf;
-    rc = aic_plugin_parse_manifest(raw, raw_len, &mf, err, errlen);
-    aic_xfree(raw);
-    if (rc != AIC_OK) return rc;
+    dsc_plugin_manifest mf;
+    rc = dsc_plugin_parse_manifest(raw, raw_len, &mf, err, errlen);
+    dsc_xfree(raw);
+    if (rc != DSC_OK) return rc;
 
-    aic_plugin existing;
-    rc = aic_plugin_get(db, mf.id, &existing);
-    if (rc != AIC_OK) {
+    dsc_plugin existing;
+    rc = dsc_plugin_get(db, mf.id, &existing);
+    if (rc != DSC_OK) {
         if (err && errlen) snprintf(err, errlen, "插件 %s 尚未安装，请先安装", mf.id);
         return rc;
     }
 
     char src_dir[1024];
-    aic_strlcpy_utf8(src_dir, sizeof(src_dir), manifest_path);
+    dsc_strlcpy_utf8(src_dir, sizeof(src_dir), manifest_path);
     char *slash = strrchr(src_dir, '/');
     char *bslash = strrchr(src_dir, '\\');
     if (bslash && (!slash || bslash > slash)) slash = bslash;
     if (slash) *slash = '\0';
-    else aic_strlcpy_utf8(src_dir, sizeof(src_dir), ".");
+    else dsc_strlcpy_utf8(src_dir, sizeof(src_dir), ".");
 
     char entry_path[1024];
-    aic_path_join(entry_path, sizeof(entry_path), src_dir, mf.entry);
-    if (!aic_path_exists(entry_path)) {
+    dsc_path_join(entry_path, sizeof(entry_path), src_dir, mf.entry);
+    if (!dsc_path_exists(entry_path)) {
         if (err && errlen) snprintf(err, errlen, "插件入口文件不存在：%s", mf.entry);
-        return AIC_E_NOTFOUND;
+        return DSC_E_NOTFOUND;
     }
 
     char dst_dir[1024];
     char joined[1024];
-    aic_path_join(joined, sizeof(joined), plugins_root, mf.id);
-    aic_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
+    dsc_path_join(joined, sizeof(joined), plugins_root, mf.id);
+    dsc_strlcpy_utf8(dst_dir, sizeof(dst_dir), joined);
     rc = copy_tree(src_dir, dst_dir);
-    if (rc != AIC_OK) {
-        if (err && errlen) aic_strlcpy_utf8(err, errlen, "复制插件文件失败");
+    if (rc != DSC_OK) {
+        if (err && errlen) dsc_strlcpy_utf8(err, errlen, "复制插件文件失败");
         return rc;
     }
 
-    aic_stmt *st = aic_db_prepare(db,
+    dsc_stmt *st = dsc_db_prepare(db,
         "UPDATE plugin SET name=?1, version=?2, author=?3, entry_path=?4, permissions=?5, "
         "extension_points=?6 WHERE id=?7;");
-    if (!st) return AIC_E_DB;
-    aic_stmt_bind_text(st, 1, mf.name);
-    aic_stmt_bind_text(st, 2, mf.version);
-    aic_stmt_bind_text(st, 3, mf.author);
-    aic_stmt_bind_text(st, 4, mf.entry);
-    aic_stmt_bind_text(st, 5, mf.permissions);
-    aic_stmt_bind_text(st, 6, mf.extension_points);
-    aic_stmt_bind_text(st, 7, mf.id);
-    rc = aic_stmt_step(st);
-    aic_stmt_finalize(st);
-    if (rc == AIC_E_NOTFOUND) rc = AIC_OK;
-    if (rc != AIC_OK) return rc;
-    if (out) aic_plugin_get(db, mf.id, out);
-    return AIC_OK;
+    if (!st) return DSC_E_DB;
+    dsc_stmt_bind_text(st, 1, mf.name);
+    dsc_stmt_bind_text(st, 2, mf.version);
+    dsc_stmt_bind_text(st, 3, mf.author);
+    dsc_stmt_bind_text(st, 4, mf.entry);
+    dsc_stmt_bind_text(st, 5, mf.permissions);
+    dsc_stmt_bind_text(st, 6, mf.extension_points);
+    dsc_stmt_bind_text(st, 7, mf.id);
+    rc = dsc_stmt_step(st);
+    dsc_stmt_finalize(st);
+    if (rc == DSC_E_NOTFOUND) rc = DSC_OK;
+    if (rc != DSC_OK) return rc;
+    if (out) dsc_plugin_get(db, mf.id, out);
+    return DSC_OK;
 }
 
 /* ---------------- 扩展点调用（技术设计 10.2） ---------------- */
-static int call_one(aic_db *db, const aic_plugin *pl, const char *host_exe, const char *point,
+static int call_one(dsc_db *db, const dsc_plugin *pl, const char *host_exe, const char *point,
                     const char *op, const char *request_json, jw *w, char *err, size_t errlen)
 {
     char entry_abs[1024];
-    aic_path_join(entry_abs, sizeof(entry_abs), pl->dir, pl->entry);
+    dsc_path_join(entry_abs, sizeof(entry_abs), pl->dir, pl->entry);
     sb rb;
     sb_init(&rb);
     jw req;
@@ -607,39 +607,39 @@ static int call_one(aic_db *db, const aic_plugin *pl, const char *host_exe, cons
     jw_obj_end(&req);
     const char *body = sb_cstr(&rb);
 
-    aic_plugin_proc_result res;
+    dsc_plugin_proc_result res;
     memset(&res, 0, sizeof(res));
-    int rc = aic_plugin_proc_call(host_exe, entry_abs, body, strlen(body), 5000, pl->dir,
+    int rc = dsc_plugin_proc_call(host_exe, entry_abs, body, strlen(body), 5000, pl->dir,
                                   &res, err, errlen);
     jw_obj_begin(w, NULL);
     jw_put_str(w, "plugin", pl->id);
-    jw_put_bool(w, "ok", rc == AIC_OK);
-    if (rc == AIC_OK) jw_put_raw(w, "result", res.text ? res.text : "null");
+    jw_put_bool(w, "ok", rc == DSC_OK);
+    if (rc == DSC_OK) jw_put_raw(w, "result", res.text ? res.text : "null");
     else jw_put_str(w, "error", err && err[0] ? err : "插件调用失败");
     jw_obj_end(w);
-    if (rc != AIC_OK) {
+    if (rc != DSC_OK) {
         /* 插件崩溃/超时：禁用并记录事件，主程序继续（技术设计 10.1）。 */
-        aic_plugin_disable_after_crash(db, pl->id, err && err[0] ? err : "插件调用失败", NULL, 0);
+        dsc_plugin_disable_after_crash(db, pl->id, err && err[0] ? err : "插件调用失败", NULL, 0);
     }
-    aic_plugin_proc_free(&res);
+    dsc_plugin_proc_free(&res);
     sb_free(&rb);
     return rc;
 }
 
-int aic_plugin_call_point(aic_db *db, const char *host_exe, const char *point, const char *op,
+int dsc_plugin_call_point(dsc_db *db, const char *host_exe, const char *point, const char *op,
                           const char *request_json, char *out, size_t out_cap,
                           char *err, size_t errlen)
 {
-    if (!db || !host_exe || !point || !out) return AIC_E_INVAL;
+    if (!db || !host_exe || !point || !out) return DSC_E_INVAL;
     if (err && errlen) err[0] = '\0';
-    if (aic_plugin_ext_point_index(point) < 0) {
+    if (dsc_plugin_ext_point_index(point) < 0) {
         if (err && errlen) snprintf(err, errlen, "未知扩展点：%s", point);
-        return AIC_E_INVAL;
+        return DSC_E_INVAL;
     }
-    aic_plugin *arr = NULL;
+    dsc_plugin *arr = NULL;
     size_t n = 0;
-    int rc = aic_plugin_list(db, 1, &arr, &n);
-    if (rc != AIC_OK) return rc;
+    int rc = dsc_plugin_list(db, 1, &arr, &n);
+    if (rc != DSC_OK) return rc;
     sb ob;
     sb_init(&ob);
     jw w;
@@ -656,8 +656,8 @@ int aic_plugin_call_point(aic_db *db, const char *host_exe, const char *point, c
     jw_arr_end(&w);
     jw_put_int(&w, "count", called);
     jw_obj_end(&w);
-    aic_strlcpy_utf8(out, out_cap, sb_cstr(&ob));
+    dsc_strlcpy_utf8(out, out_cap, sb_cstr(&ob));
     sb_free(&ob);
-    aic_plugin_free_array(arr, n);
-    return AIC_OK;
+    dsc_plugin_free_array(arr, n);
+    return DSC_OK;
 }
