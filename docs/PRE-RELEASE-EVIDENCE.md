@@ -352,12 +352,14 @@ Android 侧这六项与桌面一样只到「编译 + 产物结构校验」，未
 
 ## 13. 发布结果（2026-11-25，GitHub）
 
-- 仓库：<https://github.com/Rcyc-1025/DSC> —— 由私有转为 **公开**（PUBLIC），许可证识别为 Apache-2.0，
-  topics：deepseek / chat-client / windows / android / c11 / sqlite。
+- 仓库：<https://github.com/Rcyc-1025/DSC> —— 由 `Rcyc-1025/Sai` 改名为 DSC，**公开**（PUBLIC），
+  许可证识别为 Apache-2.0，topics：deepseek / chat-client / windows / android / c11 / sqlite。
+  改名后 git 远端指向 `https://github.com/Rcyc-1025/DSC.git`。
 - Release：<https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.0>，标题「DSC 0.1.0 - 第一个正式版本」，
-  非草稿、非预发布（Latest），正文取自 `docs/RELEASE-NOTES-0.1.0.md`（7232 字符）。
-- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.0-win-x64-portable.zip`（1685291）、`DSC-0.1.0-win-x64-setup.exe`（4122037）、
-  `DSC-0.1.0-win-arm64-portable.zip`（951696）、`DSC-0.1.0-android-arm64.apk`（905678）与各自 `.sha256`。
+  非草稿、非预发布（Latest），正文取自 `docs/RELEASE-NOTES-0.1.0.md`。
+- 更名口径：旧命名的标签与 Release 先删除（远端标签用 `gh api --method DELETE /repos/Rcyc-1025/DSC/git/refs/tags/v0.1.0`），
+  再在更名提交 `7c3588d` 上重建 `v0.1.0` 标签与 Release；发布后标签不再移动。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.0-win-x64-portable.zip`（1688755）、`DSC-0.1.0-win-x64-setup.exe`（4129763）、
+  `DSC-0.1.0-win-arm64-portable.zip`（955198）、`DSC-0.1.0-android-arm64.apk`（905678）与各自 `.sha256`。
 - 回读校验：`gh release download` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
-- 标签：`v0.1.0` 指向发布提交（文档定稿后前移过一次；发布后不再移动）。
-- CI：推送后 `ci` 工作流在该提交上 **success**。
+- CI：推送后 `ci` 工作流在更名提交上 **success**。
