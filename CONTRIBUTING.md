@@ -44,6 +44,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
 - 每个源文件第一行写 `/* 文件名 —— 一句话职责 */`，方便 grep 与提交前检查。
 - 新增用户可感知的功能时同步更新：`CHANGELOG.md`（[未发布] 段）、`docs/ADVANCED.md` 或 `docs/PLUGIN.md`、必要时 `DEPENDENCIES.md`。
 
+## 收尾清理（每次都做）
+
+写完代码、跑完测试或打完包之后，必须把本地残留清掉再提交。这一步是硬要求：`git status` 必须是干净的，`git status --ignored` 里也不该留下一次比一次多的垃圾。
+
+~~~powershell
+python tools\clean.py --dry-run   # 先看会删什么
+python tools\clean.py             # 清构建目录、aic_test_* 临时目录、散落日志、旧版本 dist 包
+python tools\clean.py --all       # 连 dist/ 当前版本的发布产物一起清空
+~~~
+
+清理范围（全部在 `.gitignore` 覆盖内，删了不影响版本库）：
+
+- `build/`、`build_android/`：构建脚本可完整重建，不需要留存；
+- 仓库根的 `aic_test_*`：单元测试与传输测试在 cwd 下建的临时目录，跑一百次就会攒一百个；
+- 仓库根散落的 `*.log`、`*.err`、`*.tmp`、`core.<pid>`、`nul`：手工调试重定向出来的产物；
+- `dist/` 中当前版本号（见 `tools/clean.py` 顶部 `CURRENT_VERSION`）以外的旧包与 `.sha256`；
+- `tools/__pycache__/`。
+
+不要把调试文件往仓库根或 `build/` 下随手扔：临时文件写到 `%TEMP%`，需要留证据的结果贴进 PR 或 `docs/` 里对应的记录文件。
+
 ## 提交
 
 提交信息用中文，一句话说清做了什么：
