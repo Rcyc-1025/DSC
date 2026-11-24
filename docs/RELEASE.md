@@ -34,14 +34,14 @@
 
 3. **基准**：`dsc-cli.exe bench` 与 `dsc-cli.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入 + 残留旧名 `aic_`/`Sai`）。退出码即问题数，必须为 0。
-5. **打标签**：`git tag -a v0.1.0 -m "DSC 0.1.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
+5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.1 实测为 `git tag -a v0.1.1 -m "DSC 0.1.1"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
    之后若只改文档（不动代码、不改产物），在推 Release 前允许把标签前移到最新提交一次；Release 发布之后一律不再移动，
    后续修正走新的 PATCH 版本（见「回滚」一节）。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
 
    ```powershell
-   python tools\package_win.py        # dist\DSC-0.1.0-win-x64-portable.zip + .sha256
-   python tools\make_installer.py     # dist\DSC-0.1.0-win-x64-setup.exe + .sha256
+   python tools\package_win.py        # dist\DSC-<版本>-win-x64-portable.zip + .sha256
+   python tools\make_installer.py     # dist\DSC-<版本>-win-x64-setup.exe + .sha256
    python tools\build_android.py      # build_android\DSC.apk
    python tools\verify_android.py     # APK 结构 / ABI / 清单 / 签名校验
    ```
@@ -50,22 +50,26 @@
    - Windows：`scripts\sign_release.ps1`。证书用 `-Pfx <文件>`（口令走环境变量 `DSC_SIGN_PASSWORD`）或 `-Thumbprint <指纹>`（证书已导入当前用户个人存储）。退出码：`0` 签名并验签通过；`2` 找不到 `signtool.exe`（需要 Windows SDK 签名工具）；`3` 没有证书或缺口令；`4` 没有可签名的文件。脚本不会自造证书、不会在缺证书时假装成功。
    - Android：`python tools\sign_android.py`。keystore 用环境变量 `DSC_ANDROID_KEYSTORE` / `DSC_ANDROID_STOREPASS` / `DSC_ANDROID_KEYPASS` / `DSC_ANDROID_ALIAS`，缺任一项退出码 `3`，产出 v2+v3 签名并当场 `apksigner verify --print-certs`。`tools\build_android.py` 打出来的 `build_android\DSC.apk` 只是开发用自签包，发布前必须用发布方证书重新签名。
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
-9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[0.1.0] - 2026-11-24` 并新建空的 `[未发布]` 段。
+9. **变更记录**：在 `CHANGELOG.md` 顶部新建 `## [<版本>] - <日期>` 段落（0.1.0 首发时是把 `[未发布]` 改名，此后每版新建一段）。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
     未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文。发布说明同时存档到
-    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 的存档即 `docs/RELEASE-NOTES-0.1.0.md`），`--notes-file` 指的就是这份文件。
-    **0.1.0 首发实测**：2026-11-25 用上述命令创建 <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.0>，
-    8 个资产（4 个产物 + 4 个 `.sha256`）全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
-11. **发布到 GitHub**（0.1.0 起的固定步骤）：
+    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，0.1.1 为 `docs/RELEASE-NOTES-0.1.1.md`），
+    `--notes-file` 指的就是这份文件。
+    **实测记录**：0.1.0 与 0.1.1（都是 2026-11-25）用这套命令发布，各自 8 个资产（4 个产物 + 4 个 `.sha256`）
+    全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
+11. **发布到 GitHub**（0.1.0 起的固定步骤，`pwsh` 里直接用数组传参）：
 
     ```powershell
-    gh release create v0.1.0 --repo <owner>/DSC --title "DSC 0.1.0" ^
-      --notes-file docs\RELEASE-NOTES-0.1.0.md ^
-      dist\DSC-0.1.0-win-x64-portable.zip dist\DSC-0.1.0-win-x64-portable.zip.sha256 ^
-      dist\DSC-0.1.0-win-x64-setup.exe dist\DSC-0.1.0-win-x64-setup.exe.sha256 ^
-      dist\DSC-0.1.0-win-arm64-portable.zip dist\DSC-0.1.0-win-arm64-portable.zip.sha256 ^
-      dist\DSC-0.1.0-android-arm64.apk dist\DSC-0.1.0-android-arm64.apk.sha256
-    gh release view v0.1.0 --repo <owner>/DSC --json assets --jq '.assets[] | "\(.name) \(.size)"'
+    $v = '<版本>'
+    $files = @(
+      "dist\DSC-$v-win-x64-portable.zip",   "dist\DSC-$v-win-x64-portable.zip.sha256",
+      "dist\DSC-$v-win-x64-setup.exe",     "dist\DSC-$v-win-x64-setup.exe.sha256",
+      "dist\DSC-$v-win-arm64-portable.zip", "dist\DSC-$v-win-arm64-portable.zip.sha256",
+      "dist\DSC-$v-android-arm64.apk",     "dist\DSC-$v-android-arm64.apk.sha256")
+    gh release create "v$v" --repo <owner>/DSC --title "DSC $v" --latest `
+      --notes-file "docs\RELEASE-NOTES-$v.md" @files
+    (gh release view "v$v" --repo <owner>/DSC --json assets | ConvertFrom-Json).assets |
+      ForEach-Object { "$($_.name) $($_.size) $($_.state)" }
     ```
 
     推送前先确认远端标签与本地一致（`git ls-remote --tags origin`）；Release 不是预发布（`--latest`），
@@ -93,10 +97,13 @@
 | Windows 便携包 | `DSC-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `DSC-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\DSC` |
 | Windows ARM64 便携包 | `DSC-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `DSC-0.1.0-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 0.1.0`、`versionCode 5`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.1` / `versionCode 6`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
 
 Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` 决定，`aapt2 link --version-code` 不覆盖它；
-两处必须同时改（0.1.0 为 `versionCode="5"`），`tools\verify_android.py` 会断言两者一致。
+两处必须同时改（0.1.1 为 `versionCode="6"` / `versionName="0.1.1"`），`tools\verify_android.py` 会断言两者一致。
+**16KB 页对齐是硬要求**：`tools\build_android.py` 的链接命令必须带 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`，
+否则 `libdsc.so` 的 `PT_LOAD` 段只有 4KB 对齐，在 16KB 页内核的 Android 15/16 新机上 `dlopen` 失败、应用一启动就退出
+（0.1.0 的闪退就是这个原因）。`tools/verify_android.py` 有一条断言读 ELF 程序头，要求最小 `p_align` ≥ 0x4000。
 
 **ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。本版用本机 LLVM 23 的 `clang` +
 `lld` 加 MSYS2 `clangarm64` 的 aarch64 mingw-w64 sysroot 交叉编译出 ARM64 的 `DSC.exe`、
@@ -111,5 +118,5 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/dsc.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-25（对应版本 v0.1.0；产品更名为 DSC，许可证 Apache-2.0；发布流程第 11 步「发布到 GitHub」
-之外新增第 12 步「收尾清理」；发布说明不包含未实测清单）。
+最后更新：2026-11-25（对应版本 v0.1.1；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
+数组传参，第 12 步「收尾清理」；Android 产物必须 16KB 页对齐；发布说明不包含未实测清单）。

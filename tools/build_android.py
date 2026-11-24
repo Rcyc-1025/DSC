@@ -68,7 +68,11 @@ def main():
         run(cmd)
         objs.append(o)
     so = os.path.join(OUT, 'libdsc.so')
-    run([CLANG, TARGET, '-shared', '-o', so] + objs + ['-lm', '-llog'])
+    # 0.1.1：16KB 页对齐。Android 15/16 起不少新机（含 16KB 内核的旗舰）只接受
+    # p_align >= 0x4000 的 .so，4KB 对齐的库会 dlopen 失败 -> UnsatisfiedLinkError -> 一点就退。
+    # 16KB 对齐的库在 4KB 内核上同样可用，是官方推荐的双兼容做法。
+    run([CLANG, TARGET, '-shared', '-o', so] + objs +
+        ['-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384', '-lm', '-llog'])
     print('libdsc.so', os.path.getsize(so), 'bytes')
 
     # 2. javac
@@ -94,7 +98,7 @@ def main():
     manifest = os.path.join(APP, 'AndroidManifest.xml')
     run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
          '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '5', '--version-name', '0.1.0',
+         '--target-sdk-version', '34', '--version-code', '6', '--version-name', '0.1.1',
          '--auto-add-overlay', flat_zip])
 
     # 5. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so

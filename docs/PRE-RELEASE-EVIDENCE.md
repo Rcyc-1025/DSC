@@ -1,10 +1,16 @@
-# 发布前证据（DSC 0.1.0）
+# 发布前证据（DSC 0.1.1）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
 > 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 0.1.0 起）。
-> 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是本轮重新跑出来的；
+> 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是那时重新跑出来的；
 > 逐条复核结论与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
+> **0.1.1（2026-11-25）唯一的代码改动是修安卓首次启动闪退**：① `libdsc.so` 的 PT_LOAD 段改为 16KB 页对齐
+> （链接加 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`），应对 Android 15/16 新机的 16KB 内核；
+> ② `Native` 的 `System.loadLibrary` 失败不再让静态初始化抛死，改为返回可见错误；③ `MainActivity.onCreate` 整段兜异常，
+> 失败时整屏显示原因与设备信息（可复制）；④ 新增 `Diagnostics`：全局未捕获异常写 `filesDir/crash.log`，下次启动弹窗可复制。
+> 版本号随之升为 `versionCode 6` / `versionName 0.1.1`。**本文件 §3 起的数字都是 0.1.1 重新跑出来的**；
+> Windows 三产物只随版本号重打，逻辑未改。
 > 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
 > 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
 > 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
@@ -28,18 +34,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\DSC.exe（Windows 界面，0.1.0） | 1688149 | e105e397ebfdc9088a7493ec30ffb6559b5d9e9c1a21c525f461cf1225e7a890 |
-| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1641726 | 3be589866c60a259a782b7f92387bc5d450a089103fed9a8abc5ebfa33b73eef |
-| build\dsc_plugin_host.exe（插件宿主） | 40036 | d4ac4081388083793e6cd45782068533050f62732bead0f4b736b0062f4a15a0 |
-| build\test_core.exe（单元测试） | 1718621 | 5a98c86fa946c8a12acf6f22eb3bd257b14a64a3d3c8cc035001d970c6b90fa6 |
-| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1604096 | df60609413400eac813886f04aba2bb1e6c1c649d8f3d531d1194c566d03b954 |
-| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | 59e6e884e3d632b252369029b8ab1a13a64a38cf050ba67f2374c700048353b2 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | dbe9273d099bd0e74657a4fe9f85f22bac9582152c628af53341bc89e4ae4a53 |
-| build_android\DSC.apk（Android ARM64 安装包，versionCode 5 / versionName 0.1.0） | 905678 | c5df345e303289d456bb5e8aeb54584be56535c8bde8dad9d011cf9699387935 |
-| dist\DSC-0.1.0-win-x64-portable.zip | 1688755 | 618aba9326ec2f3cf355a5386afd7f654eca95016fc1c7f1a9090e9c50d2b71b |
-| dist\DSC-0.1.0-win-x64-setup.exe | 4129763 | 5c7892481d6f067f008e287a58169399f17f8a34d3e5b38a695a9eaff673f16e |
-| dist\DSC-0.1.0-win-arm64-portable.zip | 955198 | 7d491b7b58cbe29cce2bee0090cd644608bd7e74ecfd6fec3729b7f6550b8e3b |
-| dist\DSC-0.1.0-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 905678 | c5df345e303289d456bb5e8aeb54584be56535c8bde8dad9d011cf9699387935 |
+| build\DSC.exe（Windows 界面，0.1.1） | 1688149 | 5df68f6947a9542d9ed0ba1a829a2e672abeadcc9235f9465aa696b5d83bfdc8 |
+| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1641726 | 952a070596bbeff8cf256b0c68e3d69db330f8e00f4f13ca2565c92cd9c945ae |
+| build\dsc_plugin_host.exe（插件宿主） | 40036 | 100f31e425acf394617dabda27482a2a802c183ad5810d138c717c00d87f9f78 |
+| build\test_core.exe（单元测试） | 1718621 | f68f14e48aa604905429737713158158ad7850010b4f6849edbc6df741759bf0 |
+| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1604096 | 73457e93c27a17ba205b1252c671b1c1b93e70770890c5aa10bfcb5be084b841 |
+| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | c7c3970364f042afe801f1a1c4f0183368e4b41dd079ff46613a3629d85abd98 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | b9e90385272f0b099065ef6cb8562d0a5cb980278e54bc9a41d48a8f323bd8c8 |
+| build_android\DSC.apk（Android ARM64 安装包，versionCode 6 / versionName 0.1.1） | 909774 | 841c44cd8ddd0f4b420c8d73aa223513b9437275e04bbe130b846f100dad88e6 |
+| dist\DSC-0.1.1-win-x64-portable.zip | 1688821 | 0782d3bb8cacc0507a3ccc794102b851b36aebfb7da9a8486d128db4c30df076 |
+| dist\DSC-0.1.1-win-x64-setup.exe | 4129983 | 1ed0795448a0690a1c30662b83d1475df011db8d0cb3df3447352a88cd50d06d |
+| dist\DSC-0.1.1-win-arm64-portable.zip | 955262 | 6fabd4f19cf7afb4d13a718c85e87ab12dad9eb50b1e8fe25628d4372ca8dcd1 |
+| dist\DSC-0.1.1-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 909774 | 841c44cd8ddd0f4b420c8d73aa223513b9437275e04bbe130b846f100dad88e6 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -47,7 +53,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 31.6s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\DSC-0.1.0-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\DSC-0.1.1-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -110,10 +116,11 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
 | 万条分页 | 11.74 ms/页 | 300 ms | 350 ms | 达标 |
-| 万条导出 | 46 ms | 2000 ms | 2500 ms | 达标 |
-| 常驻内存 | 12.0 MB | 240 MB | 180 MB | 达标 |
+| 万条导出 | 45 ms | 2000 ms | 2500 ms | 达标 |
+| 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
-（0.1.0 多个构建轮次复跑：分页 11.74 / 11.76 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.8 / 12.0 / 12.0 MB，稳定。
+（0.1.0 多个构建轮次复跑：分页 11.74 / 11.76 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.8 / 12.0 / 12.0 MB；
+0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB，与 0.1.0 同一水平（本轮只改了安卓侧链接参数与 Java 兜底，桌面路径未动）。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -123,15 +130,16 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
     build\dsc-cli.exe perf
 
-本机实测输出（rss_ok=true）：rss_kb 9272（9.05 MB）、frame_budget_ms 16.7、db_bytes 217088、
-wal_bytes 32768、rss_ring_kb[9272]、rss_avg_kb 9272、rss_peak_kb 9272，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（0.1.1 复跑，rss_ok=true）：rss_kb 9292（9.07 MB）、rss_mb 9.074219、frame_budget_ms 16.7、
+db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9292]、rss_avg_kb 9292、rss_peak_kb 9292，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
 
     python tools\shots.py
 
-19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸）：
+19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸；
+0.1.1 重建后复跑结果相同：19 scene(s), 0 failed）：
 聊天三栏 / 我 / 设置（19 行含「实时同步」「配对管理」「内置知识库」「设备权限」「错误中心」「进阶指南」与「关于」）/
 问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（含新增四节）/
 导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
@@ -146,17 +154,23 @@ wal_bytes 32768、rss_ring_kb[9272]、rss_avg_kb 9272、rss_peak_kb 9272，峰�
     python tools\build_android.py
     python tools\verify_android.py
 
-实测 19 项全部通过（新增 `versionCode` 断言）：
+实测 20 项全部通过（0.1.1 新增 ELF 页对齐断言，同时断言 versionCode 6 / versionName 0.1.1）：
 
-- APK 905678 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1677952 字节）；
+- APK 909774 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1677936 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
 - libdsc.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_dsc_app_Native_call 与
   Java_com_dsc_app_Native_feed（1.1.0 新增的三段协议喂数据入口），静态含 SQLite；
-- 清单：包名 com.dsc.app、versionCode 5、versionName 0.1.0、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
+- 清单：包名 com.dsc.app、versionCode 6、versionName 0.1.1、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
   native-code arm64-v8a、应用名「DSC」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
-  两处已同时改为 5 / 0.1.0，校验脚本会断言一致）；
+  两处已同时改为 6 / 0.1.1，校验脚本会断言一致）；
+- **16KB 页对齐（0.1.1 修的闪退根因）**：libdsc.so 的 4 个 PT_LOAD 段 `p_align` 全部为 `0x4000`（16384）。
+  0.1.0 的包是 `0x1000`（4KB）：Android 15/16 在 16KB 页内核的机型（真我 GT8 Pro / ColorOS 17 属此类）上 dlopen 这种库会失败，
+  `System.loadLibrary("dsc")` 抛 `UnsatisfiedLinkError`，进程在 `onCreate` 前就退出——这与「点进去立刻退」的现象一致。
+  链接参数 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384` 产出的 16KB 对齐库在 4KB 内核上同样可用，属官方推荐的兼容做法；
+  `tools/verify_android.py` 新增断言读 ELF 程序头，要求 PT_LOAD 的最小 `p_align` ≥ 0x4000，防止再退回去；
 - apksigner 校验通过（v2 + v3 方案），自签证书 CN=DSC, OU=Dev, O=DSC, L=Local, ST=Local, C=CN，
-  证书 SHA-256 摘要 d1b0de2e6f86911e4b5781566fc4bd11c95bec5553071a757b02dac80fc7a44e
-  （keystore 随改名重建为 `build_android\dsc.keystore`，别名 `dsc`，DN 全为 DSC）。
+  证书 SHA-256 摘要 **bc3799137697f35053d96e0b97e0e4d16dcfe9648ad880276dfb274c166fd6a5**
+  （`keytool -list -v` 实测一致；keystore 为 `build_android\dsc.keystore`，别名 `dsc`，DN 全为 DSC。
+  本文件此前记的 `d1b0de2e…` 是更早一次重建前的 keystore 摘要，已作废）。
 
 ### 7.1 Android 1.1.0 的功能补齐（实现位置，非实测）
 
@@ -192,19 +206,19 @@ wal_bytes 32768、rss_ring_kb[9272]、rss_avg_kb 9272、rss_peak_kb 9272，峰�
 
 ## 8. 便携包可独立运行
 
-把 dist\DSC-0.1.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
-pe_imports 自检显示只导入系统 DLL）。实测：
+把 dist\DSC-0.1.1-win-x64 解到仓库外（本轮解到 `%TEMP%\dsc-portable-011`，22 个文件）仍可运行
+（不依赖构建目录、不依赖 mingw DLL，pe_imports 自检显示只导入系统 DLL）。实测：
 
-    dist\DSC-0.1.0-win-x64\tools\dsc-cli.exe doctor
+    <解包目录>\tools\dsc-cli.exe doctor
 
-    DSC 运行环境自检 0.1.0
+    DSC 运行环境自检 0.1.1
     [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
     [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
     [通过] 插件子进程宿主已就绪：./build\dsc_plugin_host.exe
-    [通过] 常驻内存采样可用：当前 9.4 MB（桌面预算 240 MB）
+    [通过] 常驻内存采样可用：当前 10.2 MB（桌面预算 240 MB）
 
-    DSC.exe --diag --shot <bmp> --ready --demo
+    DSC.exe --diag --shot <bmp> --ready --demo      （退出码 0，截图文件生成）
 
     [diag] open_db rc=0
     [diag] chat conv=<uuid> msgs=0
@@ -212,20 +226,23 @@ pe_imports 自检显示只导入系统 DLL）。实测：
     [diag] paint 1098x704
     [diag] shot rc=0
 
+    （最后五行是 0.1.0 时抓到的同一条路径输出；0.1.1 用 `Start-Process -RedirectStandardOutput` 取时为空——
+    GUI 子系统程序不挂控制台，`--diag` 的打印在无控制台时丢弃。本轮以退出码 0 + 截图文件存在作为通过判据。）
+
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\DSC-0.1.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\DSC-0.1.1-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（0.1.0 更名重建后静默安装到 `build\instest04`）：
+实测（0.1.1 重建后静默安装到 `build\instest11`）：
 
 - setup 退出码 0，落地 **21 个文件**（DSC.exe、tools\dsc-cli.exe、dsc_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（更名重建后复测 `build\instest04`）：
 
-      DSC Setup 0.1.0
-      time=2026-11-25 03:35:11
+      DSC Setup 0.1.1
+      time=2026-11-25 07:47:26
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，3 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。

@@ -138,6 +138,20 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        /* 0.1.1：先装崩溃记录器再碰界面——最早的失败也要留下证据。 */
+        Diagnostics.install(this);
+        try {
+            startUi(savedInstanceState);
+        } catch (Throwable t) {
+            Diagnostics.write(this, "启动失败", t);
+            showFatal("启动失败", Diagnostics.describe(t) + "\n\n" + Diagnostics.stack(t));
+            return;
+        }
+        maybeShowLastCrash();
+    }
+
+    /** 真正的启动流程：任何一步抛异常都由 onCreate 兜住，把原因显示到屏幕上而不是直接退出。 */
+    private void startUi(Bundle savedInstanceState) {
         buildSkeleton();
         JSONObject init = new JSONObject();
         try {
@@ -147,7 +161,10 @@ public class MainActivity extends Activity {
         }
         JSONObject r = Native.req("init", init);
         if (!opt(r, "ok")) {
-            toast(optStr(r, "err", "初始化失败"));
+            String err = optStr(r, "err", "初始化失败");
+            Diagnostics.write(this, "初始化失败", new IllegalStateException(err));
+            showFatal("初始化失败", err + "\n\n" + Diagnostics.deviceInfo());
+            return;
         }
         /* 主题解析要用「系统当前是不是深色」，必须在第一次 refresh 之前同步进去。 */
         syncSystemNight();
@@ -157,6 +174,71 @@ public class MainActivity extends Activity {
         /* 配对状态变化与增量搬运都靠这个定时器推进（界面在后台时仍然只做一次检查）。 */
         uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         uiHandler.postDelayed(syncPumpTask, 1500);
+    }
+
+    /* ---------- 启动自检（0.1.1） ---------- */
+
+    /** 把致命错误整屏显示出来：用户可以长按复制，或截图反馈，不必会看 logcat。 */
+    private void showFatal(String title, String detail) {
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(16), dp(16), dp(16));
+        TextView head = new TextView(this);
+        head.setText(title);
+        head.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        head.setTypeface(Typeface.DEFAULT_BOLD);
+        box.addView(head, rowParams(0));
+        TextView body = new TextView(this);
+        body.setText(detail == null ? "" : detail);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        body.setTextIsSelectable(true);
+        body.setPadding(0, dp(12), 0, dp(12));
+        box.addView(body, rowParams(0));
+        Button copy = new Button(this);
+        copy.setAllCaps(false);
+        copy.setText("复制错误信息");
+        copy.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                android.content.ClipboardManager cm =
+                        (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("DSC", detail));
+                    toast("已复制");
+                }
+            }
+        });
+        box.addView(copy, rowParams(0));
+        sv.addView(box);
+        setContentView(sv);
+    }
+
+    /** 上一次运行留下的崩溃记录：启动成功后弹一次，让用户能把它发出来。 */
+    private void maybeShowLastCrash() {
+        final String log = Diagnostics.read(this);
+        if (log == null || log.length() == 0) return;
+        new AlertDialog.Builder(this)
+                .setTitle("上次运行崩溃记录")
+                .setMessage(log.length() > 4000 ? log.substring(0, 4000) + "\n…（已截断）" : log)
+                .setPositiveButton("复制并发给开发者", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("DSC", log));
+                            toast("已复制");
+                        }
+                    }
+                })
+                .setNegativeButton("清除记录", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        Diagnostics.clear(MainActivity.this);
+                    }
+                })
+                .show();
     }
 
     @Override
@@ -2314,12 +2396,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "DSC 0.1.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.1", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("关于 DSC")
-                        .setMessage("DSC 0.1.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setMessage("DSC 0.1.1\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")

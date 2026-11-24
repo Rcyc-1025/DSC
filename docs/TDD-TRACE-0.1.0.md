@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节补记） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（versionCode 5 / 0.1.0，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 19 项全部 PASS
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.1 起 versionCode 6 / 0.1.1，16KB 页对齐，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.1 起 20 项全部 PASS（含 PT_LOAD 页对齐断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
+
+## 6. 0.1.1 补记：安卓首启闪退的修复依据（非需求变更）
+
+0.1.1 不动任何 FR 条目，只修安卓真机上「点开就退」的致命问题。记录在这里，是为了让后来人知道它为什么与 FR 无关、
+以及怎么避免回归：
+
+1. **现象与定位**：0.1.0 的 APK 在 16KB 页内核机型（真我 GT8 Pro / ColorOS 17 / Android 16）上启动即退出。
+   逐项排除后（ABI 匹配、依赖库只有系统库、清单与类名正确、无危险权限），唯一异常是 `libdsc.so` 的 4 个 `PT_LOAD` 段
+   `p_align=0x1000`：16KB 页内核对这种库 `dlopen` 失败 → `System.loadLibrary` 抛 `UnsatisfiedLinkError` → 进程在
+   `onCreate` 画出界面前退出。文档 FR 里没有任何一条覆盖「原生库页对齐」，因此这不是需求缺口，是构建参数缺口。
+2. **修复口径**：链接加 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`（`p_align=0x4000`，
+   16KB 对齐的库在 4KB 内核上同样可加载，属于向前兼容而不是放弃旧机）；`tools/verify_android.py` 增加断言
+   （读 ELF 程序头，`PT_LOAD` 最小 `p_align` ≥ 0x4000），把这条约束变成每次构建都要过的门。
+3. **可观测性**（同样不是 FR，但决定以后能不能查）：`Native` 加载失败改为返回可见错误；`MainActivity.onCreate` 整段
+   兜异常并把设备信息整屏显示、可复制；新增 `Diagnostics` 写 `filesDir/crash.log` 并在下次启动弹窗提示。
+4. **验收**：`verify_android.py` 20/20 PASS、`test_core` 1014 通过、`verify` 36 条 FR 719 断言全 PASS、
+   `shots.py` 19 场景 0 失败；APK `versionCode 6` / `versionName 0.1.1`。真机效果仍需用户实测确认。

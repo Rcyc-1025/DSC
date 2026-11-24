@@ -2,7 +2,63 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.0** 一条版本线（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 的 Release 保留在 `v0.1.0`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+
+## [0.1.1] - 2026-11-25（安卓首启闪退修复）
+
+> 本节同时是 GitHub Release `v0.1.1` 的发布说明。Windows 侧没有功能改动，只是版本号随动；
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 7 节 Android 校验）。
+
+### 修复
+
+- **Android 上一装就闪退（本版唯一的代码修复）**：在 16KB 页内核的新机（实测机型 真我 GT8 Pro / ColorOS 17 /
+  Android 16）上，点开应用立刻退回桌面。根因是 `libdsc.so` 的 4 个 `PT_LOAD` 段按 4KB（`p_align=0x1000`）对齐，
+  16KB 页内核拒绝 `dlopen` 这种库，`System.loadLibrary("dsc")` 抛 `UnsatisfiedLinkError`，进程在界面画出前就退出。
+  - 链接参数加 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`，产出的库 `p_align=0x4000`；
+    16KB 对齐的库在 4KB 内核上同样可用，是按官方建议做的向前兼容，没有放弃旧机型。
+  - `tools/verify_android.py` 新增断言：读取 ELF 程序头，要求 `PT_LOAD` 的最小 `p_align` ≥ 0x4000，防止再退回去。
+- **原生库加载失败不再让应用直接消失**：`Native` 的 `System.loadLibrary` 改为捕获 `Throwable` 并记录原因，
+  之后任何桥调用返回 `{"ok":false,"err":"原生库加载失败：…"}`，界面把原因显示出来，而不是静态初始化抛死。
+- **启动失败可见**：`MainActivity.onCreate` 整段兜异常（`startUi` 抽出），失败时把异常类型、消息、设备信息
+  （应用版本、Android 版本与 API、品牌型号、ABI、原生库状态）整屏显示，并提供「复制错误信息」按钮；
+  初始化失败（数据库、迁移等）走同一条路径。
+- **新增崩溃记录 `Diagnostics`**：安装全局未捕获异常处理器，堆栈追加到 `filesDir/crash.log`（超过 64KB 先清），
+  下次启动弹窗展示最近记录，可「复制并发给开发者」或「清除记录」。用户拿不到 logcat 时也能给出定位信息。
+
+### 变更
+
+- 版本号：`versionCode 5 → 6`、`versionName 0.1.0 → 0.1.1`（`AndroidManifest.xml` 与 `aapt2 link` 两处同时改，
+  `verify_android.py` 会断言一致）；Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.1。
+- `tools/verify_android.py` 校验项由 19 项增至 20 项。
+- 许可证、功能、数据模型、schema 均无变化（仍是 Apache-2.0 / schema v5），0.1.0 的用户数据可直接沿用。
+
+### 复测（0.1.1 重建后全跑一遍）
+
+- `test_core`：**1014 通过 0 失败**；`dsc-cli.exe verify`：**FR-01 ~ FR-36 全 PASS，719 项断言 0 失败**；
+  `python tools\shots.py`：**19 个场景 0 失败**；`python tools\verify_android.py`：**20 项全 PASS**；
+  `python tools\precommit_scan.py`：0 问题。
+- `dsc-cli.exe bench`：万条分页 11.74 ms/页（预算 300 ms）、万条导出 45 ms（预算 2000 ms）、常驻内存 11.9 MB（预算 240 MB）；
+  `dsc-cli.exe perf`：rss 9292 KB（9.07 MB）、`rss_ok=true`、帧预算 16.7 ms。
+- 安装包：`DSC-0.1.1-win-x64-setup.exe /S /D=build\instest11` 退出码 0、落地 21 个文件、
+  `install.log` 记录 `DSC Setup 0.1.1 / time=2026-11-25 07:47:26 / files=21 shortcut=failed registry=failed`，
+  静默卸载退出码 0、目录整体消失。便携包解到仓库外运行 `doctor` 五项通过（常驻内存 10.2 MB）。
+- 签名与校验状态不变：Windows 产物**未做代码签名**（首次运行会有 SmartScreen 提示）；Android APK 用**调试证书**签名，
+  只适合自测与内部分发，不适合上架；完整性一律以同一行的 SHA-256 为准。
+
+### 产物（`dist`，各自旁挂 `.sha256`）
+
+| 产物 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.1-win-x64-portable.zip` | 1688821 | `0782d3bb8cacc0507a3ccc794102b851b36aebfb7da9a8486d128db4c30df076` |
+| `DSC-0.1.1-win-x64-setup.exe` | 4129983 | `1ed0795448a0690a1c30662b83d1475df011db8d0cb3df3447352a88cd50d06d` |
+| `DSC-0.1.1-win-arm64-portable.zip` | 955262 | `6fabd4f19cf7afb4d13a718c85e87ab12dad9eb50b1e8fe25628d4372ca8dcd1` |
+| `DSC-0.1.1-android-arm64.apk` | 909774 | `841c44cd8ddd0f4b420c8d73aa223513b9437275e04bbe130b846f100dad88e6` |
+
+### 升级方式
+
+- Windows：解压新的便携包覆盖旧目录，或直接跑新的安装包覆盖安装；数据库与设置沿用，不需要手工迁移。
+- Android：直接覆盖安装 0.1.1（包名与签名证书未变，可原地升级）。若 0.1.0 已开启同步，配对与密钥留在安全存储里。
+
 
 ## [0.1.0] - 2026-11-24（首次公开发布版）
 

@@ -1,6 +1,6 @@
 # DSC 技术设计（实现说明）
 
-> 本文件说明 "DSC" 0.1.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.1 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -258,6 +258,12 @@ dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）�
 - 界面各自原生：Windows 单窗口 Win32 + GDI 双缓冲自绘；Android 纯代码构建 View 层级（不依赖 XML 布局），
   两者都只通过 JNI/直接调用的核心 API 取数据，保证数据格式与行为一致；
 - 数据目录：Windows 默认 %LOCALAPPDATA%\DSC，可用 DSC_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
+- **Android 原生库必须 16KB 页对齐**：`tools/build_android.py` 链接 `libdsc.so` 时带
+  `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`。Android 15/16 的 16KB 页内核机型只加载 `p_align ≥ 0x4000`
+  的库，4KB 对齐的库会让 `System.loadLibrary` 抛 `UnsatisfiedLinkError`、应用一启动就退（0.1.0 的实际故障）。
+  16KB 对齐的库在 4KB 内核上同样可加载，属于向前兼容；`tools/verify_android.py` 有断言守着这条约束。
+- **安卓侧崩溃必须可见**：`Native` 捕获库加载失败并返回错误对象；`MainActivity.onCreate` 整段兜异常，失败时整屏显示
+  原因与设备信息；`Diagnostics` 把未捕获异常写 `filesDir/crash.log`，并在下次启动弹窗提示（用户未必能提供 logcat）。
 
 ## 11. 构建与打包
 

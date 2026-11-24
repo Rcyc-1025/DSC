@@ -46,13 +46,28 @@ def main():
         check(machine == 183, 'libdsc.so 目标架构是 AArch64（e_machine=183，实际 %d）' % machine)
         check(b'Java_com_dsc_app_Native_call' in so, 'libdsc.so 导出 JNI 入口 Java_com_dsc_app_Native_call')
         check(b'sqlite3_open_v2' in so, 'libdsc.so 静态包含 SQLite（sqlite3_open_v2）')
+        # 0.1.1 起的关键项：PT_LOAD 的 p_align 必须 >= 16KB，否则 16KB 页内核的新机会 dlopen 失败。
+        phoff = struct.unpack('<Q', so[0x20:0x28])[0]
+        phentsize = struct.unpack('<H', so[0x36:0x38])[0]
+        phnum = struct.unpack('<H', so[0x38:0x3A])[0]
+        aligns = []
+        for i in range(phnum):
+            off = phoff + i * phentsize
+            if off + 56 > len(so):
+                break
+            p_type = struct.unpack('<I', so[off:off + 4])[0]
+            if p_type == 1:  # PT_LOAD
+                aligns.append(struct.unpack('<Q', so[off + 48:off + 56])[0])
+        min_align = min(aligns) if aligns else 0
+        check(min_align >= 0x4000,
+              'libdsc.so 的 PT_LOAD 段按 16KB 页对齐（最小 p_align=0x%x，需 >=0x4000）' % min_align)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.0'" in badging, '版本名 0.1.0')
-    check("versionCode='5'" in badging, 'versionCode 5')
+    check("versionName='0.1.1'" in badging, '版本名 0.1.1')
+    check("versionCode='6'" in badging, 'versionCode 6')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')
