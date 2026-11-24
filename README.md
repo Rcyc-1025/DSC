@@ -42,10 +42,10 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `Sai-1.4.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
-| `Sai-1.4.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `Sai-1.4.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `Sai-1.4.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
+| `Sai-0.1.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
+| `Sai-0.1.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `Sai-0.1.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `Sai-0.1.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 
 每个包都附同名 `.sha256`。
 
@@ -71,10 +71,10 @@ python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.4.0-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\Sai-0.1.0-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.4.0-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\Sai-0.1.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `Sai.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
@@ -94,7 +94,7 @@ python tools\make_installer.py       # dist\Sai-1.4.0-win-x64-setup.exe + .sha25
 | `docs/ADVANCED.md` | 进阶操作：提示词变量、双模式、导出导入、分页、模型配置、更新与数据管理 |
 | `docs/PLUGIN.md` | 插件清单字段、扩展点、C ABI、宿主协议与排错 |
 | `docs/RELEASE.md` | 版本号规则、发布流程、产物命名口径、ARM64 口径说明 |
-| `docs/TDD-TRACE-1.4.0.md` | FR-01 ~ FR-36 与 TDD 文档的逐条对照：实现位置、验收方式、已知口径差异 |
+| `docs/TDD-TRACE-0.1.0.md` | FR-01 ~ FR-36 与 TDD 文档的逐条对照：实现位置、验收方式、已知口径差异 |
 | `DEPENDENCIES.md` | 运行期与构建期依赖清单、明确不使用的依赖、升级约束 |
 | `CHANGELOG.md` | 变更记录（每版与 git 标签一一对应） |
 

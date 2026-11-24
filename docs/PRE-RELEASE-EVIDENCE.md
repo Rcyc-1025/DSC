@@ -1,16 +1,16 @@
-# 发布前证据（Sai 1.4.0）
+# 发布前证据（Sai 0.1.0）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
-> 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 1.4.0 起）。
-> 1.4.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是本轮重新跑出来的；
-> 逐条复核结论与口径差异见 `docs/TDD-TRACE-1.4.0.md`。
+> 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 0.1.0 起）。
+> 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是本轮重新跑出来的；
+> 逐条复核结论与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
 > 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
 > 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
 > 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
 > **产品名**：2026-11-22 的存档版本把产品名从「DeepSeek 陪伴对话软件」改为 **Sai**（正文仅 3 处 + 标题，功能参数与 FR 条目未变）；
 > 本次已按该版把可执行文件名、安装包/便携包名、Android 包名与应用名、文档与仓库名统一为 Sai，核心模块前缀 `aic_` 保持不动。
-> §2 的哈希是 1.4.0 重建后的实测值，本文件 §3 起的数字（1014 / 719 / 36 条 FR）是 1.4.0 重建后重新跑出来的；
+> §2 的哈希是 0.1.0 重建后的实测值，本文件 §3 起的数字（1014 / 719 / 36 条 FR）是 0.1.0 重建后重新跑出来的；
 > 1.3.0 的历史数字（810 / 410 / 30 条 FR / 856526 字节 APK）只保留在 CHANGELOG 与 §11.3，不作为本版证据。
 
 ## 1. 构建环境（本机实测）
@@ -28,18 +28,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，1.4.0） | 1688149 | 35b01d6bb1bd271bc9e5e5de23749d5c6cdec1dde0b46c19553df4cdf42b2cc0 |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1641726 | 9b9c6682d362cac9bf49c078e614c7aaf85e105dd81de41f49ecf67a0d09159e |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | 03e8fb02ae7a244d37a39fbcc73cfba2e25ac2d994e5d75e2e315617f0f569c2 |
-| build\test_core.exe（单元测试） | 1718621 | 9f6fcb23e294ba0cff5057708ebe6f41dc29f7d173827ecdc60decb4430168ac |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1604096 | 21ad3c1c02fadf67a9415b09643b1bd48acbdb7d2763d0af4c06f29097a5efb8 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 58133bb75c8f9822a115695274e034a337f8f11547071be5ec48384d03cf09a5 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | cfe97430dabf6375a8578322db7df12e3e7f43b8312f6bca54f699942b8c3746 |
-| build_android\Sai.apk（Android ARM64 安装包，versionCode 5 / versionName 1.4.0） | 905678 | 21b66fe47f93bd248deb29bbc76f033572b1767e2262111ae0940b859969a880 |
-| dist\Sai-1.4.0-win-x64-portable.zip | 1677077 | e7e01e5fefc47e01364ecadd026c02ac3e05e9732a87f355325dea5125a78d2d |
-| dist\Sai-1.4.0-win-x64-setup.exe | 4100172 | 8e12cb0336431c48f0aa6131496334c17b4188351f731f5a5a10784d2917bcc9 |
-| dist\Sai-1.4.0-win-arm64-portable.zip | 943478 | 6ae589aeae9e395a1949ddb6bf8508cc47b01ff46f8f18264bd34990b9716e8d |
-| dist\Sai-1.4.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 905678 | 21b66fe47f93bd248deb29bbc76f033572b1767e2262111ae0940b859969a880 |
+| build\Sai.exe（Windows 界面，0.1.0） | 1688149 | be53f291fc7e460ac8afadeefb9622dbd02c08c6aa610f04701a6b5be2152a4c |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1641726 | b0f4303102d0da1f58d1f463fb090673ff5e8c38f2f6b21876b032135ac6ab3e |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | d11660577120ec7ca57ac57399bfd60f4df9958619fd0117d4b00faeda15839c |
+| build\test_core.exe（单元测试） | 1718621 | 67cc3da4150d8eacd0c857141d8f303dae05a5df3cd3ba5a29c4ae29a000b25d |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1604096 | 708063228e038afb91a3c71895d92427aa1ffcc5aaad08b92d3928a110b52fe9 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 4270e499c17b0073428b6f4e1326e9cd305d19ab1938a425bd82b0b740019cc5 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | ab82cb144d5dbcc76c61a3224fbe39774d851688f42cd9d9e6110cde4c0514b9 |
+| build_android\Sai.apk（Android ARM64 安装包，versionCode 5 / versionName 0.1.0） | 905678 | c7236737bd463017f18400ec829168104983c423d3bffff26dc698741fa129d2 |
+| dist\Sai-0.1.0-win-x64-portable.zip | 1679912 | 13c74225caf0df8487eac676c19ea7d8ee7405a2ea93508414dc1b0e71b4907f |
+| dist\Sai-0.1.0-win-x64-setup.exe | 4107274 | 6eed9b51f7b7ec2981c522a02acb675a378c95547cbee55a523a57b0572d114a |
+| dist\Sai-0.1.0-win-arm64-portable.zip | 946318 | 4a97d10eb69c566f5597882d453c86faee709b4fc7a3799d9d043abfb93f4b42 |
+| dist\Sai-0.1.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 905678 | c7236737bd463017f18400ec829168104983c423d3bffff26dc698741fa129d2 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -47,7 +47,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 33.8s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\Sai-0.1.0-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -73,7 +73,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），
 1.3.0 起新增 pairing（6 位码、5 分钟 TTL、5 次作废、双向校验、密钥只进安全存储）、sync（逻辑时钟、发件箱、冲突落败方副本、入站去重）、
 sync_clock、transport 帧、sync_session 端到端（本机回环 TCP：发现→连接→握手→事件互传→解除配对），
-1.4.0 起新增 knowledge（五组 15 篇、检索命中/无命中、引用片段带来源与版本、书签与最近阅读上限）、
+0.1.0 起新增 knowledge（五组 15 篇、检索命中/无命中、引用片段带来源与版本、书签与最近阅读上限）、
 error_store（写入、脱敏、按类别与时间筛选、未读计数、保留期钳制、诊断包、清除）、
 capability（六项能力、必需项不可撤销、申请/授予/拒绝/撤销、授权后取数、拒绝后主流程继续、只读单文件）、
 memory（句子过滤、抽取、检索、重建、注入片段、修改 AI 发言时的删除与重建、对用户发言拒绝），
@@ -90,7 +90,7 @@ FR-15 返回键三级优先级 + 同级三栏不入栈；FR-18 导出后另库�
 FR-22 九步指南可完成、可跳过、可重置；FR-26 双向配对码（含连错 5 次作废与密钥写入安全存储）；
 FR-27 两台本机会话经回环 TCP 配对后互发增量事件、暂停期间事件留队、恢复后按 event_id 补发；
 FR-29 逻辑时钟递增与远端抬高、墙钟改动不影响排序、冲突判负并留副本；FR-30 凭证未就绪不能进主页、凭证就绪后可选默认模式。
-1.4.0 新增的六条：
+0.1.0 新增的六条：
 FR-31 知识包结构（五组各 ≥3 篇、每篇正文 ≥2 段、示意图 ≥2 节点且不含外链、id 唯一）、检索有命中与无命中、书签与最近阅读上限；
 FR-32 每条来源五个字段齐全且链接为 http(s)、引用片段带标题与知识包版本、长度小于全文、未知条目返回 AIC_E_NOTFOUND；
 FR-33 两套主色色相在 205~235 度且差 ≤6 度、正文与按钮对比度达标、token 数 10、六档动效时长与"减少动态效果归零"；
@@ -113,7 +113,7 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 | 万条导出 | 50 ms | 2000 ms | 2500 ms | 达标 |
 | 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
-（1.4.0 复跑三次：分页 11.78 / 12.03 / 12.29 ms，导出 49 / 49 / 51 ms，内存 11.9 / 12.0 / 12.0 MB，稳定。
+（0.1.0 复跑三次：分页 11.78 / 12.03 / 12.29 ms，导出 49 / 49 / 51 ms，内存 11.9 / 12.0 / 12.0 MB，稳定。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -137,7 +137,7 @@ wal_bytes 172880、storage_kb 272、rss_ring_kb[9624]、rss_avg_kb 9624、rss_pe
 导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
 内置知识库列表 / 知识库详情（正文分段、示意图节点框、示例、要点、来源）/ 错误中心（类别筛选 + 动作按钮）/
 设备权限（六项能力与选择器）/ 聊天页错误状态条。
-离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码）。1.4.0 修掉 4 处视觉问题并以截图复核：
+离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码）。0.1.0 修掉 4 处视觉问题并以截图复核：
 知识库详情正文重复（段落不是独立 C 串，改为按段落长度拷成缓冲）、示意图原为一串多行文本（改为节点圆角框 + 向下箭头）、
 错误卡片底部重复动作文字、聊天页错误条压住输入框（改钉在输入区上方、不挤占消息区）。
 
@@ -151,9 +151,9 @@ wal_bytes 172880、storage_kb 272、rss_ring_kb[9624]、rss_avg_kb 9624、rss_pe
 - APK 905678 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so（1677952 字节）；
 - libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call 与
   Java_com_sai_app_Native_feed（1.1.0 新增的三段协议喂数据入口），静态含 SQLite；
-- 清单：包名 com.sai.app、versionCode 5、versionName 1.4.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
+- 清单：包名 com.sai.app、versionCode 5、versionName 0.1.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
   native-code arm64-v8a、应用名「Sai」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
-  两处已同时改为 5 / 1.4.0，校验脚本会断言一致）；
+  两处已同时改为 5 / 0.1.0，校验脚本会断言一致）；
 - apksigner 校验通过（v2 + v3 方案），自签证书 CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN，
   证书 SHA-256 摘要 12a010a148db13c75484c5167fb3011fc735c594d4f6c19861d5b00289832897（证书 DN 已随改名变更为 CN=Sai, O=Sai）。
 
@@ -191,17 +191,17 @@ wal_bytes 172880、storage_kb 272、rss_ring_kb[9624]、rss_avg_kb 9624、rss_pe
 
 ## 8. 便携包可独立运行
 
-把 dist\Sai-1.4.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
+把 dist\Sai-0.1.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
 pe_imports 自检显示只导入系统 DLL）。实测：
 
-    dist\Sai-1.4.0-win-x64\tools\aic.exe doctor
+    dist\Sai-0.1.0-win-x64\tools\aic.exe doctor
 
-    Sai 运行环境自检 1.4.0
+    Sai 运行环境自检 0.1.0
     [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
     [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
     [通过] 插件子进程宿主已就绪：./build\aic_plugin_host.exe
-    [通过] 常驻内存采样可用：当前 10.2 MB（桌面预算 240 MB）
+    [通过] 常驻内存采样可用：当前 9.4 MB（桌面预算 240 MB）
 
     Sai.exe --diag --shot <bmp> --ready --demo
 
@@ -214,20 +214,20 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\Sai-1.4.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\Sai-0.1.0-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（静默安装到 `build\instest14`）：
+实测（0.1.0 重打包后静默安装到 `build\instest01`）：
 
 - setup 退出码 0，落地 **21 个文件**（Sai.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
 
-      Sai Setup 1.4.0
-      time=2026-11-24 09:32:19
+      Sai Setup 0.1.0
+      time=2026-11-24 09:51:01
       files=21 shortcut=failed registry=failed
 
-- 静默卸载退出码 0，8 秒内安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
+- 静默卸载退出码 0，3 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
 - 调用方式：PowerShell 用调用运算符（`& <exe> /S /D=<目录>`）或 `cmd /c`；本轮用 `python subprocess.run([exe,"/S","/D=..."])` 调用时拿到 rc=4（安装程序未读到 /D，g_dir 为空，写第一层就失败），改用 `cmd /c` 后 rc=0、21 文件落地——属调用侧参数传递问题，安装程序本身不必改。
 - `uninstall.exe /K` 只清卸载登记、不删目录，便于保留数据后手工处理。
 
@@ -315,9 +315,9 @@ Android 侧对应 7 项（分页 loadOlder、models.json、restoreEdit、导出�
 Android 侧对应项（凭证前置页、配对与同步桥命令、进阶指南一节、Android Keystore 语义的共享密钥存储）在
 `android/app/src/main/cpp/aic_jni.c` + `credential_android.c` 与 `MainActivity.java` 落地，APK 重建后按 tools/verify_android.py 校验；
 与桌面一样只到「编译 + 结构核验」，未在设备上运行（见 `11 第 2 条）。
-## 11.4 1.4.0 补齐的能力与证据（FR-31 / FR-32 / FR-33 / FR-34 / FR-35 / FR-36）
+## 11.4 0.1.0 补齐的能力与证据（FR-31 / FR-32 / FR-33 / FR-34 / FR-35 / FR-36）
 
-按 V1.0 逐章复核后确认的六处缺口，本版全部补齐；逐条对照与口径差异见 `docs/TDD-TRACE-1.4.0.md`。
+按 V1.0 逐章复核后确认的六处缺口，本版全部补齐；逐条对照与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
 
 | 需求 | 实现位置 | 证据 |
 | --- | --- | --- |

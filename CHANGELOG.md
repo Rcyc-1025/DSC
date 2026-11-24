@@ -2,13 +2,15 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
+> 版本口径：本仓库只维护 **0.1.0** 一条版本线（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+
 ## [未发布]
 
-## [1.4.0] - 2026-11-24
+## [0.1.0] - 2026-11-24
 
 按技术设计文档 V1.0（2026-11-21，FR-01 ~ FR-36）逐章复核，补齐第 17 章（内置知识库与来源引用）、
 第 18 章（设备能力与权限）与 FR-36（AI 发言修改与记忆同步），并把主色调改为深蓝。逐条对照见
-`docs/TDD-TRACE-1.4.0.md`，自动化验收见 `docs/FR-MATRIX.md`（36 条需求、719 项断言）。
+`docs/TDD-TRACE-0.1.0.md`，自动化验收见 `docs/FR-MATRIX.md`（36 条需求、719 项断言）。
 
 ### 新增
 
@@ -36,7 +38,7 @@
   设备发 `memory_replace` 事件（新增同步实体 `memory`），接收端整条重建。两端编辑浮层都先提示「修改将同步更改 AI 记忆」。
 - **schema v5**：新增 `error_record`、`memory_entry`、`memory_token`、`capability_grant` 四张表与索引，迁移前照旧落备份。
 - **验收与文档**：`aic.exe verify` 扩到 FR-01 ~ FR-36（新增 fr31~fr36，断言 719 项），单元测试增至 1014 项；
-  新增 `docs/TDD-TRACE-1.4.0.md`（逐条对照与口径差异）、`tools/gen_knowledge.py`；截图场景扩到 20 张。
+  新增 `docs/TDD-TRACE-0.1.0.md`（逐条对照与口径差异）、`tools/gen_knowledge.py`；截图场景扩到 20 张。
 
 ### 新增（1.3.0 之后的两端补强）
 
@@ -63,9 +65,9 @@
   Android 插件从「仅可管理清单」变为「独立进程运行」；余额从「仅本地账本」变为「真实账户接口 + 本地账本并列」。
 - `docs/RELEASE.md` 的第 7 步（签名）重写为两端的具体命令与退出码。
 - 设置页新增「内置知识库 / 设备权限 / 错误中心」三行（桌面与 Android 各 19 行），Android 端设置页顺序与桌面端对齐。
-- 版本号升到 1.4.0（安装包、APK `versionCode=5`、便携包文件名同步）；Android 端关于页与桌面端关于框补全本版新增说明。
+- 版本号升到 0.1.0（安装包、APK `versionCode=5`、便携包文件名同步）；Android 端关于页与桌面端关于框补全本版新增说明。
 - 文档：`docs/DESIGN.md` 补四个新模块与 schema v5，`docs/ADVANCED.md` 补知识库/错误中心/设备权限/AI 记忆四节，
-  `docs/RELEASE.md` 的产物命名与 APK 版本口径同步，`docs/PRE-RELEASE-EVIDENCE.md` 按 1.4.0 重测后更新。
+  `docs/RELEASE.md` 的产物命名与 APK 版本口径同步，`docs/PRE-RELEASE-EVIDENCE.md` 按 0.1.0 重测后更新。
 
 ## [1.3.0] - 2026-11-22
 

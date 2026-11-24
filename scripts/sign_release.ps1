@@ -49,7 +49,7 @@ if ($Files.Count -eq 0) {
         (Join-Path $root 'build\Sai.exe'),
         (Join-Path $root 'build\aic.exe'),
         (Join-Path $root 'build\aic_plugin_host.exe'),
-        (Join-Path $root 'dist\Sai-1.4.0-win-x64-setup.exe')
+        (Join-Path $root 'dist\Sai-0.1.0-win-x64-setup.exe')
     ) | Where-Object { Test-Path $_ }
 }
 if ($Files.Count -eq 0) {

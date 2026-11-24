@@ -1,7 +1,7 @@
-# Sai 1.4.0 与《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0 对照
+# Sai 0.1.0 与《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0 对照
 
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（2026-11-21，FR-01 ~ FR-36）。
-> 本文件记录 1.4.0 这一轮对 FR-01 ~ FR-36 的逐条复核结论：每条需求落在哪个模块、怎么验收、
+> 本文件记录 0.1.0 这一轮对 FR-01 ~ FR-36 的逐条复核结论：每条需求落在哪个模块、怎么验收、
 > 以及实现与文档字面表述之间的已知口径差异。数字均来自本机实测（命令见 §5）。
 
 ## 0. 复核口径
@@ -13,14 +13,14 @@
 
 ## 1. 结论
 
-| 项 | 1.3.0 | 1.4.0 |
+| 项 | 1.3.0 | 0.1.0 |
 | --- | --- | --- |
 | 覆盖的需求 | FR-01 ~ FR-30 | FR-01 ~ FR-36 |
 | `aic.exe verify` | 30 条全部 PASS、415 项断言 | **36 条全部 PASS、719 项断言、0 失败** |
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 1.4.0**，`tools/verify_android.py` 19 项全部 PASS |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -141,12 +141,12 @@
    因此**以实现的键为准**，新增的键沿用同一套命名：`knowledge.*`、`error.*`、`capability.*`。
 2. **导出格式**：§5.4 的顶层 `format=chat_record`、`schema_version=1`、`checksum` 与实现一致；差异只在
    「近 7 天 / 全部会话 / 当前会话」三种范围的字段组合，实现按范围省略空数组而不是写 `null`。
-3. **同步实体范围**：§16 列出七类实体，1.4.0 追加第八类 `memory` 仅用于 FR-36 的 `memory_replace`；
+3. **同步实体范围**：§16 列出七类实体，0.1.0 追加第八类 `memory` 仅用于 FR-36 的 `memory_replace`；
    其余不传项（凭证、用量原始、日志、备份包、插件二进制）与文档一致。
 4. **桌面端的位置/天气**：Windows 没有系统级位置与天气来源，实现为「有 provider 才取、取不到写错误中心」，
    与 §18「拒绝或失败不影响主对话」一致，不等于功能缺失。
 
-## 5. 验收命令与结果（1.4.0 实测）
+## 5. 验收命令与结果（0.1.0 实测）
 
 ~~~powershell
 # 桌面端
@@ -158,7 +158,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\Sai.apk（versionCode 5 / 1.4.0，v2+v3 自签）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\Sai.apk（versionCode 5 / 0.1.0，v2+v3 自签）
 D:\Code\python312\python.exe tools\verify_android.py  # 19 项全部 PASS
 ~~~
 

@@ -44,10 +44,10 @@ Each version ships the packages below (produced under `dist\` for a local build)
 
 | File | What it is |
 | --- | --- |
-| `Sai-1.4.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
-| `Sai-1.4.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `Sai-1.4.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `Sai-1.4.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+| `Sai-0.1.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
+| `Sai-0.1.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `Sai-0.1.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `Sai-0.1.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
 
 ## Build
 
@@ -71,10 +71,10 @@ python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.4.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\Sai-0.1.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.4.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\Sai-0.1.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe (+ .sha256)
 ~~~
 
 The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
