@@ -7,8 +7,8 @@
 ## [0.1.0] - 2026-11-24（首次公开发布版）
 
 > 本节同时是 GitHub Release `v0.1.0` 的发布说明。本节所有数字与哈希均为**按 Apache-2.0 重新构建**后的实测值
-> （单测 1014 通过 / 36 条 FR 全 PASS / 719 项断言 / 19 个截图场景 / 四个产物与各自 `.sha256`）。
-> 可复现的证据与命令见 `docs/PRE-RELEASE-EVIDENCE.md`，逐条需求对照见 `docs/FR-MATRIX.md`。
+> （单测 1014 通过 / 36 条 FR 全 PASS / 719 项断言 / 19 个截图场景 / 12 个产物与 4 个各 `.sha256`）。
+> 可复现的证据与第 2 节的产物哈希见 `docs/PRE-RELEASE-EVIDENCE.md`，逐条需求对照见 `docs/FR-MATRIX.md`。
 
 ### 发布说明（本版作为第一个正式版本对外）
 
@@ -22,7 +22,7 @@
   Android APK 用**调试证书**签名（证书 DN：`CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN`），
   只适合自测与内部分发，不适合上架。两者完整性一律以同一行的 SHA-256 为准。
 - **发布后复测**：`test_core` 1014 通过 0 失败；`aic.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
-  `tools/shots.py` 19 个场景 0 失败；`tools/precommit_scan.py` 0 问题；
+  `python tools\shots.py` 19 个场景 0 失败；`tools/precommit_scan.py` 0 问题；
   `aic.exe bench` 万条分页 12.06 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 11.9 MB（预算 240 MB）；
   安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `Sai Setup 0.1.0`，静默卸载后目录整体消失。
 - **仍未实测的边界**（不在本版声明之内）：Android 真机运行、用真实 Key 打 `api.deepseek.com`、
