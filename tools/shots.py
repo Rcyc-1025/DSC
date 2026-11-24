@@ -33,6 +33,11 @@ SCENES = [
     ('13_credential', ['--cred']),
     ('14_mode', ['--mode']),
     ('15_pair', ['--ready', '--demo', '--pair']),
+    ('16_knowledge', ['--ready', '--demo', '--kb']),
+    ('17_kb_article', ['--ready', '--demo', '--kbopen']),
+    ('18_error_center', ['--ready', '--demo', '--err']),
+    ('19_capability', ['--ready', '--demo', '--cap']),
+    ('20_error_bar', ['--ready', '--demo', '--errbar']),
 ]
 
 

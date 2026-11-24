@@ -41,7 +41,12 @@
 #include "pairing.h"
 #include "sync.h"
 #include "sync_session.h"
+#include "sync_clock.h"
 #include "transport.h"
+#include "knowledge.h"
+#include "error_store.h"
+#include "capability.h"
+#include "memory.h"
 
 #define TAG "SaiCore"
 #define JLOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -55,6 +60,8 @@ static aic_router *g_router;
 static char        g_dir[400];       /* 应用私有根目录 */
 static char        g_conv[40];       /* 当前查看的会话 id（问答线程或唯一聊天会话） */
 static char        g_err[512];
+static char        g_device[40];   /* 本机设备标识：记忆条目与同步事件都带它（§16.5） */
+static aic_kb     *g_kb;           /* 内置知识库（FR-31）：首次使用时解析，进程内只一份 */
 
 /* ============================================================================
  * 以下为 Android 端补齐部分（对应技术设计文档 FR-02/03/05/07/08/11/16/17 等）：
@@ -78,6 +85,8 @@ static void put_credential(jw *w);
 static void put_sync(jw *w);
 static int cred_has_key(void);
 static int demo_mode(void);
+static void install_cap_provider(void);   /* FR-35：六项能力的平台取值来源 */
+static void record_llm_error(int le, const char *msg, const char *conv, const char *detail);
 
 /* 进程内的可变状态：全部只保存在内存里，不落盘。 */
 static char g_key[256];      /* API Key：不进日志、不进导出、不进备份包 */
@@ -119,6 +128,7 @@ static void gen_unlock(void) { pthread_mutex_unlock(&g_lock); }
 /* 关闭整个环境（恢复备份前必须调用：恢复会替换数据库文件）。 */
 static void close_env(void)
 {
+    if (g_kb) { aic_kb_free(g_kb); g_kb = NULL; }
     session_close();
     if (g_eng) { aic_engine_destroy(g_eng); g_eng = NULL; }
     if (g_router) { aic_router_destroy(g_router); g_router = NULL; }
@@ -403,12 +413,18 @@ static void cmd_send_end(int handle, sb *out)
         char msg[320];
         snprintf(msg, sizeof(msg), "%s",
                  g_gen.err_msg[0] ? g_gen.err_msg : aic_llm_err_text(g_gen.err));
+        /* FR-34：流里带回的错误同样进错误中心，不进消息表、不进上下文。 */
+        record_llm_error((int)g_gen.err, msg, g_gen.conv_id, g_gen.err_msg);
         reply_err_code(out, msg, (int)g_gen.err);
         gen_reset();
         gen_unlock();
         return;
     }
     if (g_gen.text.len == 0) {
+        if (g_db) {
+            aic_error_record(g_db, g_dir, AIC_ERR_PARSE, "llm.no_content", "模型没有返回内容",
+                             g_gen.conv_id, NULL, NULL, NULL);
+        }
         reply_err(out, "模型没有返回内容");
         gen_reset();
         gen_unlock();
@@ -429,6 +445,11 @@ static void cmd_send_end(int handle, sb *out)
     mdl = aic_llm_model_or_default(g_gen.model);
     cost = mdl ? aic_llm_cost_micros(mdl, pt, ct) : 0;
     aic_usage_append(g_db, g_gen.conv_id, amsg.id, mdl ? mdl->id : g_gen.model, pt, ct, cost);
+    /* FR-36：AI 发言落库后抽记忆（记忆条目带 source_message_id，改发言时按它重建）。 */
+    {
+        int mem_added = 0;
+        aic_mem_extract(g_db, amsg.id, g_gen.conv_id, sb_cstr(&g_gen.text), g_device, &mem_added);
+    }
     aic_llm_format_micros(cost, cost_s, sizeof(cost_s));
 
     sb_reset(out);
@@ -473,6 +494,9 @@ static void cmd_send_fail(int handle, int http, const char *message, sb *out)
     if (message && message[0] && message[0] != '{') snprintf(msg, sizeof(msg), "%s", message);
     else snprintf(msg, sizeof(msg), "%s", aic_llm_err_text(le));
     JLOG("生成失败：http=%d %s", http, msg);
+    /* FR-34：失败写错误中心（脱敏明细进 errors/），聊天框里只出现状态条，不产生新消息。 */
+    record_llm_error((int)le, msg, g_gen.conv_id,
+                     (message && message[0] == '{') ? message : NULL);
     reply_err_code(out, msg, (int)le);
     gen_reset();
     gen_unlock();
@@ -1247,6 +1271,14 @@ static int ensure_env(void)
     /* 设置里选的模型交给引擎作为 override，否则请求里会一直用会话默认模型。 */
     aic_engine_set_model_override(g_eng, selected_model());
     aic_engine_set_endpoint(g_eng, cur_endpoint());
+    /* FR-31/34/35/36：错误中心要写 errors/ 明细、能力失败要写错误中心、
+     * AI 发言修改要重建记忆、记忆条目要带来源设备，这四件事都依赖数据根目录。 */
+    aic_engine_set_data_root(g_eng, g_dir);
+    if (!g_device[0] && aic_device_id(g_db, g_device, sizeof(g_device)) != AIC_OK) g_device[0] = 0;
+    aic_engine_set_origin_device(g_eng, g_device);
+    aic_engine_set_memory_enabled(g_eng, 1);
+    aic_engine_set_capability_enabled(g_eng, 1);
+    install_cap_provider();
     /* 重启后把安全存储里的 Key 读回内存（FR-30）：界面与日志都不出现明文。 */
     load_key_from_store();
     aic_router_boot(g_router);
@@ -1558,6 +1590,9 @@ static void build_state(sb *out)
     jw_put_bool(&w, "pluginProcAvailable", 1);
     jw_put_str(&w, "pluginProcNote", "插件在独立进程里运行，超时或崩溃只终止该进程；数据目录与核心目录分离");
     jw_put_bool(&w, "hasBackup", g_backup_ok ? 1 : 0);
+    /* FR-34：错误中心的未读数给聊天页的非侵入状态条用；FR-35：时间未授予时不进主页。 */
+    jw_put_int(&w, "errorUnread", (long long)aic_error_unread(g_db));
+    jw_put_bool(&w, "capGate", aic_cap_launch_gate(g_db) ? 1 : 0);
     jw_put_int(&w, "balanceAlertCents", aic_setting_get_int(g_db, AIC_SET_BALANCE_ALERT, 0));
     jw_put_int(&w, "updateAuto", aic_setting_get_int(g_db, AIC_SET_UPDATE_AUTO, 1));
     jw_put_int(&w, "updateIntervalHours", aic_setting_get_int(g_db, AIC_SET_UPDATE_INTERVAL, 24));
@@ -2661,6 +2696,540 @@ static void cmd_conflict_list(sb *out)
     sb_free(&items);
 }
 
+/* ============================================================================
+ * FR-31/32 内置知识库、FR-34 错误中心、FR-35 设备能力、FR-36 AI 记忆
+ * 核心实现与桌面端共用（src/core），这里只把它们包成 call(json) 的命令。
+ * ========================================================================== */
+
+/* 知识库首次使用时解析一次；失败按"功能不可用"处理，不影响其它页面。 */
+static aic_kb *kb_get(void)
+{
+    char err[256] = { 0 };
+    if (g_kb) return g_kb;
+    if (aic_kb_load(&g_kb, err, sizeof(err)) != AIC_OK) {
+        JLOG("内置知识库载入失败：%s", err[0] ? err : "未知原因");
+        g_kb = NULL;
+    }
+    return g_kb;
+}
+
+/* kbOpen：章节树 + 书签/最近阅读。知识包随包分发，不联网（§17）。 */
+static void cmd_kb_open(sb *out)
+{
+    aic_kb *kb = kb_get();
+    sb bm, rc;
+    jw w;
+    int gi, ai;
+
+    if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
+    sb_init(&bm);
+    sb_init(&rc);
+    aic_kb_bookmark_list(g_db, &bm);
+    aic_kb_recent_list(g_db, &rc);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "version", aic_kb_version(kb));
+    jw_put_str(&w, "updatedAt", aic_kb_updated_at(kb));
+    jw_put_str(&w, "changelog", aic_kb_changelog(kb));
+    jw_put_raw(&w, "bookmarks", sb_cstr(&bm));
+    jw_put_raw(&w, "recent", sb_cstr(&rc));
+    jw_put_int(&w, "bookmarkCount", (long long)aic_kb_bookmark_count(g_db));
+    jw_arr_begin(&w, "groups");
+    for (gi = 0; gi < aic_kb_group_count(kb); gi++) {
+        const aic_kb_group *gr = aic_kb_group_at(kb, gi);
+        if (!gr) continue;
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", gr->id);
+        jw_put_str(&w, "title", gr->title);
+        jw_put_str(&w, "summary", gr->summary);
+        jw_arr_begin(&w, "articles");
+        for (ai = 0; ai < aic_kb_article_count(kb, gi); ai++) {
+            const aic_kb_article *ar = aic_kb_article_at(kb, gi, ai);
+            if (!ar) continue;
+            jw_obj_begin(&w, NULL);
+            jw_put_str(&w, "id", ar->id);
+            jw_put_str(&w, "title", ar->title);
+            jw_put_str(&w, "summary", ar->summary);
+            jw_put_bool(&w, "bookmarked", aic_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
+            jw_obj_end(&w);
+        }
+        jw_arr_end(&w);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+    sb_free(&bm);
+    sb_free(&rc);
+}
+
+/* kbArticle：一篇的正文档段、示意图节点、示例、要点、来源（FR-32）。 */
+static void cmd_kb_article(const char *id, sb *out)
+{
+    aic_kb *kb = kb_get();
+    const aic_kb_article *ar;
+    jw w;
+    int i, n;
+
+    if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
+    ar = aic_kb_find(kb, id ? id : "");
+    if (!ar) { reply_err(out, "知识条目不存在"); return; }
+    aic_kb_recent_push(g_db, ar->id);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "id", ar->id);
+    jw_put_str(&w, "title", ar->title);
+    jw_put_str(&w, "summary", ar->summary);
+    jw_put_str(&w, "example", ar->example);
+    jw_put_bool(&w, "bookmarked", aic_kb_bookmark_has(g_db, ar->id) > 0 ? 1 : 0);
+    jw_arr_begin(&w, "paragraphs");
+    n = aic_kb_paragraph_count(ar);
+    for (i = 0; i < n; i++) {
+        int len = 0;
+        const char *p = aic_kb_paragraph(ar, i, &len);
+        char buf[AIC_KB_BODY_CAP + 1];
+        if (!p || len <= 0) continue;
+        if ((size_t)len > sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+        memcpy(buf, p, (size_t)len);
+        buf[len] = 0;
+        jw_put_str(&w, NULL, buf);
+    }
+    jw_arr_end(&w);
+    /* 示意图：逐个节点给出，Java 侧按节点顺序本地绘制（不依赖外链图片）。 */
+    jw_arr_begin(&w, "diagram");
+    {
+        char line[512];
+        size_t k = 0;
+        const char *s = ar->diagram;
+        while (s && *s) {
+            if (*s == '\n') {
+                line[k] = 0;
+                if (k > 0) jw_put_str(&w, NULL, line);
+                k = 0;
+                s++;
+                continue;
+            }
+            if (k < sizeof(line) - 1) line[k++] = *s;
+            s++;
+        }
+        line[k] = 0;
+        if (k > 0) jw_put_str(&w, NULL, line);
+    }
+    jw_arr_end(&w);
+    jw_arr_begin(&w, "points");
+    {
+        char line[AIC_KB_POINT_CAP];
+        size_t k = 0;
+        const char *s = ar->points;
+        while (s && *s) {
+            if (*s == '\n') {
+                line[k] = 0;
+                if (k > 0) jw_put_str(&w, NULL, line);
+                k = 0;
+                s++;
+                continue;
+            }
+            if (k < sizeof(line) - 1) line[k++] = *s;
+            s++;
+        }
+        line[k] = 0;
+        if (k > 0) jw_put_str(&w, NULL, line);
+    }
+    jw_arr_end(&w);
+    jw_arr_begin(&w, "sources");
+    for (i = 0; i < ar->source_n; i++) {
+        char sl[480];
+        const aic_kb_source *src = &ar->sources[i];
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "title", src->title);
+        jw_put_str(&w, "author", src->author);
+        jw_put_str(&w, "url", src->url);
+        jw_put_str(&w, "license", src->license);
+        jw_put_str(&w, "date", src->date);
+        jw_put_str(&w, "line", aic_kb_source_line(src, sl, sizeof(sl)));
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+}
+
+/* kbSearch：中文两字词 + 英文整词，标题权重最高（§17 全文检索）。 */
+static void cmd_kb_search(const char *q, sb *out)
+{
+    aic_kb *kb = kb_get();
+    char ids[32][64];
+    int n, i, hit = 0;
+    jw w;
+
+    if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
+    if (!q || !q[0]) { reply_err(out, "请先输入要检索的关键词"); return; }
+    memset(ids, 0, sizeof(ids));
+    n = aic_kb_search(kb, q, &ids[0][0], sizeof(ids[0]), 32, &hit);
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "count", (long long)hit);
+    jw_arr_begin(&w, "hits");
+    for (i = 0; i < n && i < 32; i++) {
+        const aic_kb_article *ar = aic_kb_find(kb, ids[i]);
+        if (!ar) continue;
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", ar->id);
+        jw_put_str(&w, "title", ar->title);
+        jw_put_str(&w, "summary", ar->summary);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+}
+
+/* kbBookmark：加入/取消书签（存 setting，知识包更新不动它）。 */
+static void cmd_kb_bookmark(const char *id, sb *out)
+{
+    int on = 0;
+    jw w;
+
+    if (!kb_get()) { reply_err(out, "内置知识库载入失败"); return; }
+    if (aic_kb_bookmark_toggle(g_db, id ? id : "", &on) != AIC_OK) {
+        reply_err(out, "书签保存失败");
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_bool(&w, "on", on);
+    jw_put_int(&w, "count", (long long)aic_kb_bookmark_count(g_db));
+    jw_obj_end(&w);
+}
+
+/* kbCite：把选中的那一段 + 一行来源写成注入片段（不携全文）。 */
+static void cmd_kb_cite(const char *id, int para, sb *out)
+{
+    aic_kb *kb = kb_get();
+    sb frag;
+    jw w;
+    int rc;
+
+    if (!kb) { reply_err(out, "内置知识库载入失败"); return; }
+    sb_init(&frag);
+    rc = aic_kb_cite(kb, id ? id : "", para, &frag);
+    if (rc != AIC_OK) {
+        sb_free(&frag);
+        reply_err(out, rc == AIC_E_NOTFOUND ? "知识条目不存在" : "该段不能被引用");
+        return;
+    }
+    aic_setting_set(g_db, AIC_SET_KB_CITE, sb_cstr(&frag));
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "text", sb_cstr(&frag));
+    jw_obj_end(&w);
+    sb_free(&frag);
+}
+
+/* kbCiteClear：清掉注入区里的引用片段。 */
+static void cmd_kb_cite_clear(sb *out)
+{
+    int rc = aic_setting_del(g_db, AIC_SET_KB_CITE);
+    if (rc != AIC_OK && rc != AIC_E_NOTFOUND) { reply_err(out, "清除引用失败"); return; }
+    reply_ok(out);
+}
+
+/* ---------- FR-34 错误中心 ---------- */
+
+/* 生成失败统一写错误中心：库里有记录、errors/ 里有脱敏明细，聊天框里不出现。 */
+static void record_llm_error(int le, const char *msg, const char *conv, const char *detail)
+{
+    if (!g_db) return;
+    aic_error_record(g_db, g_dir, aic_error_category_from_llm(le), aic_error_code_from_llm(le),
+                     msg, (conv && conv[0]) ? conv : NULL, NULL, detail, NULL);
+}
+
+static void cmd_error_list(const char *category, int only_unack, int limit, sb *out)
+{
+    aic_error_filter f;
+    aic_error_entry items[64];
+    int n = 0, i;
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    memset(&f, 0, sizeof(f));
+    f.category = (category && category[0] && strcmp(category, "all") != 0) ? category : NULL;
+    f.only_unack = only_unack ? 1 : 0;
+    f.limit = (limit > 0) ? limit : 64;
+    memset(items, 0, sizeof(items));
+    if (aic_error_query(g_db, &f, items, 64, &n) != AIC_OK) {
+        reply_err(out, "读取错误中心失败");
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "unread", (long long)aic_error_unread(g_db));
+    jw_put_int(&w, "total", (long long)aic_error_count(g_db, 0));
+    jw_put_int(&w, "retention", (long long)aic_error_retention_days(g_db));
+    jw_arr_begin(&w, "items");
+    for (i = 0; i < n && i < 64; i++) {
+        aic_error_action act = aic_error_action_for(items[i].category);
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", items[i].id);
+        jw_put_str(&w, "time", items[i].occurred_at);
+        jw_put_str(&w, "category", items[i].category);
+        jw_put_str(&w, "categoryText", aic_error_category_text(items[i].category));
+        jw_put_str(&w, "code", items[i].code);
+        jw_put_str(&w, "message", items[i].message);
+        jw_put_str(&w, "conv", items[i].conversation_id);
+        jw_put_str(&w, "detail", items[i].detail_path);
+        jw_put_bool(&w, "ack", items[i].acknowledged);
+        jw_put_int(&w, "action", (long long)act);
+        jw_put_str(&w, "actionText", aic_error_action_text(act));
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+}
+
+static void cmd_error_ack(sb *out)
+{
+    if (aic_error_ack_all(g_db) != AIC_OK) { reply_err(out, "标记已读失败"); return; }
+    reply_ok(out);
+}
+
+static void cmd_error_clear(long long before_ms, sb *out)
+{
+    int removed = 0;
+    jw w;
+
+    if (aic_error_clear(g_db, (int64_t)before_ms, &removed) != AIC_OK) {
+        reply_err(out, "清除失败");
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "removed", (long long)removed);
+    jw_obj_end(&w);
+}
+
+/* errorDiag：导出诊断包（已脱敏，不含 Key 本体）。路径由 Java 侧给应用私有目录。 */
+static void cmd_error_diag(const char *path, sb *out)
+{
+    char err[256] = { 0 };
+    int rc;
+    jw w;
+
+    if (!path || !path[0]) { reply_err(out, "诊断包路径为空"); return; }
+    rc = aic_error_export_diagnostic(g_db, path, err, sizeof(err));
+    if (rc != AIC_OK) { reply_err(out, err[0] ? err : "导出诊断包失败"); return; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "path", path);
+    jw_obj_end(&w);
+}
+
+/* ---------- FR-35 设备能力 ---------- */
+
+/* 平台取值：Java 侧拿到用户显式选中的那一条后写进设置键 capability.<kind>.value，
+ * C 侧只保存并注入这一条文本 —— 原始图片、原始文件、完整软件清单都不上传（§18）。 */
+static int android_cap_value(const char *kind, char *buf, size_t cap)
+{
+    char key[64];
+    char v[1024];
+    if (!g_db) return AIC_E_STATE;
+    snprintf(key, sizeof(key), "capability.%s.value", kind);
+    v[0] = 0;
+    if (aic_setting_get(g_db, key, v, sizeof(v)) != AIC_OK || !v[0]) return AIC_E_STATE;
+    aic_strlcpy_utf8(buf, cap, v);
+    return AIC_OK;
+}
+
+/* provider 的五个回调不带能力名，各自转一次。 */
+static int cap_prov_location(char *buf, size_t cap, void *ud)
+{ (void)ud; return android_cap_value(AIC_CAP_LOCATION, buf, cap); }
+static int cap_prov_weather(char *buf, size_t cap, void *ud)
+{ (void)ud; return android_cap_value(AIC_CAP_WEATHER, buf, cap); }
+static int cap_prov_media(char *buf, size_t cap, void *ud)
+{ (void)ud; return android_cap_value(AIC_CAP_MEDIA, buf, cap); }
+static int cap_prov_apps(char *buf, size_t cap, void *ud)
+{ (void)ud; return android_cap_value(AIC_CAP_APPS, buf, cap); }
+static int cap_prov_files(char *buf, size_t cap, void *ud)
+{ (void)ud; return android_cap_value(AIC_CAP_FILES, buf, cap); }
+
+/* 时间走核心自带的本地时钟（真实现）；位置与天气、图片、软件列表、文件
+ * 在 Android 上必须由 Java 侧取（权限与选择器都在 Java），核心只读用户选中的那一条。 */
+static void install_cap_provider(void)
+{
+    aic_cap_provider p;
+    memset(&p, 0, sizeof(p));
+    p.time_now = NULL;
+    p.location = cap_prov_location;
+    p.weather = cap_prov_weather;
+    p.media_pick = cap_prov_media;
+    p.apps_pick = cap_prov_apps;
+    p.files_pick = cap_prov_files;
+    p.ud = NULL;
+    aic_cap_set_provider(&p);
+}
+
+static void cmd_cap_list(sb *out)
+{
+    size_t i, n = aic_cap_count();
+    jw w;
+
+    if (ensure_env() != AIC_OK) { reply_err(out, g_err[0] ? g_err : "初始化失败"); return; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_bool(&w, "launchGate", aic_cap_launch_gate(g_db) ? 1 : 0);
+    jw_arr_begin(&w, "items");
+    for (i = 0; i < n; i++) {
+        const char *kind = aic_cap_kind_at(i);
+        aic_cap_status st;
+        memset(&st, 0, sizeof(st));
+        if (aic_cap_status_load(g_db, kind, &st) != AIC_OK) aic_strlcpy_utf8(st.state, sizeof(st.state), "unset");
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "kind", kind);
+        jw_put_str(&w, "name", aic_cap_name(kind));
+        jw_put_str(&w, "purpose", aic_cap_purpose(kind));
+        jw_put_str(&w, "state", st.state);
+        jw_put_bool(&w, "granted", st.granted);
+        jw_put_bool(&w, "required", aic_cap_required(kind));
+        jw_put_bool(&w, "revocable", aic_cap_revocable(kind));
+        jw_put_str(&w, "lastUsed", st.last_used_at);
+        jw_put_int(&w, "denyCount", (long long)st.deny_count);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+}
+
+/* capRequest：先展示用途，再由界面决定授予还是拒绝（§18）。 */
+static void cmd_cap_request(const char *kind, sb *out)
+{
+    char purpose[512] = { 0 };
+    int rc;
+    jw w;
+
+    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = aic_cap_request(g_db, kind, purpose, sizeof(purpose));
+    if (rc != AIC_OK) { reply_err(out, "能力申请失败"); return; }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_str(&w, "kind", kind);
+    jw_put_str(&w, "name", aic_cap_name(kind));
+    jw_put_str(&w, "purpose", purpose);
+    jw_obj_end(&w);
+}
+
+static void cmd_cap_grant(const char *kind, sb *out)
+{
+    int rc;
+    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = aic_cap_grant(g_db, kind, aic_now_ms());
+    if (rc != AIC_OK) { reply_err(out, "授予失败"); return; }
+    reply_ok(out);
+}
+
+static void cmd_cap_deny(const char *kind, sb *out)
+{
+    int rc;
+    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = aic_cap_deny(g_db, kind);
+    if (rc != AIC_OK) { reply_err(out, "记录拒绝失败"); return; }
+    reply_ok(out);
+}
+
+static void cmd_cap_revoke(const char *kind, sb *out)
+{
+    int rc;
+    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    rc = aic_cap_revoke(g_db, kind);
+    if (rc == AIC_E_STATE) { reply_err(out, "时间能力是必需的，不能撤销"); return; }
+    if (rc != AIC_OK) { reply_err(out, "撤销失败"); return; }
+    reply_ok(out);
+}
+
+/* capProvide：Java 侧把用户显式选中的那一条写进来（空文本表示清掉这条）。 */
+static void cmd_cap_provide(const char *kind, const char *text, sb *out)
+{
+    char key[64];
+    int rc;
+
+    if (!aic_cap_kind_valid(kind)) { reply_err(out, "未知的能力名"); return; }
+    if (strcmp(kind, AIC_CAP_TIME) == 0) { reply_err(out, "时间能力由本机时钟提供"); return; }
+    snprintf(key, sizeof(key), "capability.%s.value", kind);
+    if (!text || !text[0]) {
+        rc = aic_setting_del(g_db, key);
+        if (rc != AIC_OK && rc != AIC_E_NOTFOUND) { reply_err(out, "清除失败"); return; }
+        reply_ok(out);
+        return;
+    }
+    rc = aic_setting_set(g_db, key, text);
+    if (rc != AIC_OK) { reply_err(out, "保存失败"); return; }
+    reply_ok(out);
+}
+
+/* ---------- FR-36 AI 记忆 ---------- */
+
+static void cmd_memory_list(const char *query, sb *out)
+{
+    aic_mem_entry items[32];
+    int n = 0, i;
+    jw w;
+
+    memset(items, 0, sizeof(items));
+    if (aic_mem_search(g_db, query ? query : "", items, 32, &n) != AIC_OK) {
+        reply_err(out, "读取记忆失败");
+        return;
+    }
+    sb_reset(out);
+    jw_init(&w, out, 0);
+    jw_obj_begin(&w, NULL);
+    jw_put_bool(&w, "ok", 1);
+    jw_put_str(&w, "err", "");
+    jw_put_int(&w, "count", (long long)aic_mem_count(g_db));
+    jw_arr_begin(&w, "items");
+    for (i = 0; i < n && i < 32; i++) {
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "id", items[i].id);
+        jw_put_str(&w, "source", items[i].source_message_id);
+        jw_put_str(&w, "content", items[i].content);
+        jw_put_str(&w, "ts", items[i].updated_at);
+        jw_obj_end(&w);
+    }
+    jw_arr_end(&w);
+    jw_obj_end(&w);
+}
+
+static void cmd_memory_clear(sb *out)
+{
+    if (aic_mem_clear(g_db) != AIC_OK) { reply_err(out, "清空记忆失败"); return; }
+    reply_ok(out);
+}
+
 static void handle(const char *req_text, size_t req_len, sb *out)
 {
     jv *root = NULL;
@@ -2736,11 +3305,42 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
         else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_RECALL, jv_get_str(root, "id", "")); reply_ok(out); }
     } else if (strcmp(cmd, "edit") == 0) {
+        /* FR-36：改 AI 发言要在同一事务里重建记忆（先删后抽），改用户发言不动记忆。 */
         char err[256] = { 0 };
-        rc = aic_engine_edit(g_eng, jv_get_str(root, "id", ""), jv_get_str(root, "text", ""),
-                             err, sizeof(err));
-        if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
-        else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, jv_get_str(root, "id", "")); reply_ok(out); }
+        const char *mid = jv_get_str(root, "id", "");
+        aic_message em;
+        int is_ai = 0;
+        memset(&em, 0, sizeof(em));
+        if (aic_msg_get(g_db, mid, &em) == AIC_OK) {
+            is_ai = strcmp(em.role, aic_role_name(AIC_ROLE_ASSISTANT)) == 0;
+            aic_msg_free(&em);
+        }
+        if (is_ai) {
+            int removed = 0, added = 0;
+            jw ew;
+            rc = aic_engine_edit_ai(g_eng, mid, jv_get_str(root, "text", ""),
+                                    &removed, &added, err, sizeof(err));
+            if (rc != AIC_OK) {
+                reply_err(out, err[0] ? err : aic_strerror(rc));
+            } else {
+                /* 记忆替换也走同步实体 memory（§16.4 修改 op 的扩展），两端记忆保持一致。 */
+                sync_touch(AIC_ENT_MEMORY, AIC_OP_UPDATE, mid);
+                sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, mid);
+                sb_reset(out);
+                jw_init(&ew, out, 0);
+                jw_obj_begin(&ew, NULL);
+                jw_put_bool(&ew, "ok", 1);
+                jw_put_str(&ew, "err", "");
+                jw_put_bool(&ew, "ai", 1);
+                jw_put_int(&ew, "memRemoved", (long long)removed);
+                jw_put_int(&ew, "memAdded", (long long)added);
+                jw_obj_end(&ew);
+            }
+        } else {
+            rc = aic_engine_edit(g_eng, mid, jv_get_str(root, "text", ""), err, sizeof(err));
+            if (rc != AIC_OK) reply_err(out, err[0] ? err : aic_strerror(rc));
+            else { sync_touch(AIC_ENT_MESSAGE, AIC_OP_EDIT, mid); reply_ok(out); }
+        }
     } else if (strcmp(cmd, "setProfile") == 0) {
         aic_profile p;
         char err[256] = { 0 };
@@ -3009,6 +3609,43 @@ static void handle(const char *req_text, size_t req_len, sb *out)
         cmd_bt_detach(out);
     } else if (strcmp(cmd, "syncChannel") == 0) {
         cmd_sync_channel((int)jv_get_int(root, "channel", -1), out);
+    } else if (strcmp(cmd, "kbOpen") == 0) {
+        cmd_kb_open(out);
+    } else if (strcmp(cmd, "kbArticle") == 0) {
+        cmd_kb_article(jv_get_str(root, "id", ""), out);
+    } else if (strcmp(cmd, "kbSearch") == 0) {
+        cmd_kb_search(jv_get_str(root, "q", ""), out);
+    } else if (strcmp(cmd, "kbBookmark") == 0) {
+        cmd_kb_bookmark(jv_get_str(root, "id", ""), out);
+    } else if (strcmp(cmd, "kbCite") == 0) {
+        cmd_kb_cite(jv_get_str(root, "id", ""), (int)jv_get_int(root, "para", 0), out);
+    } else if (strcmp(cmd, "kbCiteClear") == 0) {
+        cmd_kb_cite_clear(out);
+    } else if (strcmp(cmd, "errorList") == 0) {
+        cmd_error_list(jv_get_str(root, "category", "all"), jv_get_bool(root, "onlyUnack", 0) ? 1 : 0,
+                       (int)jv_get_int(root, "limit", 64), out);
+    } else if (strcmp(cmd, "errorAck") == 0) {
+        cmd_error_ack(out);
+    } else if (strcmp(cmd, "errorClear") == 0) {
+        cmd_error_clear(jv_get_ll(root, "beforeMs", 0), out);
+    } else if (strcmp(cmd, "errorDiag") == 0) {
+        cmd_error_diag(jv_get_str(root, "path", ""), out);
+    } else if (strcmp(cmd, "capList") == 0) {
+        cmd_cap_list(out);
+    } else if (strcmp(cmd, "capRequest") == 0) {
+        cmd_cap_request(jv_get_str(root, "kind", ""), out);
+    } else if (strcmp(cmd, "capGrant") == 0) {
+        cmd_cap_grant(jv_get_str(root, "kind", ""), out);
+    } else if (strcmp(cmd, "capDeny") == 0) {
+        cmd_cap_deny(jv_get_str(root, "kind", ""), out);
+    } else if (strcmp(cmd, "capRevoke") == 0) {
+        cmd_cap_revoke(jv_get_str(root, "kind", ""), out);
+    } else if (strcmp(cmd, "capProvide") == 0) {
+        cmd_cap_provide(jv_get_str(root, "kind", ""), jv_get_str(root, "text", ""), out);
+    } else if (strcmp(cmd, "memoryList") == 0) {
+        cmd_memory_list(jv_get_str(root, "q", ""), out);
+    } else if (strcmp(cmd, "memoryClear") == 0) {
+        cmd_memory_clear(out);
     } else {
         reply_err(out, "未知命令");
     }

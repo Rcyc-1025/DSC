@@ -14,6 +14,10 @@
 - 插件四个扩展点全部接通（提示词片段、面板、请求改写、工具声明），装前摊开权限与哈希再确认
 - 双端配对与实时同步：局域网发现直连，两端各出 6 位码双向校验配对，配对后增量事件实时互传（逻辑时钟排序、冲突留副本）
 - 首次启动就是「先填 API Key 再选模式」，凭证只进系统安全存储；不想填可点演示模式先看界面
+- 内置知识库（随包离线，五组 15 篇）：章节树 + 全文检索 + 书签 + 最近阅读，选中一段可引成注入片段，只带这一段与来源、不携全文
+- 错误中心：失败一律写独立表与脱敏明细文件，不进消息表、不进上下文、不进聊天框；输入框上方只有一条不打断的提示条
+- 设备能力逐项授权：时间（必需）、位置、天气、设备图片、已安装软件、本地文件，六项各自申请/撤销，原始内容不上传
+- AI 发言修改会重建记忆：同一事务内按来源消息物理删除旧记忆条目并重新抽取，跨端发 `memory_replace` 事件
 
 需求与技术设计见 `docs/DESIGN.md`，进阶用法见 `docs/ADVANCED.md`。English: [README.en.md](README.en.md)。
 
@@ -38,10 +42,10 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `Sai-1.3.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
-| `Sai-1.3.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `Sai-1.3.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `Sai-1.3.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
+| `Sai-1.4.0-win-x64-portable.zip` | Windows x64 便携包，解压双击 `Sai.exe` |
+| `Sai-1.4.0-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `Sai-1.4.0-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `Sai-1.4.0-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起） |
 
 每个包都附同名 `.sha256`。
 
@@ -67,10 +71,10 @@ python tools\build_android.py     # 产出 build_android\Sai.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.3.0-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\Sai-1.4.0-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.3.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.4.0-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `Sai.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
@@ -90,6 +94,7 @@ python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe + .sha25
 | `docs/ADVANCED.md` | 进阶操作：提示词变量、双模式、导出导入、分页、模型配置、更新与数据管理 |
 | `docs/PLUGIN.md` | 插件清单字段、扩展点、C ABI、宿主协议与排错 |
 | `docs/RELEASE.md` | 版本号规则、发布流程、产物命名口径、ARM64 口径说明 |
+| `docs/TDD-TRACE-1.4.0.md` | FR-01 ~ FR-36 与 TDD 文档的逐条对照：实现位置、验收方式、已知口径差异 |
 | `DEPENDENCIES.md` | 运行期与构建期依赖清单、明确不使用的依赖、升级约束 |
 | `CHANGELOG.md` | 变更记录（每版与 git 标签一一对应） |
 
@@ -98,6 +103,8 @@ python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe + .sha25
 - API Key 只存系统安全存储（Windows 凭据管理 / Android 系统安全存储），界面与日志不出现明文；导出包不含凭证。
 - 会话数据存在应用私有目录（`%LOCALAPPDATA%\Sai`，便携模式可用环境变量 `SAI_DATA_DIR` 指定）。
 - 所有对话请求直连用户配置的模型地址，本项目不收集任何数据。
+- 设备能力（位置、天气、图片、软件列表、文件）只在用户逐项授权后、且仅当次需要时取一段文本；原始图片、原始文件、完整软件清单都不上传，日志只记能力名与状态。
+- 记忆条目挂在来源消息上，改 AI 发言会在同一事务里整批重抽；日志与错误中心里的原始响应先脱敏（Key、Bearer、邮箱、长十六进制串）。
 
 ## 许可
 

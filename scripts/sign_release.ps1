@@ -1,4 +1,4 @@
-﻿# sign_release.ps1 —— 用 signtool 给发布产物签名（需要 Windows SDK 的 signtool.exe + 一份代码签名证书）。
+# sign_release.ps1 —— 用 signtool 给发布产物签名（需要 Windows SDK 的 signtool.exe + 一份代码签名证书）。
 # 本仓库不签发证书：证书由你把 .pfx 放进 dist\signing\（或用 -Pfx 指定），密码用环境变量 SAI_SIGN_PASSWORD 传入。
 # 没有 signtool 或没有证书时，脚本明确报错并退出 2/3，产物保持未签名 —— 不做假签名、不自造证书。
 param(
@@ -49,7 +49,7 @@ if ($Files.Count -eq 0) {
         (Join-Path $root 'build\Sai.exe'),
         (Join-Path $root 'build\aic.exe'),
         (Join-Path $root 'build\aic_plugin_host.exe'),
-        (Join-Path $root 'dist\Sai-1.3.0-win-x64-setup.exe')
+        (Join-Path $root 'dist\Sai-1.4.0-win-x64-setup.exe')
     ) | Where-Object { Test-Path $_ }
 }
 if ($Files.Count -eq 0) {

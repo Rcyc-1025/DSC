@@ -43,6 +43,10 @@ typedef enum aic_sync_entity {
     AIC_ENT_MESSAGE,
     AIC_ENT_SETTING,
     AIC_ENT_PLUGIN,
+    /* FR-36：AI 记忆重抽事件（memory_replace）。记忆是消息派生物，不在 §16.4 的
+     * 七类实体白名单里；事件只带 source_message_id 与改后的正文，对端按同一规则
+     * 重抽，不传记忆条目本身。 */
+    AIC_ENT_MEMORY,
     AIC_ENT_COUNT
 } aic_sync_entity;
 

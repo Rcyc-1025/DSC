@@ -1,7 +1,11 @@
 /* engine.c —— 对话引擎实现。 */
 #include "engine.h"
 
+#include "capability.h"
 #include "diaglog.h"
+#include "error_store.h"
+#include "memory.h"
+#include "sync.h"
 #include "prompt.h"
 #include "store_conversation.h"
 #include "store_message.h"
@@ -39,6 +43,12 @@ struct aic_engine {
     aic_engine_tools_fn tools_provider;
     void *tools_ud;
     sb tools_json;
+    /* FR-34 / FR-35 / FR-36 */
+    char data_root[512];
+    char origin_device[40];
+    int  memory_enabled;
+    int  capability_enabled;
+    aic_sync *sync;
 };
 
 int aic_engine_create(aic_db *db, aic_engine **out)
@@ -53,6 +63,8 @@ int aic_engine_create(aic_db *db, aic_engine **out)
     e->stream_err = AIC_LLM_OK;
     sb_init(&e->stream_text);
     sb_init(&e->tools_json);
+    e->memory_enabled = 1;
+    e->capability_enabled = 1;
     *out = e;
     return AIC_OK;
 }
@@ -126,6 +138,33 @@ void aic_engine_set_tools_provider(aic_engine *e, aic_engine_tools_fn fn, void *
     e->tools_ud = ud;
 }
 
+void aic_engine_set_data_root(aic_engine *e, const char *path)
+{
+    if (!e) return;
+    aic_strlcpy_utf8(e->data_root, sizeof(e->data_root), path ? path : "");
+}
+
+void aic_engine_set_origin_device(aic_engine *e, const char *device_id)
+{
+    if (!e) return;
+    aic_strlcpy_utf8(e->origin_device, sizeof(e->origin_device), device_id ? device_id : "");
+}
+
+void aic_engine_set_sync(aic_engine *e, aic_sync *sync)
+{
+    if (e) e->sync = sync;
+}
+
+void aic_engine_set_memory_enabled(aic_engine *e, int on)
+{
+    if (e) e->memory_enabled = on ? 1 : 0;
+}
+
+void aic_engine_set_capability_enabled(aic_engine *e, int on)
+{
+    if (e) e->capability_enabled = on ? 1 : 0;
+}
+
 void aic_engine_stop(aic_engine *e)
 {
     if (e) e->stop_requested = 1;
@@ -161,6 +200,28 @@ static int build_system_prompt(aic_engine *e, const char *conv_id, sb *out,
 
     rc = aic_prompt_build(&persona, &profile, e->plugin_fragment[0] ? e->plugin_fragment : NULL, out);
     aic_xfree(persona.base_prompt);
+    if (rc != AIC_OK) return rc;
+
+    /* FR-36：把本会话已确认的 AI 记忆带进上下文（不进系统提示词的人设区，单独成段）。 */
+    if (e->memory_enabled) {
+        sb mem;
+        sb_init(&mem);
+        if (aic_mem_context(e->db, conv_id, &mem) == AIC_OK && mem.len > 0) {
+            sb_append(out, "\n\n");
+            sb_append(out, sb_cstr(&mem));
+        }
+        sb_free(&mem);
+    }
+    /* FR-35：只注入用户逐项授权、且本次确实取到的设备能力片段。 */
+    if (e->capability_enabled) {
+        sb cap;
+        sb_init(&cap);
+        if (aic_cap_build_context(e->db, e->data_root, &cap) == AIC_OK && cap.len > 0) {
+            sb_append(out, "\n\n");
+            sb_append(out, sb_cstr(&cap));
+        }
+        sb_free(&cap);
+    }
     return rc;
 }
 
@@ -288,6 +349,21 @@ static int run_stream(aic_engine *e, const char *conv_id, const aic_conversation
             aic_log_blob("模型流式响应（解析失败）", parser.raw.data, parser.raw.len);
         }
         aic_log_write("WARN", "模型请求失败：%s（%d）", aic_llm_err_text(lerr), (int)lerr);
+        /* FR-34：错误写独立的 error_record（原始响应脱敏后落 errors/），不进消息表、
+         * 不进上下文、不进聊天框；用户取消不算错误，不记录。 */
+        if (lerr != AIC_LLM_E_CANCEL) {
+            const char *detail = NULL;
+            if (lerr == AIC_LLM_E_PARSE && parser.raw.data && parser.raw.len) {
+                detail = parser.raw.data;
+            } else if (e->stream_err_msg[0]) {
+                detail = e->stream_err_msg;
+            } else if (err && err[0]) {
+                detail = err;
+            }
+            aic_error_record(e->db, e->data_root, aic_error_category_from_llm((int)lerr),
+                             aic_error_code_from_llm((int)lerr), aic_llm_err_text(lerr),
+                             conv_id, NULL, detail, NULL);
+        }
         if (err && errlen && !err[0]) aic_strlcpy_utf8(err, errlen, aic_llm_err_text(lerr));
         sb_free(&body);
         aic_sse_free(&parser);
@@ -307,6 +383,12 @@ static int run_stream(aic_engine *e, const char *conv_id, const aic_conversation
         return rc;
     }
     aic_strlcpy_utf8(local->assistant_msg_id, sizeof(local->assistant_msg_id), amsg.id);
+    /* FR-36：AI 发言是记忆的来源；抽不出来（比如全是客套）不影响对话。 */
+    if (e->memory_enabled) {
+        int added = 0;
+        aic_mem_extract(e->db, amsg.id, conv_id, sb_cstr(&e->stream_text),
+                        e->origin_device[0] ? e->origin_device : NULL, &added);
+    }
     aic_msg_free(&amsg);
 
     /* 用量与费用入账（余额并列展示的数据来源之一）。 */
@@ -431,6 +513,78 @@ int aic_engine_edit(aic_engine *e, const char *msg_id, const char *new_content,
 {
     if (!e || !msg_id || !new_content) return AIC_E_INVAL;
     return aic_msg_edit(e->db, msg_id, new_content, err, errlen);
+}
+
+/* FR-36：AI 发言修改 + 记忆重建 + 跨端 memory_replace，全程一个事务。 */
+int aic_engine_edit_ai(aic_engine *e, const char *msg_id, const char *new_content,
+                       int *out_mem_removed, int *out_mem_added,
+                       char *err, size_t errlen)
+{
+    if (out_mem_removed) *out_mem_removed = 0;
+    if (out_mem_added) *out_mem_added = 0;
+    if (err && errlen) err[0] = '\0';
+    if (!e || !msg_id || !new_content) return AIC_E_INVAL;
+
+    aic_message m;
+    memset(&m, 0, sizeof(m));
+    int rc = aic_msg_get(e->db, msg_id, &m);
+    if (rc != AIC_OK) return rc;
+    if (strcmp(m.role, aic_role_name(AIC_ROLE_ASSISTANT)) != 0) {
+        aic_msg_free(&m);
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "只能修改 AI 发言");
+        return AIC_E_STATE;
+    }
+    char conv_id[40];
+    aic_strlcpy_utf8(conv_id, sizeof(conv_id), m.conversation_id);
+    aic_msg_free(&m);
+
+    rc = aic_db_begin(e->db);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "开启事务失败：%s", aic_strerror(rc));
+        return rc;
+    }
+    int removed = 0, added = 0;
+    rc = aic_msg_edit(e->db, msg_id, new_content, err, errlen);
+    if (rc == AIC_OK) rc = aic_mem_purge(e->db, msg_id, &removed);
+    if (rc == AIC_OK) {
+        rc = aic_mem_extract(e->db, msg_id, conv_id, new_content,
+                             e->origin_device[0] ? e->origin_device : NULL, &added);
+    }
+    if (rc != AIC_OK) {
+        aic_db_rollback(e->db);
+        if (err && errlen && !err[0]) aic_strlcpy_utf8(err, errlen, "修改 AI 发言失败");
+        return rc;
+    }
+    rc = aic_db_commit(e->db);
+    if (rc != AIC_OK) {
+        if (err && errlen) snprintf(err, errlen, "提交失败：%s", aic_strerror(rc));
+        return rc;
+    }
+    if (out_mem_removed) *out_mem_removed = removed;
+    if (out_mem_added) *out_mem_added = added;
+    aic_log_write("INFO", "AI 发言已修改，记忆重建：删除 %d 条、新增 %d 条", removed, added);
+
+    /* 跨端：发 memory_replace 事件，让对端按同一规则重抽（§9.2）。
+     * 发送失败不影响本地结果，事件队列会补发。 */
+    if (e->sync) {
+        sb payload;
+        sb_init(&payload);
+        jw w;
+        jw_init(&w, &payload, 1);
+        jw_obj_begin(&w, NULL);
+        jw_put_str(&w, "source_message_id", msg_id);
+        jw_put_str(&w, "conversation_id", conv_id);
+        jw_put_str(&w, "content", new_content);
+        jw_put_str(&w, "op", "memory_replace");
+        jw_obj_end(&w);
+        char evid[40];
+        char serr[256];
+        serr[0] = '\0';
+        aic_sync_publish(e->sync, AIC_ENT_MEMORY, AIC_OP_UPDATE, msg_id, sb_cstr(&payload),
+                         evid, sizeof(evid), serr, sizeof(serr));
+        sb_free(&payload);
+    }
+    return AIC_OK;
 }
 
 int aic_engine_context_stats(aic_engine *e, const char *conv_id, int *out_total,

@@ -1,7 +1,8 @@
 # Sai 技术设计（实现说明）
 
-> 本文件说明 "Sai" 1.3.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
-> 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》（FR-01 ~ FR-30），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)。
+> 本文件说明 "Sai" 1.4.0 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
+> 本轮补齐的差距与口径差异见 [TDD-TRACE-1.4.0.md](TDD-TRACE-1.4.0.md)。
 
 ## 1. 目标与边界
 
@@ -36,6 +37,11 @@
       sync.*             逻辑时钟、增量事件发件箱、应用事件、冲突判负与落败方副本
       sync_session.*     会话驱动：发现/连接/握手/泵（pump）/发件箱续传
       transport.h        传输抽象（LAN 与蓝牙 RFCOMM 两条通道）+ 帧格式（4 字节大端长度）
+      knowledge.*        内置知识库：章节树、全文检索、书签/最近阅读、段落级引用片段（FR-31 / FR-32）
+      knowledge_data.c   由 tools/gen_knowledge.py 从 resources/knowledge/knowledge.json 生成的离线知识包常量
+      error_store.*      错误中心：分类记录、脱敏明细、未读计数、保留期清理、诊断包导出（FR-34）
+      capability.*       设备能力代理：六项能力的申请/授予/拒绝/撤销、取数与注入前脱敏（FR-35）
+      memory.*           AI 记忆：从 AI 发言抽取条目、关键词索引、注入上下文、按来源重建（FR-36）
       http.* / zip.* / backup.* / avatar.* / notify.* / diaglog.*
                          真实网络、ZIP、备份恢复、头像压缩、系统通知、诊断日志
 
@@ -47,6 +53,7 @@
     src/plugin_runner/   插件宿主进程 aic_plugin_host.exe 与纯 C ABI 头
     android/app/...      Android 界面（Java）+ JNI 桥（aic_jni.c）+ 清单与资源
     third_party/sqlite/  SQLite 3.54.1 amalgamation
+    resources/knowledge/ 内置知识包的 JSON 源（重新生成用；运行期读的是 knowledge_data.c）
     tests/               单元测试（C）与三个测试插件（正常/崩溃/卡死）
     tools/               构建与校验脚本（Android 打包、APK 校验、Windows 打包、截图）
     docs/                设计、进阶、插件、FR 对照表、发布证据
@@ -71,6 +78,9 @@ Android C 桥 785 行 + Java 1252 行、适配层 246 行、插件宿主 125 行
 | sync_event | event_id、entity、op、entity_id、payload、logical_ts、origin_device、schema_version、direction、state | 发件箱与入站去重共用；未确认事件可续传 |
 | sync_cursor | peer_id、applied_event_id、applied_ts、last_logical_ts | 按 event_id 续传 |
 | sync_entity_clock / sync_conflict | 实体最后应用时钟 / 落败方原始实体 | 冲突合并后保留副本（§16.6） |
+| error_record（v5） | category、code、message、conversation_id、session_id、occurred_at、detail_path、acknowledged | 错误不写 message 表、不进上下文；detail_path 指向 errors/ 下的脱敏明细；按 occurred_at 倒序查 |
+| memory_entry / memory_token（v5） | source_message_id、conversation_id、content / token | 一条记忆必挂来源消息，可追溯回原话；token 表是相邻二字 + 英文整词的关键词索引，随条目级联删除 |
+| capability_grant（v5） | capability（主键）、granted、state、requested_at、granted_at、last_used_at、deny_count | 六项能力各一行；time 固定已授予不可撤销；状态同时镜像到 setting 的 capability.<kind> |
 
 迁移集中在 schema.c 的版本表里顺序执行；每次迁移前把库复制到 backups/pre-migrate-vN-<ms>.db，失败整体回退（FR-08）。
 
@@ -112,6 +122,10 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 主题令牌 10 项（页面底、卡片底、正文、次要文字、分割线、主色、强调色、成功/警告/危险），日光与夜间两套，
 界面所有颜色都通过 aic_theme_color(token) 取，禁止硬编码色值。对比度用 WCAG 相对亮度公式实算：
 正文 ≥4.5:1（页面底与卡片底都查）、白字主色按钮 ≥3:1，由 aic_theme_audit 断言。
+
+主色为深蓝色阶（FR-33）：日间主色 `0x103F7A`、强调色 `0x1F5FA8`；夜间主色 `0x6194C9`、强调色 `0x4E86D6`。
+两套主色色相都在 211~213 度，差 ≤5 度——日光与夜间只改明度不改色相。实算对比度：日间正文/页面 15.06:1、
+正文/卡片 16.19:1、次要文字 5.62:1、主色底白字 10.43:1；夜间 15.90:1 / 14.32:1 / 7.35:1 / 3.19:1。
 
 动效时长（毫秒）：模式切换 220（ease-out，交叉淡入 + 轻微位移）、三栏切换 180（ease-in-out，指示器滑动）、
 子页进入 200、浮层 160、消息入场 140、Toast 120；只动 transform/opacity，单帧预算 16.7ms；
@@ -177,6 +191,58 @@ C 侧的 `aic_bt_attach_*` / `aic_bt_feed` / `aic_bt_drain` 环形缓冲），�
 冲突取 logical_ts 大者，相等比 origin_device 字典序，落败方原始实体写 sync_conflict 留副本；解除配对删共享密钥与 device_pair_id，
 两端本地数据保留，同步结果不写进导出包与备份包。
 
+## 8.5 内置知识库与引用（FR-31 / FR-32，§17）
+
+知识包是随安装包分发的离线 JSON：五组（AI 记忆体系、提示词工程、上下文管理、长对话管理、token 知识）各 3 篇，
+每篇含摘要、2~3 段正文、示意图节点、示例、要点卡片与来源。`tools/gen_knowledge.py` 先校验结构（必须五组、
+每组 ≥3 篇、每篇正文 ≥2 段、示意图 ≥2 节点、每条来源五个字段齐全且链接以 http 开头），再把紧凑 JSON 分块写成
+`src/core/knowledge_data.c` 的 C 常量——运行期不读外部文件，也就不存在「知识包被删导致功能消失」的路径。
+
+- 检索：中文按相邻二字切词、英文与数字按整词小写；权重 标题 5 / 摘要 3 / 要点 2 / 正文 1，插入排序取前 N。
+- 书签与最近阅读存 setting（`knowledge.bookmark` 为 id 数组、`knowledge.recent` 最多 10 条且去重），
+  知识包升级不动这两项；`knowledge.version_seen` 记录用户已看过的知识包版本。
+- 引用片段：选中某一段后生成「【知识库引用】《标题》（知识包 vX）第 N 段：这一段 … 来源：作者《标题》（许可证，日期）URL」，
+  写入 `knowledge.cite`，与插件片段一起进注入区、共用同一份上下文预算；只带这一段与一行来源，不携全文。
+- 知识库不进记忆索引：`memory.c` 的抽取入口只接受消息 id，没有任何路径把知识库正文写进 message 表或 memory_entry。
+
+## 8.6 错误中心与报错隔离（FR-34，§9.4）
+
+失败点统一收敛到 `aic_error_record`：对话链路（传输/流式/解析/额度/凭证）、Android 的 sendFail 与「模型没有返回内容」、
+能力取数失败。写入分两处：`error_record` 表（类别、错误码、可读描述、关联会话、发生时间、是否已查看）+ `errors/<id>.json`
+明细（脱敏后的原始响应，超过 8KB 截断）。
+
+- 隔离：错误不进 message 表、不进上下文、不进聊天框；界面只在输入框上方给一条不打断的提示条。
+- 脱敏：写入前统一处理 `sk-` 后的 token、`Bearer` 值、JSON 与日志行里的 `api_key|authorization|access_token|secret`、
+  ≥32 位连续十六进制、邮箱本地部分。
+- 入口：额度不足给「看余额」，网络中断给「重试」（回聊天直接用原草稿再发，不产生新的用户消息），凭证/限流给「去设置」，
+  解析与存储给「详情」（明细路径）。
+- 保留：默认 30 天，可配 0~3650 天（0 表示不自动清理），启动后的清理按 occurred_at 删除过期记录与其明细文件。
+- 诊断包：`sai_diagnostic` 顶层（schema 版本、导出时间、错误总数与未读数）+ 设置快照（不含 API Key 本体）+ 错误条目。
+
+## 8.7 设备能力与权限（FR-35，§18）
+
+六项能力各有用途文案与状态：`time`（必需，首次启动申请，未授予不进主页，不可撤销）、`location`、`weather`、
+`media`（设备图片）、`apps`（已安装软件）、`files`（本地文件）；后者五项按需申请、可单独授予与撤销，拒绝不影响主对话。
+
+- CapabilityBroker（`capability.c`）统一处理：状态写 `capability_grant` 并镜像到 setting 的 `capability.<kind>`；
+  取数走平台注入的 provider 回调，未授权直接拒绝，成功才记 last_used_at。
+- 平台侧：Windows 用注册表枚举已安装软件（HKLM / WOW6432Node / HKCU 的 Uninstall 项）、`GetOpenFileNameW` 选图片与单个文件；
+  Android 用 `PackageManager` 列应用标签、`ACTION_OPEN_DOCUMENT` 选图片与文件，选中结果写 `capability.<kind>.value`，
+  C 侧只取这一条文本。位置与天气在两端都没有可用来源：按 §18 写错误中心，主对话与同步继续可用。
+- 注入：组装系统提示词时追加「【设备信息（均由用户逐项授权，只保留本次需要的片段）】」片段，未授权项不出现；
+  原始图片、原始文件内容、完整软件清单都不上传；日志只记能力名与状态，不记坐标、文件名与图片内容。
+
+## 8.8 AI 记忆与发言修改（FR-36，§9.2）
+
+- 抽取：只从 AI 发言里抽，按句末标点切分后保留四类可复用结论（稳定事实、明确偏好、约定、待办），
+  过滤「抱歉 / 作为一 / 我不能」这类拒答与代码块；一条记忆必挂 `source_message_id`，可追溯回原话。
+- 索引：CJK 相邻二字 + 英文/数字整词（含停用词表）建 `memory_token`，检索按命中数排序。
+- 注入：取最相关的至多 12 条（总量 ≤2048 字节），带固定表头，不整段回灌对话。
+- 修改 AI 发言（不设时间窗）：`aic_engine_edit_ai` 在一个事务内「改正文与 original_content/edited_at」→
+  「按 source_message_id 物理删除旧 memory_entry 与索引」→「重新抽取写入」，任一步失败整体回滚（不留半套记忆）。
+- 跨端：成功后向已配对设备发实体 `memory` 的 `memory_replace` 事件（payload 带 source_message_id /
+  conversation_id / content），接收端整条重建；两端编辑浮层都先提示「修改将同步更改 AI 记忆」。
+
 ## 9. 性能预算与基准（FR-24）
 
 预算（桌面 / 移动）：冷启动 2000/2500ms、常驻内存 240/180MB、模式切换 200/220ms、三栏切换 150/160ms、
@@ -196,7 +262,8 @@ aic.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）：分
 ## 11. 构建与打包
 
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test|cli|gui|guidiag
-    python tools\shots.py             # 离屏渲染 14 张界面截图（对话/我/设置/问答/指南/AI 信息/窄窗/进阶指南/导出/消息操作/插件/凭证页/模式选择/配对管理）
+    python tools\gen_knowledge.py     # 校验 resources/knowledge/knowledge.json 并重新生成 src/core/knowledge_data.c
+    python tools\shots.py             # 离屏渲染 19 个场景的界面截图（对话/我/设置/问答/指南/AI 信息/窄窗/进阶指南/导出/消息操作/插件/凭证页/模式选择/配对管理/知识库/知识库详情/错误中心/设备权限/聊天错误条）
     python tools\build_android.py     # 交叉编译 + javac + d8 + aapt2 + zipalign + apksigner
     python tools\verify_android.py    # APK 产物校验（无真机时的自动化证据）
     python tools\package_win.py       # 组装 Windows 便携包并算 SHA-256
@@ -224,4 +291,8 @@ message.transform 改送模型的最后一条 user 文本、tool.provider 产出
    蓝牙 RFCOMM 两端都已实现（Windows AF_BTH、Android BluetoothSocket + JNI 字节流桥），但本机没有可用的蓝牙对端，
    **未做收发实测**；跨 NAT、跨网段与防火墙受阻场景需改用导出导入迁移记录。
 7. 实时同步不在界面线程阻塞：pump 在工作线程里按 400ms 轮询，链路中断时进入 PAIRED 并把事件留在队列，恢复后按 event_id 续传。
+8. 桌面端没有系统级的位置与天气来源（Android 侧同样未接系统定位与天气服务）：这两项按 §18 处理为「有 provider 才取，
+   取不到写错误中心、主对话继续」，不视为功能缺失；其余四项能力（时间、设备图片、已安装软件、本地文件）两端都取真实数据。
+9. 内置知识包是随包分发的静态内容（1.4.0 为 v1.0.0、五组 15 篇）；更新知识包只需重跑 `tools/gen_knowledge.py` 并重编，
+   不动书签与阅读进度。
 

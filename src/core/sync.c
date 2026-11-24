@@ -1,6 +1,7 @@
 /* sync.c —— 同步引擎实现（技术设计第 16 章，FR-27 / FR-28 / FR-29）。 */
 #include "sync.h"
 #include "json.h"
+#include "memory.h"
 #include "pairing.h"
 #include "store_setting.h"
 #include "sync_clock.h"
@@ -14,7 +15,8 @@ struct aic_sync {
 };
 
 static const char *g_entity_names[AIC_ENT_COUNT] = {
-    "profile", "persona", "prompt_version", "conversation", "message", "setting", "plugin"
+    "profile", "persona", "prompt_version", "conversation", "message", "setting", "plugin",
+    "memory"
 };
 static const char *g_op_names[AIC_OP_COUNT] = {
     "create", "update", "recall", "edit", "delete"
@@ -402,6 +404,11 @@ static int snapshot_entity(aic_db *db, aic_sync_entity entity, const char *entit
             "SELECT id, name, version, author, entry_path, permissions, extension_points,"
             " import_source, enabled, installed_at, data_dir FROM plugin WHERE id = ?1;");
         break;
+    case AIC_ENT_MEMORY:
+        /* 记忆实体按消息 id 取正文（重抽依据），不传记忆条目。 */
+        snprintf(sql, sizeof(sql),
+            "SELECT id, conversation_id, content FROM message WHERE id = ?1;");
+        break;
     default:
         if (err && errlen) snprintf(err, errlen, "不支持的同步实体");
         return AIC_E_INVAL;
@@ -524,6 +531,17 @@ static int snapshot_entity(aic_db *db, aic_sync_entity entity, const char *entit
         col_str(st, 1, value, sizeof(value));
         jw_put_str(&w, "key", key);
         jw_put_str(&w, "value", value);
+        break;
+    }
+    case AIC_ENT_MEMORY: {
+        char mid[64], cid[64], body[8192];
+        col_str(st, 0, mid, sizeof(mid));
+        col_str(st, 1, cid, sizeof(cid));
+        col_str(st, 2, body, sizeof(body));
+        jw_put_str(&w, "source_message_id", mid);
+        jw_put_str(&w, "conversation_id", cid);
+        jw_put_str(&w, "content", body);
+        jw_put_str(&w, "op", "memory_replace");
         break;
     }
     case AIC_ENT_PLUGIN: {
@@ -1079,6 +1097,36 @@ static int apply_plugin(aic_db *db, const aic_sync_event *ev, const jv *p,
     return rc == AIC_DONE ? AIC_OK : rc;
 }
 
+/* FR-36：对端收到 memory_replace 后按同一规则重抽，不接收记忆条目本身。 */
+static int apply_memory(aic_db *db, const aic_sync_event *ev, jv *p, char *err, size_t errlen)
+{
+    const char *src = jv_get_str(p, "source_message_id",
+                                 ev->entity_id[0] ? ev->entity_id : "");
+    if (!src || !src[0]) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "memory 事件缺少 source_message_id");
+        return AIC_E_FORMAT;
+    }
+    char conv[40];
+    aic_strlcpy_utf8(conv, sizeof(conv), jv_get_str(p, "conversation_id", ""));
+    if (strcmp(ev->op, aic_sync_op_name(AIC_OP_DELETE)) == 0) {
+        int removed = 0;
+        int rc = aic_mem_purge(db, src, &removed);
+        if (rc != AIC_OK) {
+            if (err && errlen) aic_strlcpy_utf8(err, errlen, "删除记忆失败");
+            return rc;
+        }
+        return AIC_OK;
+    }
+    const char *content = jv_get_str(p, "content", "");
+    int added = 0;
+    int rc = aic_mem_rebuild(db, src, conv, content, ev->origin_device, &added);
+    if (rc != AIC_OK) {
+        if (err && errlen) aic_strlcpy_utf8(err, errlen, "重建记忆失败");
+        return rc;
+    }
+    return AIC_OK;
+}
+
 static int apply_payload(aic_sync *s, const aic_sync_event *ev, char *err, size_t errlen)
 {
     jv *p = NULL;
@@ -1099,6 +1147,7 @@ static int apply_payload(aic_sync *s, const aic_sync_event *ev, char *err, size_
     case AIC_ENT_PERSONA:      rc = apply_persona(s->db, ev, p, err, errlen); break;
     case AIC_ENT_PROMPT_VERSION: rc = apply_prompt_version(s->db, ev, p, err, errlen); break;
     case AIC_ENT_PLUGIN:       rc = apply_plugin(s->db, ev, p, err, errlen); break;
+    case AIC_ENT_MEMORY:       rc = apply_memory(s->db, ev, p, err, errlen); break;
     default:
         if (err && errlen) snprintf(err, errlen, "不支持的同步实体：%s", ev->entity);
         rc = AIC_E_INVAL;

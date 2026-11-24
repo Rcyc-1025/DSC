@@ -70,8 +70,9 @@ public class MainActivity extends Activity {
     private int cText = 0xFF1F2329;
     private int cSub = 0xFF646A73;
     private int cDivider = 0xFFE5E6EB;
-    private int cPrimary = 0xFF2F6BFF;
-    private int cAccent = 0xFFFF8A00;
+    /* 默认值与核心层深蓝色阶保持一致（FR-33）；readTheme() 会再用令牌覆盖一次。 */
+    private int cPrimary = 0xFF103F7A;
+    private int cAccent = 0xFF1F5FA8;
 
     private EditText input;
     private String enteredText = "";
@@ -82,6 +83,9 @@ public class MainActivity extends Activity {
     private static final int REQ_PICK_PLUGIN = 1003;
     private static final int REQ_NOTIFY = 1004;
     private static final int REQ_BT_PERM = 1005;
+    /* 设备能力：选中一张图片 / 一个本地文件（FR-35） */
+    private static final int REQ_CAP_MEDIA = 1006;
+    private static final int REQ_CAP_FILE = 1007;
 
     /* 流式生成时的界面状态：正在输出的气泡、已收到的文本、停止按钮 */
     private boolean streaming = false;
@@ -374,6 +378,14 @@ public class MainActivity extends Activity {
             content.addView(modeSelectView());
             return;
         }
+        /* FR-35 / §18：时间能力是必需项，首次启动未授予时不进主页。 */
+        if (!opt(st, "capGate")) {
+            header.setVisibility(View.GONE);
+            nav.setVisibility(View.GONE);
+            content.removeAllViews();
+            content.addView(capGateView());
+            return;
+        }
         header.setVisibility(View.VISIBLE);
 
         int tab = st.optInt("tab", TAB_CHAT);
@@ -631,6 +643,35 @@ public class MainActivity extends Activity {
         }
         inputRow.addView(send, sp);
         stopBtn = streaming ? send : null;
+
+        /* FR-34：非侵入错误状态条 —— 有未查看的运行错误时只在输入框上方提示一条，
+         * 错误不进消息列表、不进上下文、不弹窗打断对话。 */
+        final int errUnread = st.optInt("errorUnread", 0);
+        if (errUnread > 0) {
+            TextView errBar = new TextView(this);
+            errBar.setText("有 " + errUnread + " 条运行错误未查看，点这里进错误中心");
+            errBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            errBar.setTextColor(cText);
+            GradientDrawable ebg = new GradientDrawable();
+            ebg.setColor(cCard);
+            ebg.setCornerRadius(dp(8));
+            ebg.setStroke(dp(1), cDivider);
+            errBar.setBackground(ebg);
+            errBar.setPadding(dp(12), dp(7), dp(12), dp(7));
+            LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            ep.leftMargin = dp(12);
+            ep.rightMargin = dp(12);
+            ep.bottomMargin = dp(4);
+            errBar.setLayoutParams(ep);
+            errBar.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showErrorCenter();
+                }
+            });
+            col.addView(errBar);
+        }
         col.addView(inputRow);
 
         TextView foot = new TextView(this);
@@ -775,10 +816,16 @@ public class MainActivity extends Activity {
     }
 
     private void editMessage(final String id) {
+        /* FR-36：改 AI 发言不只是改字 —— 这条发言抽出来的记忆要按 source_message_id 整批作废重抽，
+         * 所以浮层必须先把这个后果说清楚（TDD §9.2）。 */
+        final boolean ai = "assistant".equals(findRole(id));
         final EditText e = new EditText(this);
+        e.setMinLines(3);
         e.setText(findContent(id));
         new AlertDialog.Builder(this)
-                .setTitle("修改消息")
+                .setTitle(ai ? "修改 AI 发言（会同步更改 AI 记忆）" : "修改消息")
+                .setMessage(ai ? "保存后本条发言重新抽取记忆：旧记忆条目整批删除、重新抽取，不接受的部分请直接改写这句话。"
+                        : "原内容会保留一次，之后可以在消息上撤销这次修改。")
                 .setView(e)
                 .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -790,12 +837,758 @@ public class MainActivity extends Activity {
                         } catch (Exception ignored) {
                         }
                         JSONObject r = Native.req("edit", extra);
-                        toast(opt(r, "ok") ? "已保存（保留原文）" : optStr(r, "err", "修改失败"));
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "修改失败"));
+                            return;
+                        }
+                        if (ai) {
+                            toast("AI 发言已修改，记忆已重建（删旧 " + r.optInt("memRemoved", 0)
+                                    + " 条 / 抽新 " + r.optInt("memAdded", 0) + " 条）");
+                        } else {
+                            toast("已保存（保留原文）");
+                        }
                         refresh();
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /* ---------- FR-31 / FR-32 内置知识库与来源引用 ---------- */
+
+    /** 知识库入口：先向核心层要章节树与书签，再按层展开（知识包随包离线，不联网）。 */
+    private void showKnowledge() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("kbOpen");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "内置知识库载入失败"));
+                            return;
+                        }
+                        knowledgeHome(r);
+                    }
+                });
+            }
+        });
+    }
+
+    private void knowledgeHome(final JSONObject kb) {
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<String> actions = new java.util.ArrayList<String>();
+        labels.add("检索标题或正文关键词");
+        actions.add("search");
+        labels.add("书签（" + kb.optInt("bookmarkCount", 0) + " 篇）");
+        actions.add("bookmarks");
+        labels.add("最近阅读");
+        actions.add("recent");
+        JSONArray gs = kb.optJSONArray("groups");
+        for (int gi = 0; gs != null && gi < gs.length(); gi++) {
+            JSONObject g = gs.optJSONObject(gi);
+            if (g == null) continue;
+            JSONArray as = g.optJSONArray("articles");
+            int n = as == null ? 0 : as.length();
+            String sum = optStr(g, "summary", "");
+            labels.add("【" + optStr(g, "title", "") + "】" + n + " 篇"
+                    + (sum.isEmpty() ? "" : " · " + sum));
+            actions.add("group:" + gi);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("内置知识库 · v" + optStr(kb, "version", ""))
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        String act = actions.get(which);
+                        if ("search".equals(act)) {
+                            kbSearchDialog();
+                        } else if ("bookmarks".equals(act)) {
+                            kbIdListDialog(kb, kb.optJSONArray("bookmarks"), "书签");
+                        } else if ("recent".equals(act)) {
+                            kbIdListDialog(kb, kb.optJSONArray("recent"), "最近阅读");
+                        } else {
+                            kbGroupDialog(kb, Integer.parseInt(act.substring(6)));
+                        }
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    /** 按 id 数组列条目：书签与最近阅读都只存 id，标题要回章节树里查。 */
+    private void kbIdListDialog(final JSONObject kb, JSONArray ids, String title) {
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<String> refs = new java.util.ArrayList<String>();
+        for (int i = 0; ids != null && i < ids.length(); i++) {
+            String id = ids.optString(i, "");
+            if (id.isEmpty()) continue;
+            labels.add(kbTitleOf(kb, id));
+            refs.add(id);
+        }
+        if (refs.isEmpty()) {
+            toast("这里还没有条目");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(title + "（" + refs.size() + " 篇）")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        kbArticleDialog(refs.get(which));
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void kbGroupDialog(final JSONObject kb, int gi) {
+        JSONArray gs = kb.optJSONArray("groups");
+        final JSONObject g = gs == null ? null : gs.optJSONObject(gi);
+        if (g == null) return;
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<String> refs = new java.util.ArrayList<String>();
+        JSONArray as = g.optJSONArray("articles");
+        for (int i = 0; as != null && i < as.length(); i++) {
+            JSONObject a = as.optJSONObject(i);
+            if (a == null) continue;
+            refs.add(optStr(a, "id", ""));
+            labels.add((a.optBoolean("bookmarked", false) ? "★ " : "") + optStr(a, "title", ""));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(optStr(g, "title", "章节"))
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        kbArticleDialog(refs.get(which));
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private String kbTitleOf(JSONObject kb, String id) {
+        JSONArray gs = kb.optJSONArray("groups");
+        for (int gi = 0; gs != null && gi < gs.length(); gi++) {
+            JSONObject g = gs.optJSONObject(gi);
+            JSONArray as = g == null ? null : g.optJSONArray("articles");
+            for (int ai = 0; as != null && ai < as.length(); ai++) {
+                JSONObject a = as.optJSONObject(ai);
+                if (a != null && id.equals(optStr(a, "id", ""))) return optStr(a, "title", id);
+            }
+        }
+        return id;
+    }
+
+    private void kbArticleDialog(final String id) {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("id", id);
+                } catch (Exception ignored) {
+                }
+                final JSONObject ar = Native.req("kbArticle", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(ar, "ok")) {
+                            toast(optStr(ar, "err", "读不出这一篇"));
+                            return;
+                        }
+                        showKbArticle(ar);
+                    }
+                });
+            }
+        });
+    }
+
+    /** 一篇的呈现顺序与桌面端一致：正文分段 → 示意图节点 → 示例 → 要点 → 来源（FR-32）。 */
+    private void showKbArticle(final JSONObject ar) {
+        StringBuilder sb = new StringBuilder();
+        String id = optStr(ar, "id", "");
+        sb.append(optStr(ar, "summary", "")).append("\n");
+        JSONArray paras = ar.optJSONArray("paragraphs");
+        for (int i = 0; paras != null && i < paras.length(); i++) {
+            sb.append("\n［").append(i + 1).append("］").append(paras.optString(i, "")).append("\n");
+        }
+        JSONArray dia = ar.optJSONArray("diagram");
+        if (dia != null && dia.length() > 0) {
+            sb.append("\n示意图（本地绘制，节点顺序即讲解顺序）\n");
+            for (int i = 0; i < dia.length(); i++) {
+                sb.append("  ○ ").append(dia.optString(i, "")).append("\n");
+                if (i + 1 < dia.length()) sb.append("    ↓\n");
+            }
+        }
+        String example = optStr(ar, "example", "");
+        if (!example.isEmpty()) sb.append("\n示例\n").append(example).append("\n");
+        JSONArray points = ar.optJSONArray("points");
+        if (points != null && points.length() > 0) {
+            sb.append("\n要点卡片\n");
+            for (int i = 0; i < points.length(); i++) sb.append("  · ").append(points.optString(i, "")).append("\n");
+        }
+        JSONArray srcs = ar.optJSONArray("sources");
+        if (srcs != null && srcs.length() > 0) {
+            sb.append("\n来源（只收录允许再分发的内容）\n");
+            for (int i = 0; i < srcs.length(); i++) {
+                JSONObject s = srcs.optJSONObject(i);
+                if (s != null) sb.append("  ").append(optStr(s, "line", "")).append("\n");
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(optStr(ar, "title", "知识条目"))
+                .setMessage(sb.toString())
+                .setPositiveButton("引用这一段", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        kbCitePicker(ar);
+                    }
+                })
+                .setNeutralButton(ar.optBoolean("bookmarked", false) ? "取消书签" : "加入书签",
+                        new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        kbBookmark(id);
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void kbBookmark(String id) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("id", id);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("kbBookmark", extra);
+        if (!opt(r, "ok")) {
+            toast(optStr(r, "err", "书签保存失败"));
+            return;
+        }
+        toast((r.optBoolean("on", false) ? "已加入书签（共 " : "已取消书签（共 ")
+                + r.optInt("count", 0) + " 篇）");
+        refresh();
+    }
+
+    /** 引用只带选中的那一段与一行来源，不携全文（§17 / FR-32）。 */
+    private void kbCitePicker(final JSONObject ar) {
+        final JSONArray paras = ar.optJSONArray("paragraphs");
+        if (paras == null || paras.length() == 0) {
+            toast("这一篇没有可引用的正文段");
+            return;
+        }
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (int i = 0; i < paras.length(); i++) {
+            String p = paras.optString(i, "");
+            labels.add("第 " + (i + 1) + " 段：" + (p.length() > 40 ? p.substring(0, 40) + "…" : p));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("引用哪一段")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject extra = new JSONObject();
+                        try {
+                            extra.put("id", optStr(ar, "id", ""));
+                            extra.put("para", which);
+                        } catch (Exception ignored) {
+                        }
+                        JSONObject r = Native.req("kbCite", extra);
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "引用失败"));
+                            return;
+                        }
+                        toast("已插入引用片段（来自《" + optStr(ar, "title", "") + "》，只带这一段与来源，不携全文）");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void kbSearchDialog() {
+        final EditText e = new EditText(this);
+        e.setHint("例如：上下文 / token / 记忆");
+        new AlertDialog.Builder(this)
+                .setTitle("检索内置知识库")
+                .setView(e)
+                .setPositiveButton("检索", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        final String q = e.getText().toString().trim();
+                        if (q.isEmpty()) {
+                            toast("请先输入要检索的关键词");
+                            return;
+                        }
+                        work(new Runnable() {
+                            @Override
+                            public void run() {
+                                JSONObject extra = new JSONObject();
+                                try {
+                                    extra.put("q", q);
+                                } catch (Exception ignored) {
+                                }
+                                final JSONObject r = Native.req("kbSearch", extra);
+                                ui(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (!opt(r, "ok")) {
+                                            toast(optStr(r, "err", "检索失败"));
+                                            return;
+                                        }
+                                        showKbHits(r, q);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showKbHits(final JSONObject r, String q) {
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<String> refs = new java.util.ArrayList<String>();
+        JSONArray hits = r.optJSONArray("hits");
+        for (int i = 0; hits != null && i < hits.length(); i++) {
+            JSONObject h = hits.optJSONObject(i);
+            if (h == null) continue;
+            refs.add(optStr(h, "id", ""));
+            labels.add(optStr(h, "title", "") + " · " + optStr(h, "summary", ""));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("「" + q + "」命中 " + refs.size() + " 篇")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        kbArticleDialog(refs.get(which));
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    /* ---------- FR-34 错误中心 ---------- */
+
+    private void showErrorCenter() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                JSONObject extra = new JSONObject();
+                try {
+                    extra.put("category", "all");
+                    extra.put("onlyUnack", 0);
+                    extra.put("limit", 40);
+                } catch (Exception ignored) {
+                }
+                final JSONObject r = Native.req("errorList", extra);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "读取错误中心失败"));
+                            return;
+                        }
+                        showErrorList(r);
+                    }
+                });
+            }
+        });
+    }
+
+    private void showErrorList(final JSONObject r) {
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<JSONObject> items = new java.util.ArrayList<JSONObject>();
+        labels.add("导出诊断包（已脱敏，不含 Key）");
+        items.add(null);
+        labels.add("清除全部记录");
+        items.add(null);
+        JSONArray arr = r.optJSONArray("items");
+        for (int i = 0; arr != null && i < arr.length(); i++) {
+            JSONObject it = arr.optJSONObject(i);
+            if (it == null) continue;
+            labels.add("［" + optStr(it, "categoryText", "") + "］" + optStr(it, "message", "")
+                    + "（" + optStr(it, "time", "") + (it.optBoolean("ack", false) ? "" : " · 未查看") + "）");
+            items.add(it);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("错误中心 · " + r.optInt("unread", 0) + " 条未查看 / 共 " + r.optInt("total", 0) + " 条")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        if (which == 0) {
+                            exportDiagnostic();
+                        } else if (which == 1) {
+                            clearErrors();
+                        } else {
+                            showErrorDetail(items.get(which));
+                        }
+                    }
+                })
+                .setNeutralButton("全部已读", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject ack = Native.req("errorAck");
+                        toast(opt(ack, "ok") ? "全部标记为已查看" : optStr(ack, "err", "标记失败"));
+                        refresh();
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void showErrorDetail(final JSONObject it) {
+        if (it == null) return;
+        StringBuilder sb = new StringBuilder();
+        sb.append("时间：").append(optStr(it, "time", "")).append("\n");
+        sb.append("类别：").append(optStr(it, "categoryText", "")).append("\n");
+        sb.append("错误码：").append(optStr(it, "code", "")).append("\n");
+        if (!optStr(it, "conv", "").isEmpty()) sb.append("关联会话：").append(optStr(it, "conv", "")).append("\n");
+        sb.append("描述：").append(optStr(it, "message", "")).append("\n");
+        if (!optStr(it, "detail", "").isEmpty()) sb.append("原始响应：已脱敏存于 errors/ 目录，可用诊断包带走\n");
+        int action = it.optInt("action", 0);
+        final AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("错误详情")
+                .setMessage(sb.toString())
+                .setNegativeButton("关闭", null);
+        if (action > 0) {
+            b.setPositiveButton(optStr(it, "actionText", "处理"), new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    doErrorAction(it.optInt("action", 0));
+                }
+            });
+        }
+        b.show();
+    }
+
+    /** 额度不足给余额入口、网络中断给重试入口（沿用原草稿，不产生新用户消息）。 */
+    private void doErrorAction(int action) {
+        if (action == 1) {
+            toast("回到聊天直接再发一次即可：输入框里的原草稿还在，不会产生新的用户消息");
+        } else if (action == 2) {
+            toast("余额不足：去设置页「余额与用量」看账户接口与本地账本");
+        } else if (action == 3) {
+            toast("凭证或限流问题：去设置页检查 API Key；限流时不要高频重试");
+        } else if (action == 4) {
+            showCapability();
+        } else {
+            toast("原始响应已脱敏保存，可用「导出诊断包」带走");
+        }
+        refresh();
+    }
+
+    private void clearErrors() {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("beforeMs", 0);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("errorClear", extra);
+        toast(opt(r, "ok") ? "已清除 " + r.optInt("removed", 0) + " 条" : optStr(r, "err", "清除失败"));
+        refresh();
+    }
+
+    private void exportDiagnostic() {
+        File dir = new File(getFilesDir(), "exports");
+        if (!dir.exists()) dir.mkdirs();
+        String path = new File(dir, "diagnostic-" + System.currentTimeMillis() + ".json").getAbsolutePath();
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("path", path);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("errorDiag", extra);
+        toast(opt(r, "ok") ? "诊断包已导出：" + path : optStr(r, "err", "导出诊断包失败"));
+    }
+
+    /* ---------- FR-35 设备能力与逐项授权 ---------- */
+
+    /** 时间未授予时不进主页：先说明用途，再逐项走「允许 / 拒绝」。 */
+    private View capGateView() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        col.setBackgroundColor(cBg);
+        col.setPadding(dp(24), dp(24), dp(24), dp(24));
+        TextView h = new TextView(this);
+        h.setText("开始前先授予「时间」能力");
+        h.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        h.setTextColor(cText);
+        h.setGravity(Gravity.CENTER);
+        col.addView(h);
+        TextView body = new TextView(this);
+        body.setText("时间用来排序消息、显示最新时间，不读取任何其它信息；"
+                + "它是必需项，授予后不可撤销。其余五项（位置、天气、设备图片、已安装软件、本地文件）"
+                + "都在真正用到时才申请，可以单独授予或撤销，拒绝不影响主对话。");
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        body.setTextColor(cSub);
+        body.setGravity(Gravity.CENTER);
+        body.setPadding(dp(8), dp(12), dp(8), dp(16));
+        col.addView(body);
+        Button b = new Button(this);
+        b.setText("授予并进入");
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        styleButton(b, cPrimary, Color.WHITE);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                capAsk("time");
+            }
+        });
+        col.addView(b);
+        return col;
+    }
+
+    private void showCapability() {
+        work(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject r = Native.req("capList");
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!opt(r, "ok")) {
+                            toast(optStr(r, "err", "读取设备权限失败"));
+                            return;
+                        }
+                        capList(r);
+                    }
+                });
+            }
+        });
+    }
+
+    private void capList(final JSONObject r) {
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        final java.util.List<String> kinds = new java.util.ArrayList<String>();
+        JSONArray items = r.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject it = items.optJSONObject(i);
+            if (it == null) continue;
+            String state;
+            if (it.optBoolean("granted", false)) {
+                state = it.optBoolean("required", false) ? "已授予（必需）" : "已授予";
+            } else {
+                state = "denied".equals(optStr(it, "state", "")) ? "已拒绝" : "未申请";
+            }
+            labels.add(optStr(it, "name", "") + " · " + state);
+            kinds.add(optStr(it, "kind", ""));
+        }
+        labels.add("选择设备图片…（只取这一张）");
+        kinds.add("pick:media");
+        labels.add("选择本地文件…（只读这一个文件）");
+        kinds.add("pick:files");
+        labels.add("选择已安装软件…（只列选中的那几条）");
+        kinds.add("pick:apps");
+        new AlertDialog.Builder(this)
+                .setTitle("设备权限")
+                .setMessage("申请前先展示用途；拒绝不影响主对话。原始图片、原始文件、完整软件清单都不上传，注入前脱敏。")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        String kind = kinds.get(which);
+                        if (kind.startsWith("pick:")) capPick(kind.substring(5));
+                        else capOne(kind);
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    /** 单项能力：已授予就给撤销入口，未授予先说明用途再授予。 */
+    private void capOne(final String kind) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("kind", kind);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("capRequest", extra);
+        String purpose = optStr(r, "purpose", "");
+        boolean required = "time".equals(kind);
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(optStr(r, "name", "设备能力"))
+                .setMessage(purpose.isEmpty() ? "这项能力用来把设备上的少量信息转成文本，参与本次对话。" : purpose)
+                .setNegativeButton("取消", null);
+        if (required) {
+            b.setPositiveButton("授予（必需）", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    capGrant(kind);
+                }
+            });
+        } else {
+            b.setPositiveButton("授予", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    capGrant(kind);
+                }
+            });
+            b.setNeutralButton("撤销", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    JSONObject extra = new JSONObject();
+                    try {
+                        extra.put("kind", kind);
+                    } catch (Exception ignored) {
+                    }
+                    JSONObject res = Native.req("capRevoke", extra);
+                    toast(opt(res, "ok") ? "已撤销，对话与同步照常可用" : optStr(res, "err", "撤销失败"));
+                    refresh();
+                }
+            });
+        }
+        b.show();
+    }
+
+    private void capAsk(final String kind) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("kind", kind);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("capRequest", extra);
+        String purpose = optStr(r, "purpose", "");
+        new AlertDialog.Builder(this)
+                .setTitle("授予「" + optStr(r, "name", "时间") + "」")
+                .setMessage(purpose.isEmpty() ? "用来把本机当前时间转成一句简短文本。" : purpose)
+                .setPositiveButton("允许", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        capGrant(kind);
+                    }
+                })
+                .setNegativeButton("拒绝", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        JSONObject extra = new JSONObject();
+                        try {
+                            extra.put("kind", kind);
+                        } catch (Exception ignored) {
+                        }
+                        Native.req("capDeny", extra);
+                        toast("没有授予时不会进入主页；可以随时再点一次授予");
+                        refresh();
+                    }
+                })
+                .show();
+    }
+
+    private void capGrant(String kind) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("kind", kind);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("capGrant", extra);
+        toast(opt(r, "ok") ? "已授予" : optStr(r, "err", "授予失败"));
+        refresh();
+    }
+
+    private void capPick(String kind) {
+        if ("apps".equals(kind)) {
+            showAppsPicker();
+            return;
+        }
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("media".equals(kind) ? "image/*" : "text/*");
+        startActivityForResult(i, "media".equals(kind) ? REQ_CAP_MEDIA : REQ_CAP_FILE);
+    }
+
+    /** 软件列表只让用户点一条，完整清单不出设备（§18）。 */
+    private void showAppsPicker() {
+        PackageManager pm = getPackageManager();
+        java.util.List<android.content.pm.ApplicationInfo> apps = pm.getInstalledApplications(0);
+        final java.util.List<String> labels = new java.util.ArrayList<String>();
+        for (int i = 0; i < apps.size() && labels.size() < 200; i++) {
+            CharSequence label = apps.get(i).loadLabel(pm);
+            String name = label == null ? "" : label.toString();
+            if (name.isEmpty()) continue;
+            labels.add(name);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选一条作为「已安装软件」")
+                .setMessage("只把选中的这一条注入对话，不上传完整软件清单。")
+                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        capProvide("apps", "用户选中的已安装软件：" + labels.get(which));
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void capProvide(final String kind, final String text) {
+        JSONObject extra = new JSONObject();
+        try {
+            extra.put("kind", kind);
+            extra.put("text", text);
+        } catch (Exception ignored) {
+        }
+        JSONObject r = Native.req("capProvide", extra);
+        toast(opt(r, "ok") ? "已记下这一条，下次对话会带上" : optStr(r, "err", "保存失败"));
+    }
+
+    /** 读用户选中的文件开头的文本（上限 4000 字），不递归、不遍历目录。 */
+    private String readTextPrefix(Uri uri, int maxChars) {
+        InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) return null;
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+                if (bos.size() >= maxChars * 4) break;
+            }
+            String s = new String(bos.toByteArray(), "UTF-8");
+            return s.length() > maxChars ? s.substring(0, maxChars) : s;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            try {
+                if (in != null) in.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private String uriName(Uri uri) {
+        android.database.Cursor c = null;
+        try {
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) return c.getString(idx);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        String p = uri.getPath();
+        return p == null ? "" : new File(p).getName();
+    }
+
+    private long uriSize(Uri uri) {
+        android.database.Cursor c = null;
+        try {
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                if (idx >= 0) return c.getLong(idx);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        return 0;
     }
 
     /** 向上翻一页（技术设计 13.3）：每次 100 条，拼到列表最前面；桥命令 loadOlder。 */
@@ -1168,6 +1961,29 @@ public class MainActivity extends Activity {
                     });
                 }
             });
+        } else if (requestCode == REQ_CAP_MEDIA) {
+            /* FR-35：只取用户显式选中的这一张，原始图片不上传（§18）。 */
+            final String name = uriName(uri);
+            final long size = uriSize(uri);
+            capProvide("media", "用户选中的图片：" + (name.isEmpty() ? "未命名" : name)
+                    + "（约 " + Math.max(1, size / 1024) + " KB；原始图片不上传，只记名称与大小）");
+        } else if (requestCode == REQ_CAP_FILE) {
+            work(new Runnable() {
+                @Override
+                public void run() {
+                    final String text = readTextPrefix(uri, 4000);
+                    ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (text == null || text.isEmpty()) {
+                                toast("这个文件没有可读的文本内容");
+                                return;
+                            }
+                            capProvide("files", text);
+                        }
+                    });
+                }
+            });
         }
     }
 
@@ -1467,6 +2283,25 @@ public class MainActivity extends Activity {
                 showAdvanced();
             }
         }));
+        col.addView(kvRow("内置知识库", "五组 15 篇 · 检索 / 书签 / 引用", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showKnowledge();
+            }
+        }));
+        col.addView(kvRow("设备权限", "六项能力 · 可单独授予或撤销", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showCapability();
+            }
+        }));
+        col.addView(kvRow("错误中心", st.optInt("errorUnread", 0) > 0
+                ? st.optInt("errorUnread", 0) + " 条未查看" : "无未读", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showErrorCenter();
+            }
+        }));
         col.addView(kvRow("数据管理", "备份 / 恢复 / 清理", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1479,12 +2314,15 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "Sai 1.3.0", new View.OnClickListener() {
+        col.addView(kvRow("关于", "Sai 1.4.0", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("关于 Sai")
-                        .setMessage("Sai 1.3.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n本版新增：首次启动先配凭证（系统安全存储）、双端配对与实时同步。")
+                        .setMessage("Sai 1.4.0\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                                + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
+                                + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
+                                + "AI 发言修改与记忆同步（FR-36）。")
                         .setPositiveButton("好", null)
                         .show();
             }

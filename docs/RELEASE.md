@@ -27,19 +27,19 @@
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target test
    .\build\test_core.exe                      # 期望"0 失败"
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
-   .\build\aic.exe verify . build\verify      # 期望退出码 0，30 条 FR 全 PASS
+   .\build\aic.exe verify . build\verify      # 期望退出码 0，36 条 FR 全 PASS
    powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target gui
-   python tools\shots.py                      # 14 张界面截图逐张目检
+   python tools\shots.py                      # 19 个场景的界面截图逐张目检
    ```
 
 3. **基准**：`aic.exe bench` 与 `aic.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入）。
-5. **打标签**：`git tag -a v1.3.0 -m "Sai 1.3.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应；标签一旦推送不再移动。
+5. **打标签**：`git tag -a v1.4.0 -m "Sai 1.4.0"`，标签必须与 `CHANGELOG.md` 的版本段落一一对应；标签一旦推送不再移动。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
 
    ```powershell
-   python tools\package_win.py        # dist\Sai-1.3.0-win-x64-portable.zip + .sha256
-   python tools\make_installer.py     # dist\Sai-1.3.0-win-x64-setup.exe + .sha256
+   python tools\package_win.py        # dist\Sai-1.4.0-win-x64-portable.zip + .sha256
+   python tools\make_installer.py     # dist\Sai-1.4.0-win-x64-setup.exe + .sha256
    python tools\build_android.py      # build_android\Sai.apk
    python tools\verify_android.py     # APK 结构 / ABI / 清单 / 签名校验
    ```
@@ -48,7 +48,7 @@
    - Windows：`scripts\sign_release.ps1`。证书用 `-Pfx <文件>`（口令走环境变量 `SAI_SIGN_PASSWORD`）或 `-Thumbprint <指纹>`（证书已导入当前用户个人存储）。退出码：`0` 签名并验签通过；`2` 找不到 `signtool.exe`（需要 Windows SDK 签名工具）；`3` 没有证书或缺口令；`4` 没有可签名的文件。脚本不会自造证书、不会在缺证书时假装成功。
    - Android：`python tools\sign_android.py`。keystore 用环境变量 `SAI_ANDROID_KEYSTORE` / `SAI_ANDROID_STOREPASS` / `SAI_ANDROID_KEYPASS` / `SAI_ANDROID_ALIAS`，缺任一项退出码 `3`，产出 v2+v3 签名并当场 `apksigner verify --print-certs`。`tools\build_android.py` 打出来的 `build_android\Sai.apk` 只是开发用自签包，发布前必须用发布方证书重新签名。
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
-9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[1.3.0] - 2026-11-22` 并新建空的 `[未发布]` 段。
+9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[1.4.0] - 2026-11-24` 并新建空的 `[未发布]` 段。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表 + 未实测清单（`docs/PRE-RELEASE-EVIDENCE.md` 第 9 节）。
 
 ## 产物口径与命名
@@ -58,7 +58,10 @@
 | Windows 便携包 | `Sai-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `Sai-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\Sai` |
 | Windows ARM64 便携包 | `Sai-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `Sai-1.3.0-android-arm64.apk`（构建产物为 `build_android\Sai.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 1.3.0`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+| Android 安装包 | `Sai-1.4.0-android-arm64.apk`（构建产物为 `build_android\Sai.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`、`versionName 1.4.0`、`versionCode 5`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+
+Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` 决定，`aapt2 link --version-code` 不覆盖它；
+两处必须同时改（1.4.0 为 `versionCode="5"`），`tools\verify_android.py` 会断言两者一致。
 
 **ARM64 口径说明**：修订版 §16.1 要求 Windows 产物覆盖 x64 与 ARM64。本版用本机 LLVM 23 的 `clang` +
 `lld` 加 MSYS2 `clangarm64` 的 aarch64 mingw-w64 sysroot 交叉编译出 ARM64 的 `Sai.exe`、
@@ -73,4 +76,4 @@
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/aic.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-23（对应版本 v1.3.0，含 ARM64 交叉编译产物与两端签名通道）。
+最后更新：2026-11-24（对应版本 v1.4.0，含 ARM64 交叉编译产物、两端签名通道、内置知识库/错误中心/设备权限/AI 记忆）。

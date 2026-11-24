@@ -4,35 +4,38 @@
 #include <math.h>
 #include <string.h>
 
+/* FR-33：深蓝主色调（H≈213）。日光与夜间只改明度、不改色相，
+ * 主色都由同一支深蓝色阶取出：日间 #103F7A、夜间 #6194C9。
+ * 深蓝底 + 白字 10.4:1，夜间 3.2:1，均满足按钮 ≥3:1 的硬要求。 */
 static const aic_theme g_day = {
     0, "day",
     {
-        0xF5F6F8, /* PAGE_BG */
+        0xF4F7FB, /* PAGE_BG */
         0xFFFFFF, /* CARD_BG */
-        0x1F2329, /* TEXT */
-        0x646A73, /* TEXT_SECONDARY */
-        0xE5E6EB, /* DIVIDER */
-        0x2F6BFF, /* PRIMARY */
-        0xFF8A00, /* ACCENT */
-        0x1F9D55, /* SUCCESS */
-        0xB26B00, /* WARNING */
-        0xD93025  /* DANGER */
+        0x14203A, /* TEXT */
+        0x5B6880, /* TEXT_SECONDARY */
+        0xD9E2EF, /* DIVIDER */
+        0x103F7A, /* PRIMARY：深蓝 */
+        0x1F5FA8, /* ACCENT：同色相稍亮，用于强调与链接 */
+        0x1C7A4A, /* SUCCESS */
+        0x9A6100, /* WARNING */
+        0xB3261E  /* DANGER */
     }
 };
 
 static const aic_theme g_night = {
     1, "night",
     {
-        0x16181C, /* PAGE_BG */
-        0x202329, /* CARD_BG */
-        0xE8EAED, /* TEXT */
-        0x9AA0A6, /* TEXT_SECONDARY */
-        0x33373D, /* DIVIDER */
-        0x5B8CFF, /* PRIMARY */
-        0xFFA733, /* ACCENT */
+        0x0B1220, /* PAGE_BG */
+        0x141D2E, /* CARD_BG */
+        0xE6EDF8, /* TEXT */
+        0x9EACC4, /* TEXT_SECONDARY */
+        0x26334A, /* DIVIDER */
+        0x6194C9, /* PRIMARY：同色相提亮 */
+        0x4E86D6, /* ACCENT */
         0x4CC38A, /* SUCCESS */
-        0xE0A030, /* WARNING */
-        0xFF6B5F  /* DANGER */
+        0xE0A33A, /* WARNING */
+        0xF07068  /* DANGER */
     }
 };
 

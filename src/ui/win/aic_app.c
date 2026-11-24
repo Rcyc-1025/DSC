@@ -20,11 +20,16 @@
 #include "aic_types.h"
 #include "avatar.h"
 #include "backup.h"
+#include "capability.h"
 #include "diaglog.h"
+#include "error_store.h"
+#include "knowledge.h"
+#include "memory.h"
 #include "http.h"
 #include "notify.h"
 #include "pairing.h"
 #include "sync.h"
+#include "sync_clock.h"
 #include "sync_session.h"
 #include "transport.h"
 #include "credential.h"
@@ -91,6 +96,19 @@ enum {
     ACT_PAIR_BACK, ACT_PAIR_ADDR_EDIT, ACT_PAIR_CODE_EDIT, ACT_PAIR_HOST, ACT_PAIR_DISCOVER,
     ACT_PAIR_CONNECT, ACT_PAIR_HANDSHAKE, ACT_PAIR_TOGGLE, ACT_PAIR_CONFLICTS, ACT_PAIR_UNPAIR,
     ACT_PAIR_CH_LAN, ACT_PAIR_CH_BT,
+    /* 内置知识库（FR-31 / FR-32）、错误中心（FR-34）、设备权限（FR-35） */
+    ACT_ROW_KB, ACT_ROW_ERROR, ACT_ROW_CAP,
+    ACT_KB_BACK, ACT_KB_CITE, ACT_KB_BOOKMARK, ACT_KB_SEARCH_EDIT, ACT_KB_SEARCH_GO,
+    ACT_KB_CITE_CLEAR,
+    ACT_ERR_BACK, ACT_ERR_ACK, ACT_ERR_CLEAR, ACT_ERR_EXPORT,
+    ACT_CAP_BACK, ACT_CAP_ASK, ACT_CAP_PICK_MEDIA, ACT_CAP_PICK_FILES, ACT_CAP_PICK_APPS,
+    /* 列表项与按钮编号区段（避开 ACT_COPY_BASE=2600 到 6696 的复制按钮段） */
+    ACT_KB_ITEM_BASE = 7000,     /* +0..63 篇 */
+    ACT_KB_PARA_BASE = 7100,     /* +0..15 段 */
+    ACT_CAP_TOGGLE_BASE = 7200,  /* +0..5 项能力 */
+    ACT_ERR_CAT_BASE = 7300,     /* +0..8 个类别筛选 */
+    ACT_ERR_ACT_BASE = 7330,     /* +0..199 错误条目的动作按钮 */
+    ACT_CAP_APP_BASE = 7400,     /* +0..39 已安装软件列表项 */
     ACT_FIELD_BASE = 900
 };
 
@@ -241,6 +259,30 @@ typedef struct App {
     char  pair_msg[512];
     volatile LONG pair_busy;
     int   pair_role;           /* 1=被连接方 3=连接方（重试握手时用） */
+
+    /* 内置知识库（FR-31 / FR-32）：章节树、全文检索、书签、引用片段 */
+    aic_kb *kb;
+    int  page_kb;              /* 1=知识库页（列表或文章） */
+    char kb_article[64];       /* 非空时显示文章详情 */
+    int  kb_para;              /* 选中的正文段落，-1 表示没有选中 */
+    char kb_query[64];
+    int  kb_focus;             /* 1=检索框聚焦 */
+    char kb_hits[16][64];
+    int  kb_hit_n;
+    int  kb_only_bookmark;     /* 1=只看书签 */
+
+    /* 错误中心（FR-34）：类别筛选与列表缓冲 */
+    int  page_error;
+    int  err_filter;           /* 0=全部，1..AIC_ERR_OTHER 为类别序号 */
+    aic_error_entry err_rows[64];
+    int  err_n;
+
+    /* 设备权限（FR-35） */
+    int  page_cap;
+    char cap_msg[256];
+    char app_list[40][128];    /* 已安装软件候选（只给用户挑一条） */
+    int  app_n;
+    int  editing_ai;           /* 正在改的是 AI 发言：保存走记忆重建（FR-36） */
 } App;
 
 static App g_app;
@@ -314,6 +356,16 @@ static void paint_advanced(App *a, HDC dc, RECT content);
 static void paint_credential(App *a, HDC dc, RECT client);
 static void paint_mode_select(App *a, HDC dc, RECT client);
 static void paint_pair(App *a, HDC dc, RECT content);
+static void paint_kb(App *a, HDC dc, RECT content);
+static void paint_error_center(App *a, HDC dc, RECT content);
+static void paint_capability(App *a, HDC dc, RECT content);
+static void app_kb_refresh(App *a);
+static void app_kb_open(App *a, const char *article_id);
+static void app_rebuild_fragment(App *a);
+static void app_err_reload(App *a);
+static void app_cap_provider_install(App *a);
+static int  cap_pick_action(const char *kind);
+static int  cap_pick_path(App *a, const wchar_t *filter, const char *key, const wchar_t *title);
 static void app_cred_save(App *a);
 static void app_cred_demo(App *a);
 static void app_mode_select(App *a, aic_mode m);
@@ -957,6 +1009,187 @@ static void md_strip(const char *in, char *out, size_t cap);
 static void on_stream_delta(void *ud, const char *delta);
 static void app_update(App *a);
 
+/* ---------- 注入片段：插件扩展点 + 知识库引用片段（第 10 章 + §17 / FR-31 / FR-32） ----------
+ * 选中的段落作为引用片段进插件注入区，共用同一份上下文预算；片段只带那一段与一行来源，不携全文。 */
+static void app_rebuild_fragment(App *a)
+{
+    sb frag;
+    char cite[2048];
+
+    if (!a->eng) return;
+    cite[0] = '\0';
+    if (aic_setting_get(a->db, AIC_SET_KB_CITE, cite, sizeof(cite)) != AIC_OK) cite[0] = '\0';
+    sb_init(&frag);
+    if (aic_plugin_build_fragment(a->db, &frag, NULL, 0) != AIC_OK) sb_reset(&frag);
+    if (cite[0]) {
+        if (sb_cstr(&frag)[0]) sb_append(&frag, "\n\n");
+        sb_append(&frag, cite);
+    }
+    aic_engine_set_plugin_fragment(a->eng, sb_cstr(&frag));
+    sb_free(&frag);
+}
+
+/* ---------- 内置知识库（FR-31 / FR-32） ---------- */
+static void app_kb_refresh(App *a)
+{
+    char err[256];
+    if (a->kb) return;
+    err[0] = '\0';
+    if (aic_kb_load(&a->kb, err, sizeof(err)) != AIC_OK) {
+        a->kb = NULL;
+        app_status(a, "内置知识库载入失败：%s", err[0] ? err : "数据损坏");
+    }
+}
+
+static void app_kb_open(App *a, const char *article_id)
+{
+    app_kb_refresh(a);
+    if (!a->kb) return;
+    if (!article_id || !article_id[0] || !aic_kb_find(a->kb, article_id)) {
+        app_status(a, "知识库里没有这一篇");
+        return;
+    }
+    aic_strlcpy_utf8(a->kb_article, sizeof(a->kb_article), article_id);
+    a->kb_para = -1;
+    a->scroll[1] = 0;
+    aic_kb_recent_push(a->db, article_id);
+}
+
+/* ---------- 错误中心（FR-34 §9.4） ---------- */
+static const char *g_err_cats[] = {
+    AIC_ERR_NETWORK, AIC_ERR_QUOTA, AIC_ERR_RATE_LIMIT, AIC_ERR_PARSE,
+    AIC_ERR_CREDENTIAL, AIC_ERR_CAPABILITY, AIC_ERR_STORAGE, AIC_ERR_OTHER
+};
+
+static int g_err_cat_n = (int)(sizeof(g_err_cats) / sizeof(g_err_cats[0]));
+
+static void app_err_reload(App *a)
+{
+    aic_error_filter f;
+    int cap = (int)(sizeof(a->err_rows) / sizeof(a->err_rows[0]));
+
+    memset(&f, 0, sizeof(f));
+    if (a->err_filter > 0 && a->err_filter <= g_err_cat_n) f.category = g_err_cats[a->err_filter - 1];
+    f.limit = cap;
+    memset(a->err_rows, 0, sizeof(a->err_rows));
+    a->err_n = 0;
+    if (aic_error_query(a->db, &f, a->err_rows, cap, &a->err_n) != AIC_OK) a->err_n = 0;
+    if (a->err_n > cap) a->err_n = cap;
+}
+
+/* ---------- 设备能力（FR-35 §18）：平台取值函数 ----------
+ * 桌面端只做真实可得的三项，并且都要用户先显式选中：
+ *   - 设备图片：在设备权限页选一个图片文件，注入时只给名称与大小，原图不上传；
+ *   - 已安装软件：从注册表卸载项里挑一条，只给这一个名字，不给完整清单；
+ *   - 本地文件：选单个文件，注入前读文本片段，不递归、不传原始文件。
+ * 位置与天气在桌面端没有可用来源：返回 AIC_E_STATE（能力已授权也不算错），
+ * 由错误中心写一条 capability.unavailable，主对话继续。 */
+static int cap_none(char *buf, size_t cap, void *ud)
+{
+    (void)ud;
+    if (buf && cap) buf[0] = '\0';
+    return AIC_E_STATE;
+}
+
+static int cap_media_text(char *buf, size_t cap, void *ud)
+{
+    char sel[600];
+    int64_t size = 0;
+    (void)ud;
+    sel[0] = '\0';
+    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "media.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
+        return AIC_E_STATE;
+    if (aic_file_size(sel, &size) != AIC_OK) return AIC_E_STATE;
+    snprintf(buf, cap, "用户选中的图片：%s（约 %lld KB；原始图片不上传，只记名称与大小）",
+             aic_path_basename(sel), (long long)(size / 1024));
+    return AIC_OK;
+}
+
+static int cap_apps_text(char *buf, size_t cap, void *ud)
+{
+    char sel[160];
+    (void)ud;
+    sel[0] = '\0';
+    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
+        return AIC_E_STATE;
+    aic_strlcpy_utf8(buf, cap, sel);
+    return AIC_OK;
+}
+
+static int cap_files_text(char *buf, size_t cap, void *ud)
+{
+    char sel[600];
+    sb text;
+    int rc;
+    (void)ud;
+    sel[0] = '\0';
+    if (aic_setting_get(g_app.db, AIC_SET_CAP_PREFIX "files.selected", sel, sizeof(sel)) != AIC_OK || !sel[0])
+        return AIC_E_STATE;
+    sb_init(&text);
+    rc = aic_cap_read_text_file(g_app.db, sel, &text);
+    if (rc == AIC_OK) aic_strlcpy_utf8(buf, cap, sb_cstr(&text));
+    sb_free(&text);
+    return rc;
+}
+
+static void app_cap_provider_install(App *a)
+{
+    aic_cap_provider p;
+    memset(&p, 0, sizeof(p));
+    p.time_now = NULL;          /* 时间用本地时钟真实现（capability.c 内置，不依赖平台） */
+    p.location = cap_none;
+    p.weather = cap_none;
+    p.media_pick = cap_media_text;
+    p.apps_pick = cap_apps_text;
+    p.files_pick = cap_files_text;
+    p.ud = a;
+    aic_cap_set_provider(&p);
+}
+
+/* 已安装软件：只读取卸载项里的 DisplayName，最多取 40 条给用户挑一条。 */
+static int cap_enum_reg(char (*names)[128], int cap, HKEY root, const char *path)
+{
+    HKEY k;
+    DWORD idx;
+    int n = 0;
+
+    if (RegOpenKeyExA(root, path, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+    for (idx = 0; n < cap; idx++) {
+        char sub[256];
+        DWORD sublen = (DWORD)sizeof(sub);
+        HKEY sk;
+        char name[256];
+        DWORD namelen = (DWORD)sizeof(name);
+        DWORD type = 0;
+        int dup = 0;
+        if (RegEnumKeyExA(k, idx, sub, &sublen, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        if (RegOpenKeyExA(k, sub, 0, KEY_READ, &sk) != ERROR_SUCCESS) continue;
+        namelen = (DWORD)sizeof(name);
+        if (RegQueryValueExA(sk, "DisplayName", NULL, &type, (LPBYTE)name, &namelen) == ERROR_SUCCESS &&
+            type == REG_SZ && name[0]) {
+            for (int i = 0; i < n; i++) if (aic_str_ieq(names[i], name)) { dup = 1; break; }
+            if (!dup) { aic_strlcpy_utf8(names[n], 128, name); n++; }
+        }
+        RegCloseKey(sk);
+    }
+    RegCloseKey(k);
+    return n;
+}
+
+static int app_enum_apps(App *a)
+{
+    int n = cap_enum_reg(a->app_list, (int)(sizeof(a->app_list) / sizeof(a->app_list[0])),
+                         HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
+    n += cap_enum_reg(a->app_list + n,
+                      (int)(sizeof(a->app_list) / sizeof(a->app_list[0])) - n,
+                      HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
+    n += cap_enum_reg(a->app_list + n,
+                      (int)(sizeof(a->app_list) / sizeof(a->app_list[0])) - n,
+                      HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
+    a->app_n = n;
+    return n;
+}
+
 static void app_setup_engine(App *a)
 {
     if (!a->eng) {
@@ -999,11 +1232,18 @@ static void app_setup_engine(App *a)
                                                                AIC_CONTEXT_MESSAGES_DEFAULT));
     aic_engine_set_stream_cb(a->eng, on_stream_delta, a);
 
-    sb frag;
-    sb_init(&frag);
-    if (aic_plugin_build_fragment(a->db, &frag, NULL, 0) == AIC_OK)
-        aic_engine_set_plugin_fragment(a->eng, sb_cstr(&frag));
-    sb_free(&frag);
+    /* FR-34：错误中心明细写 <数据根>/errors；FR-36：记忆条目记来源端；
+     * FR-35：能力取值按用途展示，平台函数在 app_cap_provider_install 里注入。 */
+    aic_engine_set_data_root(a->eng, a->root);
+    {
+        char dev[40];
+        if (aic_device_id(a->db, dev, sizeof(dev)) == AIC_OK)
+            aic_engine_set_origin_device(a->eng, dev);
+    }
+    aic_engine_set_memory_enabled(a->eng, 1);
+    aic_engine_set_capability_enabled(a->eng, 1);
+    app_cap_provider_install(a);
+    app_rebuild_fragment(a);
 }
 
 
@@ -1023,7 +1263,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "1.3.0"
+#define APP_VERSION    "1.4.0"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -1611,6 +1851,27 @@ static void paint_chat(App *a, HDC dc, RECT content)
     FillRect(dc, &sep, b);
     DeleteObject(b);
 
+    {
+        /* §9.4：错误只走输入区上方的非侵入状态条，不进聊天框、也不挤占消息本身。 */
+        int unread = aic_error_unread(a->db);
+        if (unread > 0) {
+            RECT bar;
+            char txt[160];
+            /* 条子钉在输入区上方，消息区底部让出同样的高度，互不遮挡。 */
+            bar.left = content.left + 12;
+            bar.right = content.right - 12;
+            bar.bottom = inarea.top - 8;
+            bar.top = bar.bottom - 28;
+            area.bottom = bar.top - 6;
+            fill_round(dc, bar, 8, tok(a, AIC_TOK_CARD_BG));
+            stroke_round(dc, bar, 8, tok(a, AIC_TOK_DIVIDER), 1);
+            snprintf(txt, sizeof(txt), "有 %d 条运行错误未查看，点这里进错误中心", unread);
+            draw_text(dc, a->font_small, txt,
+                      (RECT){bar.left + 12, bar.top, bar.right - 12, bar.bottom},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            reg(bar, ACT_ROW_ERROR);
+        }
+    }
     if (a->msg_has_more) {
         /* 技术设计 13.3：还有更早的消息时给一个明确的入口。 */
         RECT more = {content.right - 132, area.top + 4, content.right - 20, area.top + 34};
@@ -1733,6 +1994,9 @@ static void paint_settings(App *a, HDC dc, RECT content)
     char model[64] = {0};
     int has_key = 0;
 
+    if (a->page_kb) { paint_kb(a, dc, content); return; }
+    if (a->page_error) { paint_error_center(a, dc, content); return; }
+    if (a->page_cap) { paint_capability(a, dc, content); return; }
     if (a->page_advanced) { paint_advanced(a, dc, content); return; }
     if (a->page_pair) { paint_pair(a, dc, content); return; }
 
@@ -1747,8 +2011,8 @@ static void paint_settings(App *a, HDC dc, RECT content)
     y.left += PAD + 8;
     y.right -= PAD + 8;
     {
-        /* 13 行设置项 + 标题 + 底部说明：滚动范围收敛到真实内容高度，避免滚过底。 */
-        int needed = 52 + 16 * ROW_H + 12 + 80;
+        /* 19 行设置项 + 标题 + 底部说明：滚动范围收敛到真实内容高度，避免滚过底。 */
+        int needed = 52 + 19 * ROW_H + 12 + 80;
         int avail = (int)(content.bottom - content.top);
         int maxs = needed - avail;
         if (maxs < 0) maxs = 0;
@@ -1803,6 +2067,32 @@ static void paint_settings(App *a, HDC dc, RECT content)
 
     draw_row(a, dc, &y, "数据管理", "数据库 / 备份 / 清理", ACT_ROW_DATA);
     draw_row(a, dc, &y, "进阶指南", "插件制作 / 变量 / 迁移 / 排错", ACT_ROW_ADVANCED);
+
+    /* §7.2 补上的三行：内置知识库（FR-31/32）、设备权限（FR-35）、错误中心（FR-34）。 */
+    app_kb_refresh(a);
+    if (a->kb)
+        snprintf(v, sizeof(v), "%d 篇 · %d 组 · 书签 %d", a->kb->article_n,
+                 aic_kb_group_count(a->kb), aic_kb_bookmark_count(a->db));
+    else
+        aic_strlcpy_utf8(v, sizeof(v), "知识包未载入");
+    draw_row(a, dc, &y, "内置知识库", v, ACT_ROW_KB);
+    {
+        int granted = 0;
+        int ci;
+        int cap_n = (int)aic_cap_count();
+        for (ci = 0; ci < cap_n; ci++) {
+            const char *k = aic_cap_kind_at(ci);
+            if (k && aic_cap_is_granted(a->db, k)) granted++;
+        }
+        snprintf(v, sizeof(v), "已授权 %d / %d 项", granted, cap_n);
+    }
+    draw_row(a, dc, &y, "设备权限", v, ACT_ROW_CAP);
+    {
+        int unread = aic_error_unread(a->db);
+        if (unread > 0) snprintf(v, sizeof(v), "%d 条未查看", unread);
+        else aic_strlcpy_utf8(v, sizeof(v), "无未读");
+    }
+    draw_row(a, dc, &y, "错误中心", v, ACT_ROW_ERROR);
     draw_row(a, dc, &y, "减少动态效果",
              aic_setting_get_int(a->db, AIC_SET_MOTION, 1) == 0 ? "开启" : "关闭", ACT_ROW_MOTION);
     draw_row(a, dc, &y, "关于", "Sai " APP_VERSION, ACT_ROW_ABOUT);
@@ -3478,11 +3768,26 @@ static void app_save_form(App *a)
             a->undo_until = aic_now_ms() + 120000;
             aic_msg_free(&before_msg);
         }
-        rc = aic_engine_edit(a->eng, a->sel_msg, a->fields[0].buf, err, sizeof(err));
-        if (rc == AIC_OK) {
-            app_load_chat(a);
-            app_status(a, "消息已修改（首次修改会保留原文）");
-            app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
+        if (a->editing_ai) {
+            /* FR-36 / §9.2：改 AI 发言不设时间窗，同一事务里按 source_message_id 物理删除旧记忆条目
+             * 再重新抽取；失败整体回滚。成功后把 memory_replace 事件发给对端。 */
+            int removed = 0;
+            int added = 0;
+            rc = aic_engine_edit_ai(a->eng, a->sel_msg, a->fields[0].buf, &removed, &added,
+                                    err, sizeof(err));
+            if (rc == AIC_OK) {
+                app_load_chat(a);
+                app_publish(a, AIC_ENT_MEMORY, AIC_OP_UPDATE, a->sel_msg);
+                app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
+                app_status(a, "AI 发言已修改，记忆已重建（删旧 %d 条 / 抽新 %d 条）", removed, added);
+            }
+        } else {
+            rc = aic_engine_edit(a->eng, a->sel_msg, a->fields[0].buf, err, sizeof(err));
+            if (rc == AIC_OK) {
+                app_load_chat(a);
+                app_status(a, "消息已修改（首次修改会保留原文）");
+                app_publish(a, AIC_ENT_MESSAGE, AIC_OP_EDIT, a->sel_msg);
+            }
         }
         break;
     }
@@ -3500,9 +3805,283 @@ static void app_save_form(App *a)
     app_invalidate(a);
 }
 
+/* ---------- 知识库 / 错误中心 / 设备权限的动作（FR-31/32/34/35） ---------- */
+/* 列表页的行先排一遍、再照同一顺序画，点击落在 ACT_KB_ITEM_BASE + 行号上。 */
+static char g_kb_row_id[96][64];        /* 条目 id；分组标题行留空 */
+static char g_kb_row_label[96][160];    /* 行文字 */
+static int  g_kb_row_bm[96];            /* 是否已加书签 */
+static int  g_kb_row_kind[96];          /* 0 = 分组标题，1 = 条目 */
+static int  g_kb_row_n;
+
+static void kb_search_run(App *a)
+{
+    if (!a->kb) { app_status(a, "知识包未载入"); return; }
+    a->kb_hit_n = 0;
+    memset(a->kb_hits, 0, sizeof(a->kb_hits));
+    if (!a->kb_query[0]) { app_status(a, "先输入检索关键词"); return; }
+    a->kb_hit_n = aic_kb_search(a->kb, a->kb_query, &a->kb_hits[0][0],
+                                (int)sizeof(a->kb_hits[0]),
+                                (int)(sizeof(a->kb_hits) / sizeof(a->kb_hits[0])), NULL);
+    if (a->kb_hit_n <= 0) {
+        a->kb_hit_n = 0;
+        app_status(a, "没有命中「%s」：换个词，或按章节翻", a->kb_query);
+    } else {
+        app_status(a, "命中 %d 篇（只看标题、摘要、要点与正文，不外链）", a->kb_hit_n);
+    }
+    a->kb_focus = 0;
+    a->scroll[1] = 0;
+}
+
+static void cap_leave_subpage(App *a)
+{
+    a->page_kb = 0;
+    a->page_error = 0;
+    a->page_cap = 0;
+    a->page_advanced = 0;
+    a->page_pair = 0;
+}
+
+/* 返回 1 表示这次动作已经处理完。 */
+static int app_action_tdd(App *a, int act)
+{
+    if (act == ACT_ROW_KB) {
+        cap_leave_subpage(a);
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_kb = 1;
+        a->scroll[1] = 0;
+        a->kb_hit_n = 0;
+        a->kb_article[0] = '\0';
+        a->kb_para = -1;
+        app_kb_refresh(a);
+        return 1;
+    }
+    if (act == ACT_ROW_ERROR) {
+        cap_leave_subpage(a);
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_error = 1;
+        a->scroll[1] = 0;
+        app_err_reload(a);
+        aic_error_ack_all(a->db);   /* 看过就不再算「未查看」，条目仍留在列表里 */
+        return 1;
+    }
+    if (act == ACT_ROW_CAP) {
+        cap_leave_subpage(a);
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_cap = 1;
+        a->scroll[1] = 0;
+        a->app_n = 0;
+        a->cap_msg[0] = '\0';
+        return 1;
+    }
+
+    /* 内置知识库 */
+    if (act >= ACT_KB_ITEM_BASE && act < ACT_KB_ITEM_BASE + 96) {
+        int i = act - ACT_KB_ITEM_BASE;
+        if (i >= 0 && i < g_kb_row_n && g_kb_row_id[i][0]) {
+            app_kb_open(a, g_kb_row_id[i]);
+            a->kb_hit_n = 0;
+        }
+        return 1;
+    }
+    if (act >= ACT_KB_PARA_BASE && act < ACT_KB_PARA_BASE + 16) {
+        a->kb_para = act - ACT_KB_PARA_BASE;
+        return 1;
+    }
+    if (act == ACT_KB_BACK) {
+        if (a->kb_article[0]) {
+            a->kb_article[0] = '\0';
+            a->kb_para = -1;
+        } else {
+            a->page_kb = 0;
+        }
+        a->scroll[1] = 0;
+        return 1;
+    }
+    if (act == ACT_KB_SEARCH_EDIT) {
+        a->kb_focus = 1;
+        a->cred_focus = 0;
+        a->pair_focus = 0;
+        return 1;
+    }
+    if (act == ACT_KB_SEARCH_GO) { kb_search_run(a); return 1; }
+    if (act == ACT_KB_BOOKMARK) {
+        int on = 0;
+        if (a->kb_article[0] && aic_kb_bookmark_toggle(a->db, a->kb_article, &on) == AIC_OK) {
+            app_publish_setting(a, AIC_SET_KB_BOOKMARK);
+            app_status(a, on ? "已加入书签" : "已取消书签");
+        }
+        return 1;
+    }
+    if (act == ACT_KB_CITE) {
+        sb cite;
+        int rc;
+        if (!a->kb || !a->kb_article[0]) return 1;
+        sb_init(&cite);
+        rc = aic_kb_cite(a->kb, a->kb_article, a->kb_para < 0 ? 0 : a->kb_para, &cite);
+        if (rc == AIC_OK) {
+            const aic_kb_article *ar = aic_kb_find(a->kb, a->kb_article);
+            aic_setting_set(a->db, AIC_SET_KB_CITE, sb_cstr(&cite));
+            app_rebuild_fragment(a);
+            app_status(a, "已插入引用片段（来自《%s》，只带这一段与来源，不携全文）",
+                       ar ? ar->title : "知识库");
+        } else {
+            app_status(a, "引用失败：%s", aic_strerror(rc));
+        }
+        sb_free(&cite);
+        return 1;
+    }
+    if (act == ACT_KB_CITE_CLEAR) {
+        aic_setting_del(a->db, AIC_SET_KB_CITE);
+        app_rebuild_fragment(a);
+        app_status(a, "已清除知识库引用片段，注入区恢复成只含插件扩展点");
+        return 1;
+    }
+
+    /* 错误中心 */
+    if (act == ACT_ERR_BACK) { a->page_error = 0; a->scroll[1] = 0; return 1; }
+    if (act == ACT_ERR_ACK) {
+        aic_error_ack_all(a->db);
+        app_err_reload(a);
+        app_status(a, "已全部标为已查看");
+        return 1;
+    }
+    if (act == ACT_ERR_CLEAR) {
+        int removed = 0;
+        aic_error_clear(a->db, 0, &removed);
+        app_err_reload(a);
+        app_status(a, "已清除 %lld 条错误记录（明细文件一并删除）", (long long)removed);
+        return 1;
+    }
+    if (act == ACT_ERR_EXPORT) {
+        char dir[800];
+        char path[900];
+        char err[256];
+        int rc;
+        snprintf(dir, sizeof(dir), "%s\\exports", a->root);
+        aic_mkdir_p(dir);
+        snprintf(path, sizeof(path), "%s\\exports\\diagnostic-%lld.json",
+                 a->root, (long long)aic_now_ms());
+        err[0] = '\0';
+        rc = aic_error_export_diagnostic(a->db, path, err, sizeof(err));
+        if (rc == AIC_OK)
+            app_status(a, "诊断包已导出：%s（原始响应已脱敏，不含 API Key）", path);
+        else
+            app_status(a, "导出诊断包失败：%s", err[0] ? err : aic_strerror(rc));
+        return 1;
+    }
+    if (act >= ACT_ERR_CAT_BASE && act <= ACT_ERR_CAT_BASE + g_err_cat_n) {
+        a->err_filter = act - ACT_ERR_CAT_BASE;
+        a->scroll[1] = 0;
+        app_err_reload(a);
+        return 1;
+    }
+    if (act >= ACT_ERR_ACT_BASE && act < ACT_ERR_ACT_BASE + 200) {
+        int i = act - ACT_ERR_ACT_BASE;
+        if (i >= 0 && i < a->err_n) {
+            const aic_error_entry *er = &a->err_rows[i];
+            int what = aic_error_action_for(er->category);
+            if (what == AIC_ERR_ACT_RETRY) {
+                a->page_error = 0;
+                aic_router_set_tab(a->router, AIC_TAB_CHAT);
+                app_status(a, "已回到聊天：原草稿还在输入框，点发送即重试，不产生新的用户消息");
+            } else if (what == AIC_ERR_ACT_BALANCE) {
+                a->page_error = 0;
+                app_status(a, "在设置页「余额与用量」查看上次结果与过期时间");
+            } else if (what == AIC_ERR_ACT_SETTINGS) {
+                a->page_error = 0;
+                app_status(a, "在设置页「API Key」检查凭证；凭证失效不清会话，改完接着发");
+            } else if (what == AIC_ERR_ACT_CAPABILITY) {
+                cap_leave_subpage(a);
+                a->page_cap = 1;
+                a->scroll[1] = 0;
+            } else if (what == AIC_ERR_ACT_DETAIL) {
+                if (er->detail_path[0])
+                    snprintf(a->overlay_text, sizeof(a->overlay_text),
+                             "脱敏后的原始响应在数据目录的 %s。诊断包导出会把它一起带走，"
+                             "但不会包含 API Key 或完整机器信息。", er->detail_path);
+                else
+                    aic_strlcpy_utf8(a->overlay_text, sizeof(a->overlay_text),
+                                     "这条错误没有保留原始响应。");
+                a->confirm_action = 0;
+                app_set_overlay(a, AIC_OV_CONFIRM, "错误明细");
+            }
+            a->scroll[1] = 0;
+        }
+        return 1;
+    }
+
+    /* 设备权限 */
+    if (act == ACT_CAP_BACK) {
+        a->page_cap = 0;
+        a->app_n = 0;
+        a->cap_msg[0] = '\0';
+        a->scroll[1] = 0;
+        return 1;
+    }
+    if (act >= ACT_CAP_TOGGLE_BASE && act < ACT_CAP_TOGGLE_BASE + AIC_CAP_COUNT) {
+        int i = act - ACT_CAP_TOGGLE_BASE;
+        const char *kind = aic_cap_kind_at(i);
+        aic_cap_status st;
+        if (!kind) return 1;
+        memset(&st, 0, sizeof(st));
+        aic_cap_status_load(a->db, kind, &st);
+        if (st.granted) {
+            int rc = aic_cap_revoke(a->db, kind);
+            if (rc == AIC_OK) app_status(a, "已撤销「%s」授权（对话与同步保持可用）", aic_cap_name(kind));
+            else app_status(a, "撤销失败：%s", aic_strerror(rc));
+        } else {
+            char purpose[512];
+            int rc;
+            purpose[0] = '\0';
+            rc = aic_cap_request(a->db, kind, purpose, sizeof(purpose));
+            if (rc != AIC_OK) { app_status(a, "申请失败：%s", aic_strerror(rc)); return 1; }
+            /* 申请前先把用途说清楚，再授予（§18）。 */
+            snprintf(a->cap_msg, sizeof(a->cap_msg), "「%s」用途：%s", aic_cap_name(kind),
+                     purpose[0] ? purpose : aic_cap_purpose(kind));
+            rc = aic_cap_grant(a->db, kind, aic_now_ms());
+            if (rc == AIC_OK) app_status(a, "已授予「%s」：%s", aic_cap_name(kind), a->cap_msg);
+            else app_status(a, "授予失败：%s", aic_strerror(rc));
+        }
+        return 1;
+    }
+    if (act == ACT_CAP_PICK_MEDIA) {
+        if (cap_pick_path(a, L"图片 (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0所有文件\0*.*\0\0",
+                          AIC_SET_CAP_PREFIX "media.selected", L"选一张图片（只记名称与大小）"))
+            app_status(a, "已选中图片：注入时只给名称与大小，原图不上传");
+        return 1;
+    }
+    if (act == ACT_CAP_PICK_FILES) {
+        if (cap_pick_path(a, L"文本文件 (*.txt;*.md;*.json;*.log)\0*.txt;*.md;*.json;*.log\0所有文件\0*.*\0\0",
+                          AIC_SET_CAP_PREFIX "files.selected", L"选一个文本文件（只读、不递归）"))
+            app_status(a, "已选中文件：只在读取时注入文本片段，不传原始文件");
+        return 1;
+    }
+    if (act == ACT_CAP_PICK_APPS) {
+        int n = app_enum_apps(a);
+        if (n <= 0) aic_strlcpy_utf8(a->cap_msg, sizeof(a->cap_msg),
+                                     "没有读到已安装软件列表：可以先允许读取，或直接跳过这一项。");
+        else snprintf(a->cap_msg, sizeof(a->cap_msg),
+                      "读到 %d 条已安装软件，从下面选一条（只取你选中的这一条，完整清单不上传）", n);
+        return 1;
+    }
+    if (act >= ACT_CAP_APP_BASE && act < ACT_CAP_APP_BASE + 40) {
+        int i = act - ACT_CAP_APP_BASE;
+        if (i >= 0 && i < a->app_n) {
+            aic_setting_set(a->db, AIC_SET_CAP_PREFIX "apps.selected", a->app_list[i]);
+            app_publish_setting(a, AIC_SET_CAP_PREFIX "apps.selected");
+            snprintf(a->cap_msg, sizeof(a->cap_msg), "已选中：%s（注入时只给这一个名字）", a->app_list[i]);
+            app_status(a, "已选中「%s」", a->app_list[i]);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void do_action(App *a, int act)
 {
     aic_motion mo = aic_motion_default();
+
+    if (app_action_tdd(a, act)) { app_invalidate(a); return; }
 
     /* 首次启动顺序（FR-30）与双端配对（第 16 章）。 */
     if (act == ACT_CRED_KEY_EDIT) { a->cred_focus = 1; app_invalidate(a); return; }
@@ -3888,9 +4467,18 @@ static void do_action(App *a, int act)
         aic_message m;
         memset(&m, 0, sizeof(m));
         if (aic_msg_get(a->db, a->sel_msg, &m) != AIC_OK) break;
-        app_set_overlay(a, AIC_OV_CONFIRM, "修改消息");
-        a->confirm_action = FORM_EDITMSG;
-        fld(a, "新的内容（原内容会保留）", m.content ? m.content : "", 1, 0);
+        a->editing_ai = (strcmp(m.role, aic_role_name(AIC_ROLE_ASSISTANT)) == 0);
+        if (a->editing_ai) {
+            /* §9.2：改 AI 发言前必须说清它同时改记忆，避免用户以为只改显示。 */
+            app_set_overlay(a, AIC_OV_CONFIRM, "修改 AI 发言（会同步更改 AI 记忆）");
+            a->confirm_action = FORM_EDITMSG;
+            fld(a, "新的内容（修改将同步更改 AI 记忆：旧记忆条目会被删除并重新抽取）",
+                m.content ? m.content : "", 1, 0);
+        } else {
+            app_set_overlay(a, AIC_OV_CONFIRM, "修改消息");
+            a->confirm_action = FORM_EDITMSG;
+            fld(a, "新的内容（原内容会保留）", m.content ? m.content : "", 1, 0);
+        }
         a->field_focus = 0;
         aic_msg_free(&m);
         break;
@@ -4190,6 +4778,604 @@ static void paint_advanced(App *a, HDC dc, RECT content)
                   (RECT){y.left, y.top, y.right, y.top + h2},
                   tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
         y.top += h2 + 20;
+    }
+}
+
+
+/* ---------- 内置知识库（FR-31 / FR-32 / §17） ---------- */
+static void kb_row_add(aic_db *db, const char *id, const char *label, int kind)
+{
+    int slot = g_kb_row_n;
+    if (slot >= (int)(sizeof(g_kb_row_id) / sizeof(g_kb_row_id[0]))) return;
+    snprintf(g_kb_row_id[slot], sizeof(g_kb_row_id[0]), "%s", id ? id : "");
+    aic_strlcpy_utf8(g_kb_row_label[slot], sizeof(g_kb_row_label[0]), label ? label : "");
+    g_kb_row_kind[slot] = kind;
+    g_kb_row_bm[slot] = (kind == 1 && db && id && id[0] && aic_kb_bookmark_has(db, id)) ? 1 : 0;
+    g_kb_row_n++;
+}
+
+/* 书签与最近阅读在设置里是 id 的 JSON 数组（knowledge.c）。 */
+static void kb_rows_from_ids(aic_db *db, const aic_kb *kb, const char *json, const char *section)
+{
+    jv *arr = NULL;
+    size_t i, n;
+
+    if (!json || !json[0]) return;
+    if (jv_parse(json, strlen(json), &arr, NULL, 0) != AIC_OK || !arr) return;
+    n = jv_len(arr);
+    if (n > 0) kb_row_add(db, "", section, 0);
+    for (i = 0; i < n; i++) {
+        const char *id = jv_string(jv_at(arr, i));
+        const aic_kb_article *ar = id ? aic_kb_find(kb, id) : NULL;
+        if (ar) kb_row_add(db, ar->id, ar->title, 1);
+    }
+    jv_free(arr);
+}
+
+static void kb_build_rows(App *a)
+{
+    sb list;
+    int gi, i;
+
+    g_kb_row_n = 0;
+    if (!a->kb) return;
+
+    if (a->kb_hit_n > 0) {
+        char sec[96];
+        snprintf(sec, sizeof(sec), "检索结果（%d）", a->kb_hit_n);
+        kb_row_add(a->db, "", sec, 0);
+        for (i = 0; i < a->kb_hit_n; i++) {
+            const aic_kb_article *ar = aic_kb_find(a->kb, a->kb_hits[i]);
+            if (ar) kb_row_add(a->db, ar->id, ar->title, 1);
+        }
+        return;
+    }
+
+    sb_init(&list);
+    if (aic_kb_bookmark_list(a->db, &list) == AIC_OK)
+        kb_rows_from_ids(a->db, a->kb, sb_cstr(&list), "书签");
+    sb_reset(&list);
+    if (aic_kb_recent_list(a->db, &list) == AIC_OK)
+        kb_rows_from_ids(a->db, a->kb, sb_cstr(&list), "最近阅读");
+    sb_free(&list);
+
+    for (gi = 0; gi < aic_kb_group_count(a->kb); gi++) {
+        const aic_kb_group *g = aic_kb_group_at(a->kb, gi);
+        if (!g) continue;
+        kb_row_add(a->db, "", g->title, 0);
+        for (i = 0; i < aic_kb_article_count(a->kb, gi); i++) {
+            const aic_kb_article *ar = aic_kb_article_at(a->kb, gi, i);
+            if (ar) kb_row_add(a->db, ar->id, ar->title, 1);
+        }
+    }
+}
+
+/* 段落与示意图节点都要按长度切出来：aic_kb_paragraph 返回的是正文里的一个区间，
+ * 不以结束符收尾，直接拿去画会把后面几段一起画出来。 */
+static const char *kb_para_text(const aic_kb_article *ar, int i)
+{
+    static char buf[AIC_KB_BODY_CAP + 1];
+    int len = 0;
+    const char *p = aic_kb_paragraph(ar, i, &len);
+    buf[0] = '\0';
+    if (!p || len <= 0) return buf;
+    if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+    memcpy(buf, p, (size_t)len);
+    buf[len] = '\0';
+    return buf;
+}
+
+static int kb_diagram_count(const aic_kb_article *ar)
+{
+    const char *p;
+    int n = 1;
+    if (!ar || !ar->diagram[0]) return 0;
+    for (p = ar->diagram; *p; p++) if (*p == '\n') n++;
+    return n;
+}
+
+static int kb_diagram_node(const aic_kb_article *ar, int index, char *out, size_t cap)
+{
+    const char *p, *nl;
+    int i;
+    size_t len;
+    if (!ar || !out || cap == 0) return 0;
+    out[0] = '\0';
+    p = ar->diagram;
+    if (!p[0] || index < 0) return 0;
+    for (i = 0; i < index; i++) {
+        nl = strchr(p, '\n');
+        if (!nl) return 0;
+        p = nl + 1;
+    }
+    nl = strchr(p, '\n');
+    len = nl ? (size_t)(nl - p) : strlen(p);
+    if (len >= cap) len = cap - 1;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return out[0] ? 1 : 0;
+}
+
+static void paint_kb(App *a, HDC dc, RECT content)
+{
+    RECT y = content;
+    int width, needed = 0, i;
+    const aic_kb_article *ar;
+
+    app_kb_refresh(a);
+    ar = (a->kb && a->kb_article[0]) ? aic_kb_find(a->kb, a->kb_article) : NULL;
+    if (!ar) kb_build_rows(a);
+
+    y.left += PAD + 8;
+    y.right -= PAD + 8;
+    width = (int)(y.right - y.left);
+
+    if (!ar) {
+        needed = 52 + 26 + 56 + 12 + 50;
+        for (i = 0; i < g_kb_row_n; i++) needed += (g_kb_row_kind[i] ? 36 : 30);
+        if (g_kb_row_n == 0) needed += 40;
+    } else {
+        int pc = aic_kb_paragraph_count(ar);
+        needed = 52 + 44 + 12 + adv_measure(dc, a->font_small, ar->summary, width) + 20;
+        for (i = 0; i < pc; i++)
+            needed += adv_measure(dc, a->font_ui, kb_para_text(ar, i), width) + 16;
+        {
+            int dn = kb_diagram_count(ar);
+            needed += 30 + (dn > 0 ? dn * 34 + (dn - 1) * 18 + 8 : 0) + 16;
+        }
+        needed += 30 + adv_measure(dc, a->font_small, ar->example, width) + 16;
+        needed += 30 + adv_measure(dc, a->font_small, ar->points, width) + 16;
+        needed += 30 + ar->source_n * 28 + 24;
+        needed += 44;
+    }
+    {
+        int avail = (int)(content.bottom - content.top);
+        int maxs = needed - avail;
+        if (maxs < 0) maxs = 0;
+        if (a->scroll[1] > maxs) a->scroll[1] = maxs;
+        if (a->scroll[1] < 0) a->scroll[1] = 0;
+    }
+    y.top += 8 - a->scroll[1];
+
+    if (!ar) {
+        char sub[200];
+        draw_text(dc, a->font_title, "内置知识库",
+                  (RECT){y.left, y.top, y.right - 140, y.top + 44},
+                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
+                  "返回设置", ACT_KB_BACK, 0);
+        y.top += 52;
+
+        if (a->kb)
+            snprintf(sub, sizeof(sub), "知识包 v%s · %d 篇 · %d 组 · 书签 %d · 最近阅读 %d",
+                     aic_kb_version(a->kb), a->kb->article_n, aic_kb_group_count(a->kb),
+                     aic_kb_bookmark_count(a->db), aic_kb_recent_count(a->db));
+        else
+            aic_strlcpy_utf8(sub, sizeof(sub), "知识包未载入：随包资源缺失或损坏");
+        draw_text(dc, a->font_small, sub, (RECT){y.left, y.top, y.right, y.top + 26},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y.top += 26;
+
+        {
+            RECT box = {y.left, y.top, y.right - 96, y.top + 44};
+            char hint[256];
+            fill_round(dc, box, 8, tok(a, AIC_TOK_CARD_BG));
+            stroke_round(dc, box, 8, a->kb_focus ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_DIVIDER), 1);
+            if (a->kb_query[0])
+                aic_strlcpy_utf8(hint, sizeof(hint), a->kb_query);
+            else
+                aic_strlcpy_utf8(hint, sizeof(hint), a->kb_focus ? "|" : "检索章节标题或正文关键词");
+            draw_text(dc, a->font_ui, hint,
+                      (RECT){box.left + 12, box.top, box.right - 12, box.bottom},
+                      a->kb_query[0] ? tok(a, AIC_TOK_TEXT) : tok(a, AIC_TOK_TEXT_SECONDARY),
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            reg(box, ACT_KB_SEARCH_EDIT);
+            draw_pill(a, dc, (RECT){y.right - 84, y.top, y.right, y.top + 44},
+                      "检索", ACT_KB_SEARCH_GO, 1);
+        }
+        y.top += 56;
+
+        for (i = 0; i < g_kb_row_n; i++) {
+            if (g_kb_row_kind[i] == 0) {
+                draw_text(dc, a->font_bold, g_kb_row_label[i],
+                          (RECT){y.left, y.top, y.right, y.top + 30},
+                          tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                y.top += 30;
+            } else {
+                RECT rr = {y.left, y.top, y.right, y.top + 36};
+                char lab[300];
+                snprintf(lab, sizeof(lab), "%s%.200s", g_kb_row_bm[i] ? "★ " : "", g_kb_row_label[i]);
+                draw_text(dc, a->font_ui, lab,
+                          (RECT){rr.left + 12, rr.top, rr.right - 12, rr.bottom},
+                          tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                reg(rr, ACT_KB_ITEM_BASE + i);
+                y.top += 36;
+            }
+        }
+        if (g_kb_row_n == 0) {
+            draw_text(dc, a->font_small, "没有可显示的条目：知识包为空，或检索没有命中。",
+                      (RECT){y.left, y.top, y.right, y.top + 40},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+            y.top += 40;
+        }
+        y.top += 14;
+        draw_text(dc, a->font_small,
+                  "章节树随包离线分发，示意图本地存放、不依赖外链；书签与最近阅读只存在本机设置里。"
+                  "选中正文段落可插为引用片段，进插件注入区共用同一份上下文预算，片段不携全文。",
+                  (RECT){y.left, y.top, y.right, y.top + 52},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+        return;
+    }
+
+    draw_text(dc, a->font_title, ar->title,
+              (RECT){y.left, y.top, y.right, y.top + 44},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    y.top += 52;
+
+    draw_pill(a, dc, (RECT){y.left, y.top, y.left + 108, y.top + 34},
+              aic_kb_bookmark_has(a->db, ar->id) ? "取消书签" : "加入书签",
+              ACT_KB_BOOKMARK, 0);
+    draw_pill(a, dc, (RECT){y.left + 116, y.top, y.left + 236, y.top + 34},
+              "引用此段", ACT_KB_CITE, 1);
+    draw_pill(a, dc, (RECT){y.left + 244, y.top, y.left + 344, y.top + 34},
+              "清除引用", ACT_KB_CITE_CLEAR, 0);
+    draw_pill(a, dc, (RECT){y.right - 100, y.top, y.right, y.top + 34},
+              "返回列表", ACT_KB_BACK, 0);
+    y.top += 44;
+
+    draw_text(dc, a->font_small, ar->summary,
+              (RECT){y.left, y.top, y.right, y.top + adv_measure(dc, a->font_small, ar->summary, width)},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    y.top += adv_measure(dc, a->font_small, ar->summary, width) + 20;
+
+    {
+        int pc = aic_kb_paragraph_count(ar);
+        for (i = 0; i < pc; i++) {
+            const char *para = kb_para_text(ar, i);
+            int h = adv_measure(dc, a->font_ui, para, width);
+            RECT rr = {y.left - 6, y.top - 4, y.right, y.top + h + 10};
+            if (a->kb_para == i) {
+                fill_round(dc, rr, 8, tok(a, AIC_TOK_CARD_BG));
+                stroke_round(dc, rr, 8, tok(a, AIC_TOK_PRIMARY), 1);
+            }
+            draw_text(dc, a->font_ui, para,
+                      (RECT){y.left + 4, y.top, y.right - 4, y.top + h},
+                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+            reg(rr, ACT_KB_PARA_BASE + i);
+            y.top += h + 16;
+        }
+    }
+
+    draw_text(dc, a->font_bold, "示意图（本地绘制，节点顺序即讲解顺序）",
+              (RECT){y.left, y.top, y.right, y.top + 26},
+              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+    {
+        /* 示意图按「节点 + 箭头」画：节点顺序就是讲解顺序，不依赖任何外链图片。 */
+        int dn = kb_diagram_count(ar);
+        int ni;
+        for (ni = 0; ni < dn; ni++) {
+            char node[300];
+            RECT nr;
+            if (!kb_diagram_node(ar, ni, node, sizeof(node))) break;
+            nr.left = y.left + 24;
+            nr.right = y.right - 24;
+            nr.top = y.top;
+            nr.bottom = y.top + 34;
+            fill_round(dc, nr, 8, tok(a, AIC_TOK_CARD_BG));
+            stroke_round(dc, nr, 8, tok(a, AIC_TOK_PRIMARY), 1);
+            draw_text(dc, a->font_ui, node,
+                      (RECT){nr.left + 12, nr.top, nr.right - 12, nr.bottom},
+                      tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            y.top += 34;
+            if (ni + 1 < dn) {
+                draw_text(dc, a->font_bold, "\u2193",
+                          (RECT){y.left, y.top, y.right, y.top + 18},
+                          tok(a, AIC_TOK_PRIMARY), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                y.top += 18;
+            }
+        }
+        y.top += 8 + 16;
+    }
+
+    draw_text(dc, a->font_bold, "示例", (RECT){y.left, y.top, y.right, y.top + 26},
+              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+    {
+        int h = adv_measure(dc, a->font_small, ar->example, width);
+        draw_text(dc, a->font_small, ar->example, (RECT){y.left, y.top, y.right, y.top + h},
+                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+        y.top += h + 16;
+    }
+
+    draw_text(dc, a->font_bold, "要点卡片", (RECT){y.left, y.top, y.right, y.top + 26},
+              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+    {
+        int h = adv_measure(dc, a->font_small, ar->points, width);
+        draw_text(dc, a->font_small, ar->points, (RECT){y.left, y.top, y.right, y.top + h},
+                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_TOP | DT_WORDBREAK);
+        y.top += h + 16;
+    }
+
+    draw_text(dc, a->font_bold, "来源（只收录允许再分发的内容）",
+              (RECT){y.left, y.top, y.right, y.top + 26},
+              tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+    for (i = 0; i < ar->source_n; i++) {
+        char line[512];
+        aic_kb_source_line(&ar->sources[i], line, sizeof(line));
+        draw_text(dc, a->font_small, line, (RECT){y.left, y.top, y.right, y.top + 26},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y.top += 28;
+    }
+    y.top += 24;
+}
+
+
+/* ---------- 错误中心（FR-34 / §9.4）----------
+ * 错误只写 error_record 与独立 errors/ 目录，不进消息表、不进上下文、不进聊天框；
+ * 这里按时间与类别列出来，给重试 / 余额 / 设置 / 能力 / 明细的入口。 */
+static void paint_error_center(App *a, HDC dc, RECT content)
+{
+    RECT y = content;
+    int i, cat, width, needed;
+    char v[300];
+
+    app_err_reload(a);
+    y.left += PAD + 8;
+    y.right -= PAD + 8;
+    width = (int)(y.right - y.left);
+
+    needed = 52 + 40 + 46 + 14 + a->err_n * 92 + 60;
+    if (a->err_n == 0) needed += 40;
+    {
+        int avail = (int)(content.bottom - content.top);
+        int maxs = needed - avail;
+        if (maxs < 0) maxs = 0;
+        if (a->scroll[1] > maxs) a->scroll[1] = maxs;
+        if (a->scroll[1] < 0) a->scroll[1] = 0;
+    }
+    y.top += 8 - a->scroll[1];
+
+    draw_text(dc, a->font_title, "错误中心",
+              (RECT){y.left, y.top, y.right - 140, y.top + 44},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
+              "返回设置", ACT_ERR_BACK, 0);
+    y.top += 52;
+
+    /* 类别筛选：全部 + 八类，窄窗口自动换行。 */
+    {
+        int per_row = width / 82;
+        int px = y.left;
+        int py = y.top;
+        if (per_row < 1) per_row = 1;
+        for (cat = 0; cat <= g_err_cat_n; cat++) {
+            RECT rc;
+            const char *label = (cat == 0) ? "全部" : aic_error_category_text(g_err_cats[cat - 1]);
+            if ((cat % per_row) == 0 && cat > 0) { px = y.left; py += 38; }
+            rc = (RECT){px, py, px + 74, py + 32};
+            draw_pill(a, dc, rc, label, ACT_ERR_CAT_BASE + cat, a->err_filter == cat);
+            px += 82;
+        }
+        y.top = py + 44;
+    }
+
+    /* 操作行：全部已读 / 清除 / 导出诊断包 + 未读与保留期说明。 */
+    draw_pill(a, dc, (RECT){y.left, y.top, y.left + 96, y.top + 32},
+              "全部已读", ACT_ERR_ACK, 0);
+    draw_pill(a, dc, (RECT){y.left + 104, y.top, y.left + 184, y.top + 32},
+              "清除", ACT_ERR_CLEAR, 0);
+    draw_pill(a, dc, (RECT){y.left + 192, y.top, y.left + 316, y.top + 32},
+              "导出诊断包", ACT_ERR_EXPORT, 1);
+    snprintf(v, sizeof(v), "%d 条未查看 · 保留 %d 天", aic_error_unread(a->db),
+             aic_error_retention_days(a->db));
+    draw_text(dc, a->font_small, v,
+              (RECT){y.left + 326, y.top, y.right, y.top + 32},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 46;
+
+    if (a->err_n == 0) {
+        draw_text(dc, a->font_small,
+                  aic_error_count(a->db, 0) == 0 ? "还没有记录到运行错误。" : "当前类别下没有错误。",
+                  (RECT){y.left, y.top, y.right, y.top + 40},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+        y.top += 40;
+    }
+
+    for (i = 0; i < a->err_n; i++) {
+        const aic_error_entry *er = &a->err_rows[i];
+        RECT card = {y.left, y.top, y.right, y.top + 84};
+        char head[300];
+        RECT actr;
+        int act_w = 96;
+
+        fill_round(dc, card, 8, tok(a, AIC_TOK_CARD_BG));
+        snprintf(head, sizeof(head), "%s · %s · %s%s", er->occurred_at,
+                 aic_error_category_text(er->category), er->code[0] ? er->code : "未命名错误",
+                 er->acknowledged ? "" : " · 未查看");
+        draw_text(dc, a->font_small, head,
+                  (RECT){card.left + 12, card.top + 8, card.right - act_w - 24, card.top + 30},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        draw_text(dc, a->font_ui, er->message,
+                  (RECT){card.left + 12, card.top + 30, card.right - act_w - 24, card.top + 54},
+                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (er->detail_path[0]) {
+            /* 右侧已经有动作入口，这里只说「留了脱敏原始响应」，不重复动作名。 */
+            draw_text(dc, a->font_small, "已留脱敏原始响应（可在诊断包里导出）",
+                      (RECT){card.left + 12, card.top + 56, card.right - act_w - 24, card.top + 78},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        actr = (RECT){card.right - act_w - 8, card.top + 24, card.right - 8, card.top + 60};
+        draw_pill(a, dc, actr, aic_error_action_text(aic_error_action_for(er->category)),
+                  ACT_ERR_ACT_BASE + i, 0);
+        y.top += 92;
+    }
+
+    y.top += 10;
+    draw_text(dc, a->font_small,
+              "原始响应脱敏后写进 errors/ 目录（诊断日志）；错误不进消息表、不进上下文，也不进聊天框。"
+              "额度不足给余额入口、网络中断给重试入口，重试沿用输入框里的原草稿，不产生新消息。",
+              (RECT){y.left, y.top, y.right, y.top + 56},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+}
+
+/* ---------- 设备能力与权限（FR-35 / §18） ---------- */
+/* 「选择…」按钮的动作：只有设备图片 / 已安装软件 / 本地文件三项需要用户显式挑一条。 */
+static int cap_pick_action(const char *kind)
+{
+    if (strcmp(kind, AIC_CAP_MEDIA) == 0) return ACT_CAP_PICK_MEDIA;
+    if (strcmp(kind, AIC_CAP_APPS) == 0) return ACT_CAP_PICK_APPS;
+    if (strcmp(kind, AIC_CAP_FILES) == 0) return ACT_CAP_PICK_FILES;
+    return 0;
+}
+
+/* 选一个本机文件，把路径写进设置键；取消返回 0。 */
+static int cap_pick_path(App *a, const wchar_t *filter, const char *key, const wchar_t *title)
+{
+    OPENFILENAMEW ofn;
+    wchar_t wf[900];
+    char u8[900];
+
+    wf[0] = 0;
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = a->hwnd;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = wf;
+    ofn.nMaxFile = (DWORD)(sizeof(wf) / sizeof(wf[0]));
+    ofn.lpstrTitle = title;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return 0;
+    w_to_u8(wf, u8, (int)sizeof(u8));
+    aic_setting_set(a->db, key, u8);
+    app_publish_setting(a, key);
+    return 1;
+}
+
+static void paint_capability(App *a, HDC dc, RECT content)
+{
+    RECT y = content;
+    int i, n = (int)aic_cap_count(), needed;
+    char v[300];
+
+    y.left += PAD + 8;
+    y.right -= PAD + 8;
+
+    needed = 52 + 30 + n * 104 + 20 + 80;
+    if (a->app_n > 0) needed += 40 + a->app_n * 34;
+    {
+        int avail = (int)(content.bottom - content.top);
+        int maxs = needed - avail;
+        if (maxs < 0) maxs = 0;
+        if (a->scroll[1] > maxs) a->scroll[1] = maxs;
+        if (a->scroll[1] < 0) a->scroll[1] = 0;
+    }
+    y.top += 8 - a->scroll[1];
+
+    draw_text(dc, a->font_title, "设备权限",
+              (RECT){y.left, y.top, y.right - 140, y.top + 44},
+              tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_pill(a, dc, (RECT){y.right - 120, y.top + 6, y.right, y.top + 42},
+              "返回设置", ACT_CAP_BACK, 0);
+    y.top += 52;
+
+    snprintf(v, sizeof(v), "时间固定授予、不可撤销，未授予不进主页；其余按需申请，可单独授予或撤销。");
+    draw_text(dc, a->font_small, v, (RECT){y.left, y.top, y.right, y.top + 26},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    y.top += 30;
+
+    for (i = 0; i < n; i++) {
+        const char *kind = aic_cap_kind_at(i);
+        aic_cap_status st;
+        RECT card = {y.left, y.top, y.right, y.top + 96};
+        const char *state_txt;
+        int revocable;
+
+        if (!kind) continue;
+        memset(&st, 0, sizeof(st));
+        aic_cap_status_load(a->db, kind, &st);
+        revocable = aic_cap_revocable(kind);
+
+        fill_round(dc, card, 8, tok(a, AIC_TOK_CARD_BG));
+        draw_text(dc, a->font_ui, aic_cap_name(kind),
+                  (RECT){card.left + 12, card.top + 8, card.left + 160, card.top + 32},
+                  tok(a, AIC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        if (st.granted) state_txt = aic_cap_required(kind) ? "已授予（必需）" : "已授予";
+        else if (strcmp(st.state, "denied") == 0) state_txt = "已拒绝";
+        else if (strcmp(st.state, "unset") == 0) state_txt = "未申请";
+        else state_txt = st.state;
+        draw_text(dc, a->font_small, state_txt,
+                  (RECT){card.left + 168, card.top + 8, card.right - 140, card.top + 32},
+                  st.granted ? tok(a, AIC_TOK_SUCCESS) : tok(a, AIC_TOK_TEXT_SECONDARY),
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        draw_text(dc, a->font_small, aic_cap_purpose(kind),
+                  (RECT){card.left + 12, card.top + 34, card.right - 140, card.top + 58},
+                  tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (aic_cap_required(kind) && !revocable) {
+            draw_pill(a, dc, (RECT){card.right - 132, card.top + 8, card.right - 12, card.top + 40},
+                      "必需", 0, 0);
+        } else {
+            draw_pill(a, dc, (RECT){card.right - 132, card.top + 8, card.right - 12, card.top + 40},
+                      st.granted ? "撤销" : "授予", ACT_CAP_TOGGLE_BASE + i, !st.granted);
+            if (cap_pick_action(kind))
+                draw_pill(a, dc, (RECT){card.right - 132, card.top + 48, card.right - 12, card.top + 80},
+                          "选择…", cap_pick_action(kind), 0);
+        }
+
+        if (st.last_used_at[0]) {
+            char used[80];
+            snprintf(used, sizeof(used), "最近使用 %s", st.last_used_at);
+            draw_text(dc, a->font_small, used,
+                      (RECT){card.left + 12, card.top + 60, card.right - 140, card.top + 82},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        } else if (st.deny_count > 0) {
+            snprintf(v, sizeof(v), "已拒绝 %d 次（不影响主对话）", st.deny_count);
+            draw_text(dc, a->font_small, v,
+                      (RECT){card.left + 12, card.top + 60, card.right - 140, card.top + 82},
+                      tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+        y.top += 104;
+    }
+
+    if (a->app_n > 0) {
+        y.top += 6;
+        draw_text(dc, a->font_bold, "选一条作为「已安装软件」的注入内容（完整清单不上传）",
+                  (RECT){y.left, y.top, y.right, y.top + 26},
+                  tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        y.top += 28;
+        for (i = 0; i < a->app_n; i++) {
+            RECT rr = {y.left, y.top, y.right, y.top + 34};
+            char sel[160];
+            int cur;
+            sel[0] = '\0';
+            if (aic_setting_get(a->db, AIC_SET_CAP_PREFIX "apps.selected", sel, sizeof(sel)) != AIC_OK)
+                sel[0] = '\0';
+            cur = aic_str_ieq(sel, a->app_list[i]);
+            draw_text(dc, a->font_small, a->app_list[i],
+                      (RECT){rr.left + 12, rr.top, rr.right - 12, rr.bottom},
+                      cur ? tok(a, AIC_TOK_PRIMARY) : tok(a, AIC_TOK_TEXT),
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            reg(rr, ACT_CAP_APP_BASE + i);
+            y.top += 34;
+        }
+        y.top += 14;
+    }
+
+    draw_text(dc, a->font_small,
+              "取数都在本机做：位置与天气在桌面端没有可用来源，取不到时按 §9.4 写一条错误，主对话与同步继续可用；"
+              "原始图片、原始文件、完整软件清单都不上传，注入前脱敏。",
+              (RECT){y.left, y.top, y.right, y.top + 52},
+              tok(a, AIC_TOK_TEXT_SECONDARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
+    if (a->cap_msg[0]) {
+        y.top += 56;
+        draw_text(dc, a->font_small, a->cap_msg,
+                  (RECT){y.left, y.top, y.right, y.top + 40},
+                  tok(a, AIC_TOK_PRIMARY), DT_LEFT | DT_TOP | DT_WORDBREAK);
     }
 }
 
@@ -4495,6 +5681,11 @@ static void on_char(App *a, wchar_t ch)
         app_invalidate(a);
         return;
     }
+    if (a->page_kb && a->kb_focus) {
+        edit_append(a->kb_query, sizeof(a->kb_query), &ch, 1);
+        app_invalidate(a);
+        return;
+    }
     if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n) {
         Field *fl = &a->fields[a->field_focus];
         edit_append(fl->buf, sizeof(fl->buf), &ch, 1);
@@ -4531,6 +5722,9 @@ static void app_paste(App *a)
                 edit_append(a->fields[a->field_focus].buf, sizeof(a->fields[0].buf),
                             w, (int)wcslen(w));
                 a->form_dirty = 1;
+            }
+            else if (a->page_kb && a->kb_focus) {
+                edit_append(a->kb_query, sizeof(a->kb_query), w, (int)wcslen(w));
             }
             else if (a->search_focus) {
                 edit_append(a->search, sizeof(a->search), w, (int)wcslen(w));
@@ -4577,7 +5771,20 @@ static void on_key(App *a, int vk)
     }
     switch (vk) {
     case VK_ESCAPE:
-        if (a->overlay != AIC_OV_NONE) {
+        if (a->page_kb && a->kb_focus) {
+            a->kb_focus = 0;
+        } else if (a->page_kb) {
+            if (a->kb_article[0]) {
+                a->kb_article[0] = '\0';
+                a->kb_para = -1;
+                a->kb_hit_n = 0;
+                a->scroll[1] = 0;
+            } else {
+                cap_leave_subpage(a);
+            }
+        } else if (a->page_error || a->page_cap) {
+            cap_leave_subpage(a);
+        } else if (a->overlay != AIC_OV_NONE) {
             app_try_close(a);
         } else if (a->search_focus) {
             a->search_focus = 0;
@@ -4598,6 +5805,8 @@ static void on_key(App *a, int vk)
     case VK_BACK:
         if (a->overlay != AIC_OV_NONE && a->field_focus >= 0 && a->field_focus < a->field_n)
             edit_backspace(a->fields[a->field_focus].buf, sizeof(a->fields[0].buf));
+        else if (a->page_kb && a->kb_focus)
+            edit_backspace(a->kb_query, sizeof(a->kb_query));
         else if (a->search_focus) {
             edit_backspace(a->search, sizeof(a->search));
             app_reload_threads(a);
@@ -4618,6 +5827,8 @@ static void on_key(App *a, int vk)
                 app_save_form(a);
                 return;
             }
+        } else if (a->page_kb && a->kb_focus) {
+            kb_search_run(a);
         } else if (a->search_focus) {
             a->search_focus = 0;
         } else {
@@ -4790,6 +6001,8 @@ static void app_shutdown(App *a)
     if (a->threads) aic_conv_free(a->threads, a->thread_n);
     a->threads = NULL;
     a->thread_n = 0;
+    if (a->kb) { aic_kb_free(a->kb); a->kb = NULL; }
+    aic_cap_clear_provider();
     if (a->eng) aic_engine_destroy(a->eng);
     a->eng = NULL;
     app_sync_stop(a);
@@ -4880,6 +6093,10 @@ static int  g_shot_ready = 0;
 static int  g_shot_cred = 0;
 static int  g_shot_mode = 0;
 static int  g_shot_pair = 0;
+static int  g_shot_kb = 0;
+static int  g_shot_err = 0;
+static int  g_shot_cap = 0;
+static int  g_shot_errbar = 0;
 static int  g_shot_w = 1120;
 static int  g_shot_h = 760;
 
@@ -4955,6 +6172,58 @@ static void shot_prepare(App *a)
         a->page_pair = 1;
         a->scroll[1] = 0;
         app_sync_start(a);
+    }
+    if (g_shot_kb) {
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_advanced = 0;
+        a->page_pair = 0;
+        a->page_error = 0;
+        a->page_cap = 0;
+        a->page_kb = 1;
+        a->kb_focus = 0;
+        a->kb_article[0] = '\0';
+        a->kb_para = -1;
+        a->kb_hit_n = 0;
+        a->scroll[1] = 0;
+        app_kb_refresh(a);
+        if (g_shot_kb == 2 && a->kb) {
+            const aic_kb_article *a0 = aic_kb_article_at(a->kb, 0, 0);
+            if (a0) {
+                app_kb_open(a, a0->id);
+                a->kb_para = 0;
+            }
+        }
+    }
+    if (g_shot_err) {
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_kb = 0;
+        a->page_cap = 0;
+        a->page_error = 1;
+        a->scroll[1] = 0;
+        app_err_reload(a);
+        if (a->err_n == 0) {
+            aic_error_record(a->db, a->root, AIC_ERR_NETWORK, "llm.network",
+                             "网络不可达，请检查网络后重试", a->conv_id, NULL, "curl: 连接超时", NULL);
+            aic_error_record(a->db, a->root, AIC_ERR_QUOTA, "llm.balance_low",
+                             "账户余额不足，无法继续对话", a->conv_id, NULL, NULL, NULL);
+            app_err_reload(a);
+        }
+    }
+    if (g_shot_cap) {
+        aic_router_set_tab(a->router, AIC_TAB_SETTINGS);
+        a->page_kb = 0;
+        a->page_error = 0;
+        a->page_cap = 1;
+        a->scroll[1] = 0;
+        a->app_n = 0;
+    }
+    if (g_shot_errbar) {
+        /* 聊天页顶部那条非侵入状态条：有未读错误时出现，点了进错误中心。 */
+        aic_router_set_tab(a->router, AIC_TAB_CHAT);
+        if (aic_error_unread(a->db) == 0) {
+            aic_error_record(a->db, a->root, AIC_ERR_NETWORK, "llm.network",
+                             "网络不可达，请检查网络后重试", a->conv_id, NULL, NULL, NULL);
+        }
     }
     if (g_shot_guide) app_guide(a);
     if (g_shot_overlay >= 0 && !g_shot_guide) {
@@ -5127,6 +6396,11 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
                 else if (!strcmp(opt, "--cred")) g_shot_cred = 1;
                 else if (!strcmp(opt, "--mode")) g_shot_mode = 1;
                 else if (!strcmp(opt, "--pair")) { g_shot_pair = 1; g_shot_ready = 1; }
+                else if (!strcmp(opt, "--kb")) { g_shot_kb = 1; g_shot_ready = 1; }
+                else if (!strcmp(opt, "--kbopen")) { g_shot_kb = 2; g_shot_ready = 1; }
+                else if (!strcmp(opt, "--err")) { g_shot_err = 1; g_shot_ready = 1; }
+                else if (!strcmp(opt, "--cap")) { g_shot_cap = 1; g_shot_ready = 1; }
+                else if (!strcmp(opt, "--errbar")) { g_shot_errbar = 1; g_shot_ready = 1; g_shot_demo = 1; }
                 else if (!strcmp(opt, "--shot") && i + 1 < argc) {
                     i++;
                     w_to_u8(argv[i], g_shot_path, (int)sizeof(g_shot_path));

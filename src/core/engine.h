@@ -16,6 +16,9 @@
 extern "C" {
 #endif
 
+/* 同步会话（sync.h）；引擎只用到"发布 memory_replace 事件"这一处。 */
+typedef struct aic_sync aic_sync;
+
 typedef struct aic_engine_result {
     char  user_msg_id[40];
     char  assistant_msg_id[40];
@@ -80,6 +83,25 @@ int aic_engine_recall(aic_engine *e, const char *msg_id, int window_seconds,
 /* 修改消息：超窗也能改，但首次修改会保留原文。 */
 int aic_engine_edit(aic_engine *e, const char *msg_id, const char *new_content,
                     char *err, size_t errlen);
+
+/* ---------- FR-36：AI 发言修改与记忆同步 ---------- */
+/* AI 发言修改不设时间窗；提交前界面必须提示"修改将同步更改 AI 记忆"。
+ * 实现：同一事务内更新 content/original_content/edited_at、按 source_message_id 物理删除
+ * 全部 memory_entry 与关键词索引后重新抽取写入，失败整体回滚（不软删除、不留副本）；
+ * 提交成功后若有同步会话，发一条 memory_replace 事件让对端重抽。
+ * out_removed / out_added 可为空。 */
+int aic_engine_edit_ai(aic_engine *e, const char *msg_id, const char *new_content,
+                       int *out_mem_removed, int *out_mem_added,
+                       char *err, size_t errlen);
+
+/* 数据目录：错误中心明细（errors/<id>.json）写在这里；为空时错误只入库不落明细。 */
+void aic_engine_set_data_root(aic_engine *e, const char *path);
+void aic_engine_set_origin_device(aic_engine *e, const char *device_id);
+/* 挂同步会话，用于发 memory_replace 事件；可为空。 */
+void aic_engine_set_sync(aic_engine *e, aic_sync *sync);
+/* 关闭后不再抽取记忆 / 不再注入设备能力（默认都开）。 */
+void aic_engine_set_memory_enabled(aic_engine *e, int on);
+void aic_engine_set_capability_enabled(aic_engine *e, int on);
 
 /* 会话切换时重建上下文统计（FR-13：切换不串台）。 */
 int aic_engine_context_stats(aic_engine *e, const char *conv_id, int *out_total,

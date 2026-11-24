@@ -175,6 +175,53 @@ static const migration g_migrations[] = {
       "  PRIMARY KEY(entity, entity_id)"
       ");"
     },
+    /* v5：错误中心、AI 记忆与关键词索引、设备能力授权（§5.1 的 15 张表补齐最后三张）。
+     *  - error_record 独立存错误，不进 message、不进上下文（§9.4）；detail_path 指向
+     *    errors/<id>.json，正文是脱敏后的原始响应；
+     *  - memory_entry 是 AI 发言派生的记忆，改发言时按 source_message_id 物理删除重抽（§9.2）；
+     *  - memory_token 是记忆的关键词倒排索引，与条目同生共死；
+     *  - capability_grant 记六项设备能力的授权状态，time 授予后固定为 1（§18）。 */
+    { 5,
+      "CREATE TABLE IF NOT EXISTS error_record ("
+      "  id TEXT PRIMARY KEY,"
+      "  category TEXT NOT NULL,"
+      "  code TEXT NOT NULL DEFAULT '',"
+      "  message TEXT NOT NULL DEFAULT '',"
+      "  conversation_id TEXT NOT NULL DEFAULT '',"
+      "  session_id TEXT NOT NULL DEFAULT '',"
+      "  occurred_at TEXT NOT NULL,"
+      "  detail_path TEXT NOT NULL DEFAULT '',"
+      "  acknowledged INTEGER NOT NULL DEFAULT 0"
+      ");"
+      "CREATE INDEX IF NOT EXISTS idx_error_time ON error_record(occurred_at);"
+      "CREATE INDEX IF NOT EXISTS idx_error_category ON error_record(category, occurred_at);"
+      "CREATE TABLE IF NOT EXISTS memory_entry ("
+      "  id TEXT PRIMARY KEY,"
+      "  source_message_id TEXT NOT NULL,"
+      "  conversation_id TEXT NOT NULL DEFAULT '',"
+      "  content TEXT NOT NULL,"
+      "  origin_device TEXT NOT NULL DEFAULT '',"
+      "  created_at TEXT NOT NULL,"
+      "  updated_at TEXT NOT NULL"
+      ");"
+      "CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_entry(source_message_id);"
+      "CREATE INDEX IF NOT EXISTS idx_memory_conv ON memory_entry(conversation_id, created_at);"
+      "CREATE TABLE IF NOT EXISTS memory_token ("
+      "  entry_id TEXT NOT NULL,"
+      "  token TEXT NOT NULL,"
+      "  PRIMARY KEY (entry_id, token)"
+      ");"
+      "CREATE INDEX IF NOT EXISTS idx_memory_token ON memory_token(token);"
+      "CREATE TABLE IF NOT EXISTS capability_grant ("
+      "  capability TEXT PRIMARY KEY,"
+      "  granted INTEGER NOT NULL DEFAULT 0,"
+      "  state TEXT NOT NULL DEFAULT 'unset',"
+      "  requested_at TEXT NOT NULL DEFAULT '',"
+      "  granted_at TEXT NOT NULL DEFAULT '',"
+      "  last_used_at TEXT NOT NULL DEFAULT '',"
+      "  deny_count INTEGER NOT NULL DEFAULT 0"
+      ");"
+    },
 };
 
 static const int g_migration_count = (int)(sizeof(g_migrations) / sizeof(g_migrations[0]));

@@ -16,6 +16,10 @@ A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and A
 - All four plugin extension points are wired (prompt fragment, panel, request rewrite, tool declarations); the manifest's permissions and entry hash are shown before installing
 - Two-device pairing and live sync: LAN discovery and a direct connection, each side shows a 6-digit code that the other must enter, and after pairing incremental events flow both ways (logical-clock ordering, losing side kept as a copy)
 - First run asks for the API key before the mode choice, and the key goes straight into the OS secure store; a demo mode lets you look around without one
+- Built-in offline knowledge base (5 groups, 15 articles): chapter tree, full-text search, bookmarks, recently read, and "cite this paragraph" that injects just that paragraph plus its source — never the whole article
+- Error center: failures go to their own table and a redacted detail file, never into the message table, the prompt context, or the chat bubble; the chat only shows a quiet hint bar above the input box
+- Per-capability consent: time (required), location, weather, gallery image, installed apps and local files are granted and revoked one by one, and raw content is never uploaded
+- Editing an AI message rebuilds its memories: the same transaction deletes the old entries by source message and re-extracts them, then publishes a `memory_replace` event for the paired device
 
 Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs/ADVANCED.md`.
 
@@ -23,7 +27,7 @@ Implementation-level design is in `docs/DESIGN.md`; day-to-day usage is in `docs
 
 | Path | Contents |
 | --- | --- |
-| `src/core` | Core layer: mode router, chat engine, message codec, storage, settings, import/export, plugin host, update, backup, two-device pairing and incremental sync |
+| `src/core` | Core layer: mode router, chat engine, message codec, storage, settings, import/export, plugin host, update, backup, two-device pairing and incremental sync, knowledge base, error center, capability broker, memory index |
 | `src/platform/win` | Windows adapters: WinHTTP transport, Winsock LAN transport, credential store, plugin child process, GDI+ avatar, system notifications, install/rollback |
 | `src/platform/android` | Android adapters: BSD socket LAN transport, Keystore-style credentials (network and UI live on the Java side; C goes through JNI) |
 | `src/ui/win` | Windows UI layer (Win32 + GDI, driven by theme tokens; network and import/export run on worker threads) |
@@ -40,10 +44,10 @@ Each version ships the packages below (produced under `dist\` for a local build)
 
 | File | What it is |
 | --- | --- |
-| `Sai-1.3.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
-| `Sai-1.3.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `Sai-1.3.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `Sai-1.3.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
+| `Sai-1.4.0-win-x64-portable.zip` | Windows x64 portable build, unpack and run `Sai.exe` |
+| `Sai-1.4.0-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `Sai-1.4.0-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `Sai-1.4.0-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+) |
 
 ## Build
 
@@ -67,10 +71,10 @@ python tools\build_android.py     # build_android\Sai.apk (arm64-v8a, v2/v3 self
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\Sai-1.3.0-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\Sai-1.4.0-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\Sai-1.3.0-win-arm64-portable.zip
-python tools\make_installer.py       # dist\Sai-1.3.0-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
+python tools\make_installer.py       # dist\Sai-1.4.0-win-x64-setup.exe (+ .sha256)
 ~~~
 
 The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\Sai` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.

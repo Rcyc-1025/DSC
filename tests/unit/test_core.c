@@ -1,4 +1,5 @@
 /* test_core.c —— 核心层自测（不依赖任何 GUI，可在 CI 里跑）。 */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,10 @@
 #include "update.h"
 #include "zip.h"
 #include "util.h"
+#include "knowledge.h"
+#include "error_store.h"
+#include "capability.h"
+#include "memory.h"
 #include "pairing.h"
 #include "sync.h"
 #include "sync_clock.h"
@@ -937,6 +942,25 @@ static void test_llm(aic_db *db)
     CHECK_EQ_INT(aic_llm_balance_below(&low, 0), 0, "未设阈值不告警");
 }
 
+/* 色相（0-359 度）：用于验证"只改明度不改色相"（FR-33）。 */
+static int theme_hue_deg(unsigned int rgb)
+{
+    double r = (double)((rgb >> 16) & 0xFF) / 255.0;
+    double g = (double)((rgb >> 8) & 0xFF) / 255.0;
+    double b = (double)(rgb & 0xFF) / 255.0;
+    double mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    double mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    double d = mx - mn;
+    if (d <= 0.0) return 0;
+    double h;
+    if (mx == r) h = fmod((g - b) / d + 6.0, 6.0);
+    else if (mx == g) h = (b - r) / d + 2.0;
+    else h = (r - g) / d + 4.0;
+    h *= 60.0;
+    if (h < 0) h += 360.0;
+    return (int)(h + 0.5);
+}
+
 /* ---------- 主题令牌与动效（FR-17 / FR-21） ---------- */
 static void test_theme(void)
 {
@@ -948,14 +972,24 @@ static void test_theme(void)
     CHECK_EQ_INT(sysn ? sysn->night : -1, 1, "跟随系统时取系统夜间");
     CHECK_EQ_INT(aic_theme_resolve(2, 0)->night, 0, "跟随系统时取系统日光");
     CHECK_EQ_STR(aic_token_name(AIC_TOK_TEXT), "text", "令牌名可读");
-    CHECK_EQ_INT(aic_theme_color(day, AIC_TOK_PRIMARY), 0x2F6BFF, "主色令牌取值");
+    CHECK_EQ_INT(aic_theme_color(day, AIC_TOK_PRIMARY), 0x103F7A, "主色令牌为深蓝");
+    CHECK_EQ_INT(aic_theme_color(night, AIC_TOK_PRIMARY), 0x6194C9, "夜间主色同色相提亮");
+    /* FR-33：深蓝主色调，日光与夜间只改明度、不改色相（色相差 ≤ 5°）。 */
+    int hue_day = theme_hue_deg(0x103F7A);
+    int hue_night = theme_hue_deg(0x6194C9);
+    char hmsg[160];
+    snprintf(hmsg, sizeof(hmsg), "日间主色落在深蓝色相区间（%d 度）", hue_day);
+    CHECK(hue_day >= 205 && hue_day <= 222, hmsg);
+    snprintf(hmsg, sizeof(hmsg), "夜间主色与日间同色相（%d 度 vs %d 度）", hue_day, hue_night);
+    CHECK(abs(hue_day - hue_night) <= 5, hmsg);
+    CHECK(aic_theme_contrast_ok(0xFFFFFF, 0x103F7A, 450), "深蓝底白字过 4.5:1");
     CHECK_EQ_INT(aic_theme_color(day, AIC_TOK_COUNT), 0, "越界令牌返回 0");
 
     CHECK_EQ_INT(aic_theme_contrast(0x000000, 0xFFFFFF), 2100, "黑白对比度为 21:1");
     CHECK_EQ_INT(aic_theme_contrast(0x123456, 0x123456), 100, "同色对比度为 1:1");
     CHECK_EQ_INT(aic_theme_audit(aic_theme_day()), 0, "日光配色对比度全部达标");
     CHECK_EQ_INT(aic_theme_audit(aic_theme_night()), 0, "夜间配色对比度全部达标");
-    CHECK_EQ_INT(aic_theme_contrast_ok(0x9AA0A6, 0x202329, 450), 1, "夜间次要文字过 4.5:1");
+    CHECK_EQ_INT(aic_theme_contrast_ok(0x9EACC4, 0x141D2E, 450), 1, "夜间次要文字过 4.5:1");
     CHECK_EQ_INT(aic_theme_contrast_ok(0xFAFAFA, 0xFFFFFF, 450), 0, "浅灰压白底不达标");
 
     aic_motion m = aic_motion_default();
@@ -2618,6 +2652,525 @@ static void test_sync_session(void)
     aic_file_remove(f2);
 }
 
+
+/* ---------- 内置知识库与来源引用（FR-31 / FR-32） ---------- */
+static void test_knowledge(aic_db *db)
+{
+    char err[512];
+    err[0] = '\0';
+    aic_kb *kb = NULL;
+    CHECK_EQ_INT(aic_kb_load(&kb, err, sizeof(err)), AIC_OK, "装载随包内置知识库");
+    if (!kb) return;
+    CHECK(strlen(aic_kb_version(kb)) > 0, "知识包有独立版本号");
+    CHECK(strchr(aic_kb_version(kb), '.') != NULL, "知识包版本号带小数点");
+    CHECK(strlen(aic_kb_updated_at(kb)) == 10, "知识包记录收录日期");
+    CHECK(strlen(aic_kb_changelog(kb)) > 0, "知识包带变更日志");
+    CHECK_EQ_INT(aic_kb_group_count(kb), 5, "知识库分五组");
+
+    int total = 0, group_ok = 1, detail_ok = 1, src_ok = 1, off_ok = 1;
+    for (int g = 0; g < aic_kb_group_count(kb); g++) {
+        const aic_kb_group *gr = aic_kb_group_at(kb, g);
+        if (!gr || !gr->id[0] || !gr->title[0]) group_ok = 0;
+        int n = aic_kb_article_count(kb, g);
+        if (n < 3) group_ok = 0;
+        total += n;
+        for (int i = 0; i < n; i++) {
+            const aic_kb_article *a = aic_kb_article_at(kb, g, i);
+            if (!a || !a->id[0] || !a->title[0]) { detail_ok = 0; continue; }
+            if (aic_kb_paragraph_count(a) < 2) detail_ok = 0;
+            if (!strchr(a->diagram, '\n')) detail_ok = 0;
+            if (!a->points[0] || !strchr(a->points, '\n')) detail_ok = 0;
+            if (!a->example[0]) detail_ok = 0;
+            if (strstr(a->diagram, "http") != NULL) off_ok = 0;
+            if (a->source_n < 1) src_ok = 0;
+            for (int s = 0; s < a->source_n; s++) {
+                const aic_kb_source *so = &a->sources[s];
+                char line[512];
+                aic_kb_source_line(so, line, sizeof(line));
+                if (strncmp(so->url, "http", 4) != 0) src_ok = 0;
+                if (!so->title[0] || !so->author[0] || !so->license[0] || !so->date[0]) src_ok = 0;
+                if (strstr(line, so->url) == NULL) src_ok = 0;
+            }
+        }
+    }
+    CHECK_EQ_INT(group_ok, 1, "每组至少 3 篇且有 id 与标题");
+    CHECK_EQ_INT(total, 15, "五组共 15 篇");
+    CHECK_EQ_INT(detail_ok, 1, "每篇都有多段正文、示意图、示例与要点卡片");
+    CHECK_EQ_INT(src_ok, 1, "每条来源都有标题/作者/链接/许可证/收录日期");
+    CHECK_EQ_INT(off_ok, 1, "示意图只存本地，不依赖外链");
+
+    const aic_kb_article *first = aic_kb_article_at(kb, 0, 0);
+    CHECK(first != NULL, "取到第一篇");
+    if (first) {
+        CHECK(aic_kb_find(kb, first->id) == first, "按 id 找回条目");
+        CHECK_EQ_INT(aic_kb_group_index_of(kb, first->group_id), 0, "按分组 id 找下标");
+        CHECK(aic_kb_paragraph_count(first) >= 2, "正文可分段访问");
+        int plen = 0;
+        const char *p0 = aic_kb_paragraph(first, 0, &plen);
+        CHECK(p0 != NULL && plen > 0, "取到第 1 段正文");
+        CHECK(aic_kb_paragraph(first, 999, NULL) == NULL, "越界段落返回空");
+    }
+    CHECK(aic_kb_find(kb, "no.such.article") == NULL, "未知条目返回空");
+
+    char ids[8][64];
+    memset(ids, 0, sizeof(ids));
+    int hit = 0;
+    CHECK(aic_kb_search(kb, "记忆", ids[0], 64, 8, &hit) > 0, "全文检索可执行");
+    CHECK(hit > 0, "检索「记忆」有命中");
+    CHECK(aic_kb_find(kb, ids[0]) != NULL, "命中的是真实条目 id");
+    memset(ids, 0, sizeof(ids));
+    hit = 0;
+    CHECK_EQ_INT(aic_kb_search(kb, "zzz_no_such_word", ids[0], 64, 8, &hit), 0, "检索无关键词");
+    CHECK_EQ_INT(hit, 0, "无关键词不返回结果");
+
+    if (first) {
+        sb cite;
+        sb_init(&cite);
+        CHECK_EQ_INT(aic_kb_cite(kb, first->id, 0, &cite), AIC_OK, "选中段落生成引用片段");
+        CHECK(strstr(sb_cstr(&cite), "【知识库引用】") != NULL, "引用片段带标记");
+        CHECK(strstr(sb_cstr(&cite), first->title) != NULL, "引用片段带条目标题");
+        CHECK(strstr(sb_cstr(&cite), "第 1 段") != NULL, "引用片段标注段落序号");
+        CHECK(strstr(sb_cstr(&cite), "来源：") != NULL, "引用片段带来源");
+        CHECK(strstr(sb_cstr(&cite), first->sources[0].url) != NULL, "引用片段带原始链接");
+        CHECK(strstr(sb_cstr(&cite), aic_kb_version(kb)) != NULL, "引用片段带知识包版本");
+        sb_free(&cite);
+        sb bad;
+        sb_init(&bad);
+        CHECK_EQ_INT(aic_kb_cite(kb, "no.such.article", 0, &bad), AIC_E_NOTFOUND, "未知条目不能引用");
+        sb_free(&bad);
+    }
+
+    CHECK_EQ_INT(aic_kb_state_clear(db), AIC_OK, "清空知识库阅读状态");
+    CHECK_EQ_INT(aic_kb_bookmark_count(db), 0, "初始无书签");
+    if (first) {
+        int on = -1;
+        CHECK_EQ_INT(aic_kb_bookmark_toggle(db, first->id, &on), AIC_OK, "加入书签");
+        CHECK_EQ_INT(on, 1, "书签已打开");
+        CHECK_EQ_INT(aic_kb_bookmark_has(db, first->id), 1, "书签可查");
+        CHECK_EQ_INT(aic_kb_bookmark_count(db), 1, "书签计数为 1");
+        sb bm;
+        sb_init(&bm);
+        CHECK_EQ_INT(aic_kb_bookmark_list(db, &bm), AIC_OK, "列出书签");
+        CHECK(strstr(sb_cstr(&bm), first->id) != NULL, "书签列表含条目 id");
+        sb_free(&bm);
+        CHECK_EQ_INT(aic_kb_bookmark_toggle(db, first->id, &on), AIC_OK, "再次点击取消书签");
+        CHECK_EQ_INT(on, 0, "书签已关闭");
+        CHECK_EQ_INT(aic_kb_bookmark_count(db), 0, "取消后书签计数为 0");
+    }
+
+    int rc_recent = AIC_OK;
+    for (int g = 0; g < aic_kb_group_count(kb) && rc_recent == AIC_OK; g++) {
+        for (int i = 0; i < aic_kb_article_count(kb, g); i++) {
+            const aic_kb_article *a = aic_kb_article_at(kb, g, i);
+            if (!a) continue;
+            rc_recent = aic_kb_recent_push(db, a->id);
+            if (rc_recent != AIC_OK) break;
+        }
+    }
+    CHECK_EQ_INT(rc_recent, AIC_OK, "记录最近阅读");
+    CHECK_EQ_INT(aic_kb_recent_count(db), AIC_KB_RECENT_MAX, "最近阅读最多保留 10 条");
+    if (first) {
+        CHECK_EQ_INT(aic_kb_recent_push(db, first->id), AIC_OK, "重复阅读同一个条目");
+        CHECK_EQ_INT(aic_kb_recent_count(db), AIC_KB_RECENT_MAX, "重复阅读不增加条数");
+        sb rc;
+        sb_init(&rc);
+        CHECK_EQ_INT(aic_kb_recent_list(db, &rc), AIC_OK, "列出最近阅读");
+        CHECK(strstr(sb_cstr(&rc), first->id) != NULL, "最近阅读列表含条目 id");
+        sb_free(&rc);
+    }
+    CHECK_EQ_INT(aic_kb_state_clear(db), AIC_OK, "再次清空阅读状态");
+    CHECK_EQ_INT(aic_kb_recent_count(db), 0, "清空后最近阅读为 0");
+
+    aic_kb_free(kb);
+}
+
+/* ---------- 错误隔离与错误中心（FR-34） ---------- */
+static void test_error_center(aic_db *db)
+{
+    char root[512];
+    snprintf(root, sizeof(root), "aic_test_err_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(root);
+
+    int removed = -1;
+    CHECK_EQ_INT(aic_error_clear(db, 0, &removed), AIC_OK, "清空已有错误记录");
+    CHECK_EQ_INT(aic_error_count(db, 0), 0, "错误记录从 0 起算");
+
+    aic_error_entry e1;
+    memset(&e1, 0, sizeof(e1));
+    CHECK_EQ_INT(aic_error_record(db, root, AIC_ERR_NETWORK, "llm.network", "网络中断，请稍后重试",
+                                  "conv-x", NULL, NULL, &e1),
+                 AIC_OK, "写入网络错误");
+    CHECK(aic_uuid_valid(e1.id), "错误记录有唯一 id");
+    CHECK_EQ_INT(e1.acknowledged, 0, "新错误未确认");
+    CHECK(strlen(e1.occurred_at) >= 19, "错误记录发生时间");
+    CHECK_EQ_INT(aic_error_count(db, 0), 1, "错误总数 1");
+    CHECK_EQ_INT(aic_error_unread(db), 1, "未读错误 1");
+
+    const char *leak_msg = "请求失败 sk-abcdefgh12345678 请检查 api_key=\"secret-value-9\"";
+    const char *leak_detail =
+        "{\"authorization\":\"Bearer abcdefghijklmnop\",\"token\":\"0123456789abcdef0123456789abcdef\"}";
+    aic_error_entry e2;
+    memset(&e2, 0, sizeof(e2));
+    CHECK_EQ_INT(aic_error_record(db, root, AIC_ERR_PARSE, "llm.parse", leak_msg, "conv-y", "sess-1",
+                                  leak_detail, &e2),
+                 AIC_OK, "写入解析错误（正文含敏感值）");
+    CHECK(strstr(e2.message, "abcdefgh12345678") == NULL, "错误正文脱敏 sk- 密钥");
+    CHECK(strstr(e2.message, "secret-value-9") == NULL, "错误正文脱敏 api_key 值");
+    CHECK(e2.detail_path[0] != '\0', "原始响应另写独立明细文件");
+    if (e2.detail_path[0]) {
+        char dpath[800];
+        aic_path_join(dpath, sizeof(dpath), root, e2.detail_path);
+        int64_t dsz = 0;
+        CHECK_EQ_INT(aic_file_size(dpath, &dsz), AIC_OK, "错误明细文件已落盘");
+        char *dt = NULL;
+        size_t dlen = 0;
+        if (aic_file_read_all(dpath, &dt, &dlen) == AIC_OK) {
+            CHECK(strstr(dt, "abcdefghijklmnop") == NULL, "明细文件脱敏 Bearer 令牌");
+            CHECK(strstr(dt, "0123456789abcdef") == NULL, "明细文件脱敏长十六进制");
+            aic_xfree(dt);
+        } else {
+            CHECK(0, "读取错误明细文件");
+        }
+    }
+
+    aic_error_entry list[16];
+    int n = 0;
+    aic_error_filter f;
+    memset(&f, 0, sizeof(f));
+    f.category = AIC_ERR_PARSE;
+    f.limit = 16;
+    CHECK_EQ_INT(aic_error_query(db, &f, list, 16, &n), AIC_OK, "按类别筛选错误");
+    CHECK(n > 0, "解析类错误可筛选出来");
+    {
+        int only_parse = 1;
+        int unread_ok = 1;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(list[i].category, AIC_ERR_PARSE) != 0) only_parse = 0;
+            if (list[i].acknowledged) unread_ok = 0;
+        }
+        CHECK_EQ_INT(only_parse, 1, "筛选结果只含所选类别");
+        CHECK_EQ_INT(unread_ok, 1, "未确认的条目带有未读标记");
+    }
+    memset(&f, 0, sizeof(f));
+    f.since_ms = aic_now_ms() + 60000;
+    f.limit = 16;
+    n = 0;
+    CHECK_EQ_INT(aic_error_query(db, &f, list, 16, &n), AIC_OK, "按时间筛选错误");
+    CHECK_EQ_INT(n, 0, "未来时间点没有错误");
+
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_NETWORK), AIC_ERR_ACT_RETRY, "网络错误给重试入口");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_QUOTA), AIC_ERR_ACT_BALANCE, "额度不足给余额入口");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_CREDENTIAL), AIC_ERR_ACT_SETTINGS, "凭证失效跳设置");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_RATE_LIMIT), AIC_ERR_ACT_SETTINGS, "限流给设置入口");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_CAPABILITY), AIC_ERR_ACT_CAPABILITY, "能力拒绝给授权入口");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_PARSE), AIC_ERR_ACT_DETAIL, "解析失败可看诊断");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_STORAGE), AIC_ERR_ACT_DETAIL, "写入失败可看诊断");
+    CHECK_EQ_INT(aic_error_action_for(AIC_ERR_OTHER), AIC_ERR_ACT_NONE, "其它错误无强制入口");
+    CHECK_EQ_STR(aic_error_action_text(AIC_ERR_ACT_RETRY), "重试", "动作文案可读");
+    CHECK_EQ_STR(aic_error_category_text(AIC_ERR_QUOTA), "额度", "类别中文文案");
+    CHECK_EQ_STR(aic_error_category_valid("no-such-category"), AIC_ERR_OTHER, "未知类别归到其它");
+    CHECK_EQ_STR(aic_error_category_from_llm(AIC_LLM_E_AUTH), AIC_ERR_CREDENTIAL, "凭证错误归到凭证类");
+    CHECK_EQ_STR(aic_error_code_from_llm(AIC_LLM_E_RATE), "llm.rate_limit", "限流错误码稳定");
+
+    CHECK_EQ_INT(aic_error_retention_days(db), 30, "错误保留期默认 30 天");
+    CHECK_EQ_INT(aic_error_set_retention_days(db, 7), AIC_OK, "设置保留期 7 天");
+    CHECK_EQ_INT(aic_error_retention_days(db), 7, "保留期已生效");
+    CHECK_EQ_INT(aic_error_set_retention_days(db, 99999), AIC_OK, "设置超大保留期");
+    CHECK_EQ_INT(aic_error_retention_days(db), 3650, "保留期上限钳到 3650 天");
+    CHECK_EQ_INT(aic_error_set_retention_days(db, -5), AIC_OK, "设置负保留期");
+    CHECK_EQ_INT(aic_error_retention_days(db), 0, "保留期为 0 表示不自动清理");
+    CHECK_EQ_INT(aic_error_set_retention_days(db, 30), AIC_OK, "恢复默认保留期");
+    CHECK_EQ_INT(aic_error_cleanup(db, &removed), AIC_OK, "执行自动清理");
+    CHECK_EQ_INT(removed, 0, "保留期内的错误不被清理");
+
+    char diag[800];
+    aic_path_join(diag, sizeof(diag), root, "diagnostic.json");
+    char derr[256];
+    derr[0] = '\0';
+    CHECK_EQ_INT(aic_error_export_diagnostic(db, diag, derr, sizeof(derr)), AIC_OK, "导出诊断包");
+    int64_t gsz = 0;
+    CHECK_EQ_INT(aic_file_size(diag, &gsz), AIC_OK, "诊断包已落盘");
+    char *gt = NULL;
+    size_t glen = 0;
+    if (aic_file_read_all(diag, &gt, &glen) == AIC_OK) {
+        CHECK(strstr(gt, "sai_diagnostic") != NULL, "诊断包带格式标记");
+        CHECK(strstr(gt, "abcdefgh12345678") == NULL, "诊断包不含明文密钥");
+        CHECK(strstr(gt, "\"errors\"") != NULL, "诊断包含错误列表");
+        aic_xfree(gt);
+    } else {
+        CHECK(0, "读取诊断包");
+    }
+
+    CHECK_EQ_INT(aic_error_ack_all(db), AIC_OK, "全部标记已读");
+    CHECK_EQ_INT(aic_error_unread(db), 0, "未读归零");
+    CHECK_EQ_INT(aic_error_count(db, 1), 0, "没有未确认错误");
+    CHECK_EQ_INT(aic_error_count(db, 0), 2, "已读错误仍保留");
+    CHECK_EQ_INT(aic_error_clear(db, 0, &removed), AIC_OK, "清除全部错误");
+    CHECK_EQ_INT(removed, 2, "清除条数与写入一致");
+    CHECK_EQ_INT(aic_error_count(db, 0), 0, "清除后错误总数为 0");
+    aic_file_remove(diag);
+}
+
+/* ---------- 设备能力与权限（FR-35） ---------- */
+static int cap_loc_stub(char *buf, size_t cap, void *ud)
+{
+    (void)ud;
+    snprintf(buf, cap, "杭州市西湖区");
+    return AIC_OK;
+}
+
+static int cap_weather_fail(char *buf, size_t cap, void *ud)
+{
+    (void)ud;
+    (void)cap;
+    if (buf) buf[0] = '\0';
+    return AIC_E_STATE;
+}
+
+static int cap_media_stub(char *buf, size_t cap, void *ud)
+{
+    (void)ud;
+    snprintf(buf, cap, "photo-2026-11-24.png（用户显式选中）");
+    return AIC_OK;
+}
+
+static void test_capability(aic_db *db)
+{
+    CHECK_EQ_INT(aic_cap_count(), 6, "六项设备能力");
+    CHECK_EQ_STR(aic_cap_kind_at(0), AIC_CAP_TIME, "第一项是时间");
+    CHECK(aic_cap_kind_valid("no-such-cap") == NULL, "未知能力返回空");
+    CHECK_EQ_STR(aic_cap_name(AIC_CAP_LOCATION), "位置", "能力有中文名");
+    CHECK(aic_cap_purpose(AIC_CAP_WEATHER)[0] != '\0', "申请前展示用途说明");
+    CHECK_EQ_INT(aic_cap_required(AIC_CAP_TIME), 1, "时间是必需能力");
+    CHECK_EQ_INT(aic_cap_required(AIC_CAP_FILES), 0, "文件不是必需能力");
+    CHECK_EQ_INT(aic_cap_revocable(AIC_CAP_TIME), 0, "时间不可撤销");
+    CHECK_EQ_INT(aic_cap_revocable(AIC_CAP_FILES), 1, "文件可按需撤销");
+
+    CHECK_EQ_INT(aic_db_exec(db, "DELETE FROM capability_grant;"), AIC_OK, "清空授权表");
+    CHECK_EQ_INT(aic_cap_launch_gate(db), 0, "时间未授权不进主页");
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_TIME, aic_now_ms()), AIC_OK, "授予时间能力");
+    CHECK_EQ_INT(aic_cap_launch_gate(db), 1, "时间授权后放行进主页");
+    CHECK_EQ_INT(aic_cap_revoke(db, AIC_CAP_TIME), AIC_E_STATE, "时间能力拒绝撤销");
+    CHECK_EQ_INT(aic_cap_is_granted(db, AIC_CAP_TIME), 1, "时间能力仍为已授权");
+
+    aic_cap_status st;
+    memset(&st, 0, sizeof(st));
+    CHECK_EQ_INT(aic_cap_status_load(db, AIC_CAP_LOCATION, &st), AIC_OK, "读取位置能力状态");
+    CHECK_EQ_INT(st.granted, 0, "位置默认未授权");
+    CHECK_EQ_INT(aic_cap_request(db, AIC_CAP_LOCATION, NULL, 0), AIC_OK, "按需申请位置能力");
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_LOCATION, aic_now_ms()), AIC_OK, "授予位置能力");
+    CHECK_EQ_INT(aic_cap_is_granted(db, AIC_CAP_LOCATION), 1, "位置已授权");
+    char mirror[32];
+    mirror[0] = '\0';
+    CHECK_EQ_INT(aic_setting_get(db, "capability.location", mirror, sizeof(mirror)), AIC_OK,
+                 "授权状态写设置项（§7.2）");
+    CHECK_EQ_STR(mirror, "granted", "设置项记为 granted");
+    CHECK_EQ_INT(aic_cap_revoke(db, AIC_CAP_LOCATION), AIC_OK, "撤销位置能力");
+    CHECK_EQ_INT(aic_cap_is_granted(db, AIC_CAP_LOCATION), 0, "撤销后不再授权");
+    mirror[0] = '\0';
+    if (aic_setting_get(db, "capability.location", mirror, sizeof(mirror)) == AIC_OK) {
+        CHECK_EQ_STR(mirror, "unset", "撤销后设置项记为 unset");
+    } else {
+        CHECK(0, "撤销后设置项仍可读");
+    }
+
+    aic_cap_provider pv;
+    memset(&pv, 0, sizeof(pv));
+    pv.location = cap_loc_stub;
+    pv.weather = cap_weather_fail;
+    pv.media_pick = cap_media_stub;
+    aic_cap_set_provider(&pv);
+
+    sb out;
+    sb_init(&out);
+    CHECK_EQ_INT(aic_cap_invoke(db, AIC_CAP_LOCATION, NULL, &out), AIC_E_STATE, "未授权时拒绝读取位置");
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_LOCATION, aic_now_ms()), AIC_OK, "重新授予位置能力");
+    CHECK_EQ_INT(aic_cap_invoke(db, AIC_CAP_LOCATION, NULL, &out), AIC_OK, "授权后读取位置");
+    CHECK(strstr(sb_cstr(&out), "杭州") != NULL, "位置转成简短文本");
+    memset(&st, 0, sizeof(st));
+    if (aic_cap_status_load(db, AIC_CAP_LOCATION, &st) == AIC_OK) {
+        CHECK(st.last_used_at[0] != '\0', "使用时间被记录");
+    } else {
+        CHECK(0, "读取使用后的能力状态");
+    }
+
+    sb ctx;
+    sb_init(&ctx);
+    CHECK_EQ_INT(aic_cap_build_context(db, NULL, &ctx), AIC_OK, "组装设备信息片段");
+    CHECK(strstr(sb_cstr(&ctx), "【设备信息") != NULL, "片段带用途说明头");
+    CHECK(strstr(sb_cstr(&ctx), "时间：") != NULL, "已授权的时间进入上下文");
+    CHECK(strstr(sb_cstr(&ctx), "位置：") != NULL, "已授权的位置进入上下文");
+    CHECK(strstr(sb_cstr(&ctx), "已安装软件：") == NULL, "未授权的能力不进入上下文");
+    sb_free(&ctx);
+
+    int before = aic_error_count(db, 0);
+    int removed = 0;
+    char root[512];
+    snprintf(root, sizeof(root), "aic_test_cap_%lld", (long long)aic_now_ms());
+    aic_mkdir_p(root);
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_WEATHER, aic_now_ms()), AIC_OK, "授予天气能力");
+    CHECK_EQ_INT(aic_cap_invoke(db, AIC_CAP_WEATHER, root, &out), AIC_E_STATE, "天气取值失败");
+    CHECK_EQ_INT(aic_error_count(db, 0), before + 1, "能力失败写入错误中心");
+    CHECK_EQ_INT(aic_error_clear(db, 0, &removed), AIC_OK, "清理错误中心");
+    CHECK_EQ_INT(aic_cap_deny(db, AIC_CAP_WEATHER), AIC_OK, "用户拒绝天气能力");
+    memset(&st, 0, sizeof(st));
+    if (aic_cap_status_load(db, AIC_CAP_WEATHER, &st) == AIC_OK) {
+        CHECK_EQ_INT(st.granted, 0, "拒绝后不授权");
+        CHECK_EQ_INT(st.deny_count, 1, "拒绝次数被记录");
+        CHECK_EQ_STR(st.state, "denied", "状态记为 denied");
+    } else {
+        CHECK(0, "读取被拒绝的能力状态");
+    }
+
+    char note[600];
+    aic_path_join(note, sizeof(note), root, "note.txt");
+    const char *body = "会议放在周三下午三点，地点在二楼会议室。";
+    CHECK_EQ_INT(aic_file_write_all(note, body, strlen(body)), AIC_OK, "写测试文件");
+    sb fileout;
+    sb_init(&fileout);
+    CHECK_EQ_INT(aic_cap_read_text_file(db, note, &fileout), AIC_E_STATE, "未授权文件能力时拒绝读取");
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_FILES, aic_now_ms()), AIC_OK, "授予文件能力");
+    CHECK_EQ_INT(aic_cap_read_text_file(db, note, &fileout), AIC_OK, "授权后读取指定文件");
+    CHECK(strstr(sb_cstr(&fileout), "周三下午三点") != NULL, "读到文件内容");
+    CHECK_EQ_INT(aic_cap_read_text_file(db, root, &fileout), AIC_E_INVAL, "目录不被递归读取");
+    sb_free(&fileout);
+
+    CHECK_EQ_INT(aic_cap_grant(db, AIC_CAP_MEDIA, aic_now_ms()), AIC_OK, "授予图片能力");
+    CHECK_EQ_INT(aic_cap_invoke(db, AIC_CAP_MEDIA, NULL, &out), AIC_OK, "读取用户选中的图片条目");
+    CHECK(strstr(sb_cstr(&out), "用户显式选中") != NULL, "图片只取显式选中条目");
+    sb_free(&out);
+
+    aic_cap_clear_provider();
+    sb out2;
+    sb_init(&out2);
+    CHECK_EQ_INT(aic_cap_invoke(db, AIC_CAP_LOCATION, NULL, &out2), AIC_E_STATE,
+                 "未注入平台实现时能力不可用");
+    sb_free(&out2);
+}
+
+static int mem_any_contains(aic_db *db, const char *msg_id, const char *needle)
+{
+    aic_mem_entry ents[16];
+    int n = 0;
+    memset(ents, 0, sizeof(ents));
+    if (aic_mem_list(db, msg_id, ents, 16, &n) != AIC_OK) return 0;
+    for (int i = 0; i < n; i++) {
+        if (strstr(ents[i].content, needle) != NULL) return 1;
+    }
+    return 0;
+}
+
+/* ---------- AI 发言修改与记忆同步（FR-36） ---------- */
+static void test_memory(aic_db *db)
+{
+    char code_sentence[96];
+    snprintf(code_sentence, sizeof(code_sentence), "%c%c%cint main(void) { return 0; }%c%c%c",
+             96, 96, 96, 96, 96, 96);
+    CHECK_EQ_INT(aic_mem_sentence_keep("好的。"), 0, "过短的一句不进记忆");
+    CHECK_EQ_INT(aic_mem_sentence_keep("抱歉，我不能这样做。"), 0, "客套与拒答不进记忆");
+    CHECK_EQ_INT(aic_mem_sentence_keep(code_sentence), 0, "代码块不进记忆");
+    CHECK_EQ_INT(aic_mem_sentence_keep("我喜欢在雨天读书，慢慢翻页。"), 1, "有信息量的句子进记忆");
+
+    aic_conversation conv;
+    memset(&conv, 0, sizeof(conv));
+    CHECK_EQ_INT(aic_conv_create(db, AIC_MODE_QA, "记忆抽取测试", NULL, AIC_MODEL_FLASH, &conv),
+                 AIC_OK, "建记忆测试会话");
+
+    aic_message m1;
+    memset(&m1, 0, sizeof(m1));
+    const char *c1 = "我的生日是三月十二号。我最喜欢喝龙井茶。杭州的春天很适合散步。";
+    CHECK_EQ_INT(aic_msg_append(db, conv.id, AIC_ROLE_ASSISTANT, c1, AIC_MODEL_FLASH, &m1), AIC_OK,
+                 "写入一条 AI 发言");
+    char mid[40];
+    aic_strlcpy_utf8(mid, sizeof(mid), m1.id);
+    aic_msg_free(&m1);
+
+    CHECK_EQ_INT(aic_mem_count_for(db, mid), 0, "抽取前没有记忆条目");
+    int added = 0;
+    CHECK_EQ_INT(aic_mem_extract(db, mid, conv.id, c1, NULL, &added), AIC_OK, "从 AI 发言抽取记忆");
+    CHECK_EQ_INT(added, 3, "三句话抽成三条记忆");
+    CHECK_EQ_INT(aic_mem_count_for(db, mid), 3, "记忆条目与来源消息绑定");
+    CHECK_EQ_INT(mem_any_contains(db, mid, "龙井"), 1, "记忆保留原句");
+
+    aic_mem_entry hits[8];
+    int hn = 0;
+    memset(hits, 0, sizeof(hits));
+    CHECK_EQ_INT(aic_mem_search(db, "龙井", hits, 8, &hn), AIC_OK, "按关键词检索记忆");
+    CHECK(hn > 0, "关键词命中记忆条目");
+    CHECK_EQ_STR(hits[0].source_message_id, mid, "命中的记忆能追回来源消息");
+
+    sb mctx;
+    sb_init(&mctx);
+    CHECK_EQ_INT(aic_mem_context(db, conv.id, &mctx), AIC_OK, "组装 AI 记忆片段");
+    CHECK(strstr(sb_cstr(&mctx), "【AI 记忆") != NULL, "记忆片段带说明头");
+    CHECK(strstr(sb_cstr(&mctx), "龙井") != NULL, "记忆片段含已抽条目");
+    sb_free(&mctx);
+
+    const char *c2 = "我最近改喝普洱了，一天两泡。周末常去西湖边跑步。";
+    CHECK_EQ_INT(aic_mem_rebuild(db, mid, conv.id, c2, NULL, &added), AIC_OK, "按新正文重建记忆");
+    CHECK(added >= 2, "重建后抽到新条目");
+    CHECK_EQ_INT(mem_any_contains(db, mid, "龙井"), 0, "旧条目已被物理删除");
+    CHECK_EQ_INT(mem_any_contains(db, mid, "普洱"), 1, "新条目已写入");
+    int left = 0;
+    CHECK_EQ_INT(aic_mem_purge(db, mid, &left), AIC_OK, "清空来源消息的记忆");
+    CHECK(left > 0, "清空条数大于 0");
+    CHECK_EQ_INT(aic_mem_count_for(db, mid), 0, "清空后该消息没有记忆");
+
+    aic_engine *e = NULL;
+    CHECK_EQ_INT(aic_engine_create(db, &e), AIC_OK, "创建引擎");
+    if (e) {
+        aic_message m2;
+        memset(&m2, 0, sizeof(m2));
+        const char *old_text = "旧答案：我喜欢猫，也喜欢在阳台晒太阳。";
+        CHECK_EQ_INT(aic_msg_append(db, conv.id, AIC_ROLE_ASSISTANT, old_text, AIC_MODEL_FLASH, &m2),
+                     AIC_OK, "写入待修改的 AI 发言");
+        char aid[40];
+        aic_strlcpy_utf8(aid, sizeof(aid), m2.id);
+        aic_msg_free(&m2);
+        int seed_added = 0;
+        CHECK_EQ_INT(aic_mem_extract(db, aid, conv.id, old_text, NULL, &seed_added), AIC_OK,
+                     "修改前先按原文抽记忆");
+        CHECK(seed_added >= 1, "原文有记忆条目");
+
+        char err[256];
+        err[0] = '\0';
+        int mem_removed = 0, mem_added = 0;
+        const char *new_text = "新答案：我喜欢狗，每天早上带它去河边散步。";
+        CHECK_EQ_INT(aic_engine_edit_ai(e, aid, new_text, &mem_removed, &mem_added, err, sizeof(err)),
+                     AIC_OK, "修改 AI 发言");
+        CHECK(mem_removed >= 1, "修改后旧记忆被删除");
+        CHECK(mem_added >= 1, "修改后按新正文重抽记忆");
+        CHECK_EQ_INT(mem_any_contains(db, aid, "猫"), 0, "旧记忆内容不再存在");
+        CHECK_EQ_INT(mem_any_contains(db, aid, "狗"), 1, "新记忆内容已写入");
+        aic_message edited;
+        memset(&edited, 0, sizeof(edited));
+        if (aic_msg_get(db, aid, &edited) == AIC_OK) {
+            CHECK(strcmp(edited.content, new_text) == 0, "消息正文已更新");
+            CHECK(strcmp(edited.original_content, old_text) == 0, "保留原文用于追溯");
+            CHECK(edited.edited_at[0] != '\0', "记录修改时间");
+            aic_msg_free(&edited);
+        } else {
+            CHECK(0, "读回修改后的消息");
+        }
+
+        aic_message um;
+        memset(&um, 0, sizeof(um));
+        CHECK_EQ_INT(aic_msg_append(db, conv.id, AIC_ROLE_USER, "这是用户说的话。", NULL, &um), AIC_OK,
+                     "写入一条用户发言");
+        char uid[40];
+        aic_strlcpy_utf8(uid, sizeof(uid), um.id);
+        aic_msg_free(&um);
+        err[0] = '\0';
+        CHECK_EQ_INT(aic_engine_edit_ai(e, uid, "不该被 AI 修改", NULL, NULL, err, sizeof(err)),
+                     AIC_E_STATE, "用户发言不能走 AI 修改路径");
+        CHECK(strstr(err, "只能修改 AI 发言") != NULL, "错误说明可读");
+        aic_engine_destroy(e);
+    }
+
+    CHECK_EQ_INT(aic_mem_clear(db), AIC_OK, "清空全部记忆");
+    CHECK_EQ_INT(aic_mem_count_for(db, mid), 0, "清空后没有条目");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -2670,6 +3223,10 @@ int main(void)
         test_avatar();
     test_sync_session();
         test_perf(db);
+        test_knowledge(db);
+        test_error_center(db);
+        test_capability(db);
+        test_memory(db);
 
         /* 事务回滚验证。 */
         CHECK_EQ_INT(aic_db_begin(db), AIC_OK, "开启事务");

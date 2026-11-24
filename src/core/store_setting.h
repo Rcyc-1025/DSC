@@ -26,6 +26,17 @@ extern "C" {
 #define AIC_SET_FIRST_RUN_DONE   "app.first_run_done"
 #define AIC_SET_SCHEMA_APP       "app.schema_version"
 #define AIC_SET_PLUGIN_POLICY    "plugin.keep_data_on_uninstall"
+/* §7.2 设置项里本轮补齐的三行（知识库 / 设备权限 / 错误中心）。
+ * 命名沿用既有命名空间风格（knowledge.* / capability.* / error.*），
+ * 与文档示例键（theme / api_endpoint / default_mode）的差异在审计报告里说明：
+ * 键名是本实现的稳定契约，改键会破坏已有库，因此以文档为准补语义、以代码为准写键名。 */
+#define AIC_SET_KB_BOOKMARK      "knowledge.bookmark"          /* JSON 数组，书签文章 id */
+#define AIC_SET_KB_RECENT        "knowledge.recent"            /* JSON 数组，最近阅读，最近在前 */
+#define AIC_SET_KB_VERSION_SEEN  "knowledge.version_seen"      /* 用户上次查看的知识包版本 */
+#define AIC_SET_KB_CITE          "knowledge.cite"              /* 当前插入的引用片段（进插件注入区，不携全文） */
+#define AIC_SET_CAP_PREFIX       "capability."                 /* capability.<能力名> = 1|0 */
+#define AIC_SET_ERROR_RETENTION  "error.retention_days"        /* 错误记录保留天数，0 表示不自动清理 */
+#define AIC_SET_ERROR_UNREAD     "error.unread"                /* 未读错误条数（状态条角标） */
 
 int aic_setting_get(aic_db *db, const char *key, char *out, size_t cap);
 int aic_setting_set(aic_db *db, const char *key, const char *value);

@@ -1,13 +1,17 @@
-# 发布前证据（Sai 1.3.0）
+# 发布前证据（Sai 1.4.0）
 
-> 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §8。
-> 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》（FR-01 ~ FR-30；1.3.0 起包含第 16 章双端同步）。
+> 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
+> 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
+> 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 1.4.0 起）。
+> 1.4.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是本轮重新跑出来的；
+> 逐条复核结论与口径差异见 `docs/TDD-TRACE-1.4.0.md`。
 > 已按 2026-11-22 修订版复核：该版删除了原第 16 章「测试与验收口径」、原 11.3 验收、原 13.4 采样与回归，
 > 需求清单表也不再列「验证章节」，原 16/17/18 章顺延为 16/17/18；功能参数（预算值、动效时长、数据模型、FR 清单）无变化，
 > 因此验收口径以本文件与 docs/FR-MATRIX.md 为准，正文不引用的已删章节号也不再出现在代码注释里（perf.h / perf.c 的 §13.4 已改为 §13.2）。
 > **产品名**：2026-11-22 的存档版本把产品名从「DeepSeek 陪伴对话软件」改为 **Sai**（正文仅 3 处 + 标题，功能参数与 FR 条目未变）；
 > 本次已按该版把可执行文件名、安装包/便携包名、Android 包名与应用名、文档与仓库名统一为 Sai，核心模块前缀 `aic_` 保持不动。
-> §2 的哈希是改名重建后的实测值，本文件 §3 起的数字（810 / 410 / 30 条 FR）是 1.3.0 重建后重新跑出来的。
+> §2 的哈希是 1.4.0 重建后的实测值，本文件 §3 起的数字（1014 / 719 / 36 条 FR）是 1.4.0 重建后重新跑出来的；
+> 1.3.0 的历史数字（810 / 410 / 30 条 FR / 856526 字节 APK）只保留在 CHANGELOG 与 §11.3，不作为本版证据。
 
 ## 1. 构建环境（本机实测）
 
@@ -24,26 +28,26 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，1.3.0） | 1589944 | b1be43efc3d2c599a190665d0ab8e7ec7d212f9044c3de55ac094d66dd54e2fb |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1551651 | 74d96661f9134bd655ec8474f11751d41f1b19fd87a2541fe2bcc48ea1c93897 |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | d11466050c45eaf24c050d00ddf197064d79c10a2ac685d1431178dbe8bfb7f4 |
-| build\test_core.exe（单元测试） | 1617105 | 584bb5ad0cab536ef4c9248f2803d150ee3d0a25be2e10d9e2e204a7d7d4fc23 |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1518592 | 5273144df13dd3c9eb74e1b8a715c8e173b3186bcc424939cb19287de495e350 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 6597001f075d71debfc9d173ca4b891ca438bc1827ea9c6bcdd98760c2d7680f |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | f15e9c74f80a03530c47df7475d1c6a4ec4dcd77b2db363819b0a340f98977da |
-| build_android\Sai.apk（Android ARM64 安装包，versionCode 4 / versionName 1.3.0） | 856526 | 6aeb757a38bcb7f295040a3aa301611828481bf16192a027697e5f12e6649b11 |
-| dist\Sai-1.3.0-win-x64-portable.zip | 1584073 | 14a0b7f580351b79b593288f85b14711d43a08cb305315838d07b718ac4f8df7 |
-| dist\Sai-1.3.0-win-x64-setup.exe | 3889607 | b04b90c62b062a43eafd47bd7b9e77f6c342fbd3c6e4c977a35651c87b3a75f6 |
-| dist\Sai-1.3.0-win-arm64-portable.zip | 893338 | e717fd19e5dee1db454f5c4b6368d79092357239c1566cfcc00a8fb56e6142ac |
-| dist\Sai-1.3.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 856526 | 6aeb757a38bcb7f295040a3aa301611828481bf16192a027697e5f12e6649b11 |
+| build\Sai.exe（Windows 界面，1.4.0） | 1688149 | 35b01d6bb1bd271bc9e5e5de23749d5c6cdec1dde0b46c19553df4cdf42b2cc0 |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1641726 | 9b9c6682d362cac9bf49c078e614c7aaf85e105dd81de41f49ecf67a0d09159e |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | 03e8fb02ae7a244d37a39fbcc73cfba2e25ac2d994e5d75e2e315617f0f569c2 |
+| build\test_core.exe（单元测试） | 1718621 | 9f6fcb23e294ba0cff5057708ebe6f41dc29f7d173827ecdc60decb4430168ac |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1604096 | 21ad3c1c02fadf67a9415b09643b1bd48acbdb7d2763d0af4c06f29097a5efb8 |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 58133bb75c8f9822a115695274e034a337f8f11547071be5ec48384d03cf09a5 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | cfe97430dabf6375a8578322db7df12e3e7f43b8312f6bca54f699942b8c3746 |
+| build_android\Sai.apk（Android ARM64 安装包，versionCode 5 / versionName 1.4.0） | 905678 | 21b66fe47f93bd248deb29bbc76f033572b1767e2262111ae0940b859969a880 |
+| dist\Sai-1.4.0-win-x64-portable.zip | 1677077 | e7e01e5fefc47e01364ecadd026c02ac3e05e9732a87f355325dea5125a78d2d |
+| dist\Sai-1.4.0-win-x64-setup.exe | 4100172 | 8e12cb0336431c48f0aa6131496334c17b4188351f731f5a5a10784d2917bcc9 |
+| dist\Sai-1.4.0-win-arm64-portable.zip | 943478 | 6ae589aeae9e395a1949ddb6bf8508cc47b01ff46f8f18264bd34990b9716e8d |
+| dist\Sai-1.4.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 905678 | 21b66fe47f93bd248deb29bbc76f033572b1767e2262111ae0940b859969a880 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
 
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
-    python tools\build_arm64.py          # 12.3s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\Sai-1.3.0-win-arm64-portable.zip
+    python tools\build_arm64.py          # 33.8s，产物在 build\arm64\
+    python tools\package_win.py --arm64  # dist\Sai-1.4.0-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -65,23 +69,37 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**810 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+实测：**1014 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），
 1.3.0 起新增 pairing（6 位码、5 分钟 TTL、5 次作废、双向校验、密钥只进安全存储）、sync（逻辑时钟、发件箱、冲突落败方副本、入站去重）、
 sync_clock、transport 帧、sync_session 端到端（本机回环 TCP：发现→连接→握手→事件互传→解除配对），
-另含事务回滚、嵌套 SAVEPOINT、迁移幂等（schema v4）、导出校验和被篡改、导入冲突三策略、插件崩溃与超时终止。
+1.4.0 起新增 knowledge（五组 15 篇、检索命中/无命中、引用片段带来源与版本、书签与最近阅读上限）、
+error_store（写入、脱敏、按类别与时间筛选、未读计数、保留期钳制、诊断包、清除）、
+capability（六项能力、必需项不可撤销、申请/授予/拒绝/撤销、授权后取数、拒绝后主流程继续、只读单文件）、
+memory（句子过滤、抽取、检索、重建、注入片段、修改 AI 发言时的删除与重建、对用户发言拒绝），
+另含事务回滚、嵌套 SAVEPOINT、迁移幂等（schema v5）、导出校验和被篡改、导入冲突三策略、插件崩溃与超时终止。
 
 ## 4. 逐条 FR 验收
 
     build\aic.exe verify . build\verify
 
-实测：**30 条 FR 全部 PASS，410 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
+实测：**36 条 FR 全部 PASS，719 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
 每条 FR 都至少有一项针对实现行为的断言（不是"文件存在"式检查），例如：
 FR-13 连续切换十次后两端会话与草稿互不串台；FR-14 聊天会话唯一索引拒绝第二个 chat 会话；
 FR-15 返回键三级优先级 + 同级三栏不入栈；FR-18 导出后另库导入条数/正文一致且失败整体回滚；
 FR-22 九步指南可完成、可跳过、可重置；FR-26 双向配对码（含连错 5 次作废与密钥写入安全存储）；
 FR-27 两台本机会话经回环 TCP 配对后互发增量事件、暂停期间事件留队、恢复后按 event_id 补发；
 FR-29 逻辑时钟递增与远端抬高、墙钟改动不影响排序、冲突判负并留副本；FR-30 凭证未就绪不能进主页、凭证就绪后可选默认模式。
+1.4.0 新增的六条：
+FR-31 知识包结构（五组各 ≥3 篇、每篇正文 ≥2 段、示意图 ≥2 节点且不含外链、id 唯一）、检索有命中与无命中、书签与最近阅读上限；
+FR-32 每条来源五个字段齐全且链接为 http(s)、引用片段带标题与知识包版本、长度小于全文、未知条目返回 AIC_E_NOTFOUND；
+FR-33 两套主色色相在 205~235 度且差 ≤6 度、正文与按钮对比度达标、token 数 10、六档动效时长与"减少动态效果归零"；
+FR-34 假传输注入后 send 失败 → error_record 1 条、unread 1，而消息表与上下文条数不变；Key 与长十六进制在库与明细文件中均不出现；
+按类别筛选、全部已读、保留期钳制、诊断包不含 Key、清除条数；
+FR-35 六项能力与必需项不可撤销、launch_gate 随时间授权从 0 变 1、未授权 invoke 被拒、授权后取到值并写 last_used_at、
+设置键镜像、注入片段不含未授权项、能力失败写错误中心、只读单文件拒绝目录；
+FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文更新且保留原文，outbox 出现 entity=memory 的 memory_replace 事件，
+对用户发言调用返回 AIC_E_STATE。
 
 ## 5. 性能基准（FR-24）
 
@@ -91,43 +109,51 @@ FR-29 逻辑时钟递增与远端抬高、墙钟改动不影响排序、冲突�
 
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
-| 万条分页 | 0.03 ms/页 | 300 ms | 350 ms | 达标 |
-| 万条导出 | 20 ms | 2000 ms | 2500 ms | 达标 |
-| 常驻内存 | 8.6 MB | 240 MB | 180 MB | 达标 |
+| 万条分页 | 11.89 ms/页 | 300 ms | 350 ms | 达标 |
+| 万条导出 | 50 ms | 2000 ms | 2500 ms | 达标 |
+| 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
-（本轮另修掉一个真实缺陷：bench 的批量插入复用同一条 SQLite 语句却没 aic_stmt_reset，导致只落了 1 条，
-报告里的"万条"曾经名不副实；修后 10000 条真实落库，数字即上表。）
+（1.4.0 复跑三次：分页 11.78 / 12.03 / 12.29 ms，导出 49 / 49 / 51 ms，内存 11.9 / 12.0 / 12.0 MB，稳定。
+与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
+`select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
+按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
+另：bench 的批量插入曾因复用语句没 aic_stmt_reset 只落 1 条，该缺陷在 1.3.0 已修，本轮 10000 条真实落库。）
 
 另有一次性采样接口（对应模块清单里的 PerfMonitor.sample，原第 13.4 节描述的"内存曲线 / 耗时分解 / 存储分项"）：
 
     build\aic.exe perf
 
-本机实测输出（rss_ok=true）：rss_kb 5960（5.82 MB）、frame_budget_ms 16.7、db_bytes 106496、
-wal_bytes 32768、storage_kb 136、rss_ring_kb[5960]，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（rss_ok=true）：rss_kb 9624（9.4 MB）、frame_budget_ms 16.7、db_bytes 106496、
+wal_bytes 172880、storage_kb 272、rss_ring_kb[9624]、rss_avg_kb 9624、rss_peak_kb 9624，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
 
     python tools\shots.py
 
-14 张真实渲染截图（build\shots\*.png，1120x760 与 900x620 两种尺寸）：聊天三栏 / 我 / 设置（16 行含「实时同步」「配对管理」「进阶指南」与「关于」）/
-问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（七节）/
-导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页。
-离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码），修过的 5 处视觉问题（问答头部重叠、
-AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内容区溢出盖住导航栏）均以截图复核。
+19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸）：
+聊天三栏 / 我 / 设置（19 行含「实时同步」「配对管理」「内置知识库」「设备权限」「错误中心」「进阶指南」与「关于」）/
+问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（含新增四节）/
+导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
+内置知识库列表 / 知识库详情（正文分段、示意图节点框、示例、要点、来源）/ 错误中心（类别筛选 + 动作按钮）/
+设备权限（六项能力与选择器）/ 聊天页错误状态条。
+离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码）。1.4.0 修掉 4 处视觉问题并以截图复核：
+知识库详情正文重复（段落不是独立 C 串，改为按段落长度拷成缓冲）、示意图原为一串多行文本（改为节点圆角框 + 向下箭头）、
+错误卡片底部重复动作文字、聊天页错误条压住输入框（改钉在输入区上方、不挤占消息区）。
 
 ## 7. Android 产物校验（无真机时的自动化证据）
 
     python tools\build_android.py
     python tools\verify_android.py
 
-实测 18 项全部通过：
+实测 19 项全部通过（新增 `versionCode` 断言）：
 
-- APK 840142 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so（1570880 字节）；
+- APK 905678 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libaic.so（1677952 字节）；
 - libaic.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_sai_app_Native_call 与
   Java_com_sai_app_Native_feed（1.1.0 新增的三段协议喂数据入口），静态含 SQLite；
-- 清单：包名 com.sai.app、versionCode 4、versionName 1.3.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
-  native-code arm64-v8a、应用名「Sai」；
+- 清单：包名 com.sai.app、versionCode 5、versionName 1.4.0、minSdk 24、targetSdk 34、启动 Activity com.sai.app.MainActivity、
+  native-code arm64-v8a、应用名「Sai」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
+  两处已同时改为 5 / 1.4.0，校验脚本会断言一致）；
 - apksigner 校验通过（v2 + v3 方案），自签证书 CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN，
   证书 SHA-256 摘要 12a010a148db13c75484c5167fb3011fc735c594d4f6c19861d5b00289832897（证书 DN 已随改名变更为 CN=Sai, O=Sai）。
 
@@ -165,16 +191,17 @@ AI 信息浮层空壳、设置页底部被裁、空昵称头像无占位、内�
 
 ## 8. 便携包可独立运行
 
-把 dist\Sai-1.3.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
+把 dist\Sai-1.4.0-win-x64 拷到仓库外仍可运行（不依赖构建目录、不依赖 mingw DLL，
 pe_imports 自检显示只导入系统 DLL）。实测：
 
-    tools\aic.exe doctor
+    dist\Sai-1.4.0-win-x64\tools\aic.exe doctor
 
-    [通过] 数据库（SQLite）可打开
-    [通过] 结构迁移可用：schema v0 -> v1
+    Sai 运行环境自检 1.4.0
+    [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
+    [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
-    [通过] 插件子进程宿主已就绪
-    [通过] 常驻内存采样可用：当前 5.9 MB（桌面预算 240 MB）
+    [通过] 插件子进程宿主已就绪：./build\aic_plugin_host.exe
+    [通过] 常驻内存采样可用：当前 10.2 MB（桌面预算 240 MB）
 
     Sai.exe --diag --shot <bmp> --ready --demo
 
@@ -187,17 +214,17 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\Sai-1.3.0-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\Sai-1.4.0-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（静默安装到 `build\instest13`）：
+实测（静默安装到 `build\instest14`）：
 
 - setup 退出码 0，落地 **21 个文件**（Sai.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
 
-      Sai Setup 1.3.0
-      time=2026-11-23 12:39:16
+      Sai Setup 1.4.0
+      time=2026-11-24 09:32:19
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，8 秒内安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
@@ -215,7 +242,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 
     python tools\precommit_scan.py
 
-实测退出码 0（问题数 0），扫描 177 个文件：
+实测退出码 0（问题数 0），扫描 412 个文件：
 
 - 敏感字符串 0：Key 形态（`sk-` / `ghp_` / `AKIA`）、私钥块、硬编码口令全部未命中；
   说明性文件（`src/core/util.c` 的模式表、`src/cli/aic_verify.c` 与 `tests/unit/test_core.c` 的假夹具、扫描器自身）
@@ -288,6 +315,24 @@ Android 侧对应 7 项（分页 loadOlder、models.json、restoreEdit、导出�
 Android 侧对应项（凭证前置页、配对与同步桥命令、进阶指南一节、Android Keystore 语义的共享密钥存储）在
 `android/app/src/main/cpp/aic_jni.c` + `credential_android.c` 与 `MainActivity.java` 落地，APK 重建后按 tools/verify_android.py 校验；
 与桌面一样只到「编译 + 结构核验」，未在设备上运行（见 `11 第 2 条）。
+## 11.4 1.4.0 补齐的能力与证据（FR-31 / FR-32 / FR-33 / FR-34 / FR-35 / FR-36）
+
+按 V1.0 逐章复核后确认的六处缺口，本版全部补齐；逐条对照与口径差异见 `docs/TDD-TRACE-1.4.0.md`。
+
+| 需求 | 实现位置 | 证据 |
+| --- | --- | --- |
+| FR-31 内置知识库 | `resources/knowledge/knowledge.json`（五组 15 篇）→ `tools/gen_knowledge.py` → `src/core/knowledge_data.c`；`src/core/knowledge.c`（章节树 / 检索 / 书签 / 最近阅读） | FR-31 共 120 项断言（结构、检索命中与无命中、书签、上限）；单测 test_knowledge；截图 16_knowledge / 17_kb_article |
+| FR-32 来源与引用 | `aic_kb_source_line`、`aic_kb_cite`、设置键 `knowledge.cite` 进插件注入区 | FR-32 共 74 项（五字段齐全、http 链接、片段含标题与版本、长度小于全文、未知 id 返回 AIC_E_NOTFOUND）；单测同断言 |
+| FR-33 深蓝主色调 | `src/core/theme.c`（日间 0x103F7A / 夜间 0x6194C9，两套色相差 ≤5 度） | FR-33 共 16 项（token 数、色相区间、对比度、动效时长）；截图全量换色后目检 |
+| FR-34 报错隔离与错误中心 | `error_record` 表 + `errors/` 明细；`src/core/error_store.c`；`engine.c` 失败分支与 Android sendFail 接线；两端错误中心页与聊天提示条 | FR-34 共 32 项（错误不进消息/上下文、脱敏、筛选、未读、保留期、诊断包、清除）；单测 test_error_center；截图 18_error_center / 20_error_bar |
+| FR-35 设备能力与权限 | `capability_grant` 表 + `src/core/capability.c`；桌面注册表枚举 + GetOpenFileNameW；Android PackageManager + ACTION_OPEN_DOCUMENT；两端设备权限页 | FR-35 共 37 项（六项能力、必需项不可撤销、launch_gate、未授权拒绝、授权取数、镜像设置键、注入片段、失败写错误中心、只读单文件）；单测 test_capability；截图 19_capability |
+| FR-36 AI 发言修改与记忆同步 | `memory_entry`/`memory_token` 表 + `src/core/memory.c`；`aic_engine_edit_ai`（单事务删除-重抽-回滚）；同步实体 `memory` 的 `memory_replace` 事件 | FR-36 共 25 项（旧条目清空、新条目写入、正文与原文、outbox 事件、用户发言被拒）；单测 test_memory；两端编辑浮层提示文案 |
+| schema v5 | `src/core/schema.c` 第 5 条迁移：error_record / memory_entry / memory_token / capability_grant | doctor 实测 `schema v0 -> v5`；单测迁移幂等断言改为 v5 |
+| 两端界面 | 桌面设置页 19 行（新增内置知识库 / 设备权限 / 错误中心三行）+ 三个新页面 + 聊天错误条；Android 同三行 + 三个弹层 + 错误条 + 时间能力门 | 19 张截图；`tools/verify_android.py` 19 项；Android 桥命令 98 条分支（本轮新增 19 条：kbOpen / kbArticle / kbSearch / kbBookmark / kbCite / kbCiteClear / errorList / errorAck / errorClear / errorDiag / capList / capRequest / capGrant / capDeny / capRevoke / capProvide / memoryList / memoryClear，另 edit 改为按角色分流） |
+
+Android 侧这六项与桌面一样只到「编译 + 产物结构校验」，未在真机/模拟器运行（见 §11 第 1 条）。
+桌面端的位置与天气能力没有系统来源，按 §18 处理为「取不到就写错误中心、主对话继续」，不算缺口。
+
 ## 12. 复核命令速查
 
     build.ps1 -Target test  && build\test_core.exe
@@ -295,7 +340,10 @@ Android 侧对应项（凭证前置页、配对与同步桥命令、进阶指南
     build\aic.exe bench
     build\aic.exe perf
     build.ps1 -Target gui   && python tools\shots.py
+    python tools\gen_knowledge.py            # 知识包校验 + 重新生成 knowledge_data.c
     python tools\build_android.py && python tools\verify_android.py
     python tools\package_win.py
+    python tools\build_arm64.py && python tools\package_win.py --arm64
+    python tools\make_installer.py && python tools\precommit_scan.py
     python tools\make_installer.py
     python tools\precommit_scan.py
