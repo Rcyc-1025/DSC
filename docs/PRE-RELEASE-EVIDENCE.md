@@ -380,3 +380,16 @@ Android 侧这六项与桌面一样只到「编译 + 产物结构校验」，未
   `DSC-0.1.0-win-arm64-portable.zip`（955198）、`DSC-0.1.0-android-arm64.apk`（905678）与各自 `.sha256`。
 - 回读校验：`gh release download` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
 - CI：推送后 `ci` 工作流在更名提交上 **success**。
+
+### 13.1 v0.1.1 发布（2026-11-25）
+
+- 触发原因：安卓真机（真我 GT8 Pro / ColorOS 17 / Android 16）上 0.1.0 一点就退，定位为 `libdsc.so` 只有 4KB 段对齐，
+  Android 15/16 的 16KB 页内核拒绝 `dlopen`（详见 §7 与 `docs/TDD-TRACE-0.1.0.md` 第 6 节）。
+- 发布对象：提交 `7769fda`（`fix(android): 修复 16KB 页内核机型首启闪退，发布 0.1.1`），标签 `v0.1.1`（附注标签，指向 `7769fda`），
+  Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.1>，标题「DSC 0.1.1 - 安卓首启闪退修复」，
+  非草稿、非预发布、标记为 **Latest**；正文取自 `docs/RELEASE-NOTES-0.1.1.md`（按发布口径不含未实测清单）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.1-win-x64-portable.zip`（1688821）、`DSC-0.1.1-win-x64-setup.exe`（4129983）、
+  `DSC-0.1.1-win-arm64-portable.zip`（955262）、`DSC-0.1.1-android-arm64.apk`（909774）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.1` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
+- `v0.1.0` 的标签与 Release **保留未动**（仍可在 Release 列表里取到 0.1.0 的四个包），0.1.1 只是新增，不是覆盖。
+- 收尾：`dist` 只留 0.1.1 的 8 个文件（0.1.0 的本地副本已删，线上仍在 0.1.0 Release 里）；`build/`、`build_android/` 由 `tools/clean.py` 清掉。
