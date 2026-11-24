@@ -98,4 +98,4 @@ The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plug
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+Apache License 2.0 (SPDX: `Apache-2.0`) — see [LICENSE](LICENSE). You may use, modify, relicense and redistribute the code, provided you keep the copyright and license notices, state your changes, and ship a copy of the license; an express patent grant is included. Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).

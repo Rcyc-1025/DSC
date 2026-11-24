@@ -4,18 +4,38 @@
 
 > 版本口径：本仓库只维护 **0.1.0** 一条版本线（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
 
-## [未发布]
+## [0.1.0] - 2026-11-24（首次公开发布版）
 
-### 工程
+> 本节同时是 GitHub Release `v0.1.0` 的发布说明。本节所有数字与哈希均为**按 Apache-2.0 重新构建**后的实测值
+> （单测 1014 通过 / 36 条 FR 全 PASS / 719 项断言 / 19 个截图场景 / 四个产物与各自 `.sha256`）。
+> 可复现的证据与命令见 `docs/PRE-RELEASE-EVIDENCE.md`，逐条需求对照见 `docs/FR-MATRIX.md`。
+
+### 发布说明（本版作为第一个正式版本对外）
+
+- **许可证更换**：由 MIT 换成 **Apache License 2.0**（SPDX：`Apache-2.0`）。`LICENSE` 为 Apache 2.0 全文；
+  `README.md` / `README.en.md` 的许可一节重写，`CONTRIBUTING.md` 与 `DEPENDENCIES.md` 的约束口径同步改为 Apache-2.0；
+  `tools/precommit_scan.py` 的许可证检查由「必须是 MIT」改为「必须是 Apache-2.0」，GPL/AGPL 拦截不变。
+  运行期唯一第三方依赖 SQLite 为 Public Domain，与 Apache-2.0 兼容，依赖清单无需改动。
+- **产物按新许可证重打**：`dist` 下四个包 + 各自 `.sha256` 旁挂文件；GitHub 仓库由私有转为公开，
+  建立 Release `v0.1.0` 并挂上四个安装包。
+- **签名与校验状态（务必先读）**：本次 Windows 产物**未做代码签名**（无签名证书，首次运行会有 SmartScreen 提示）；
+  Android APK 用**调试证书**签名（证书 DN：`CN=Sai, OU=Dev, O=Sai, L=Local, ST=Local, C=CN`），
+  只适合自测与内部分发，不适合上架。两者完整性一律以同一行的 SHA-256 为准。
+- **发布后复测**：`test_core` 1014 通过 0 失败；`aic.exe verify` FR-01 ~ FR-36 全 PASS、719 项断言 0 失败；
+  `tools/shots.py` 19 个场景 0 失败；`tools/precommit_scan.py` 0 问题；
+  `aic.exe bench` 万条分页 12.06 ms/页（预算 300 ms）、万条导出 46 ms（预算 2000 ms）、常驻内存 11.9 MB（预算 240 MB）；
+  安装包静默安装 `/S` 退出码 0、落地 21 个文件、`install.log` 记录 `Sai Setup 0.1.0`，静默卸载后目录整体消失。
+- **仍未实测的边界**（不在本版声明之内）：Android 真机运行、用真实 Key 打 `api.deepseek.com`、
+  Windows 安装程序的开始菜单快捷方式与卸载登记（本机沙箱拒绝写注册表）、ARM64 真机启动、32 位 Windows、代码签名。
+  逐条说明见 `docs/PRE-RELEASE-EVIDENCE.md` 第 11 节。
+
+### 工程记录（随本节一并公开）
 
 - 新增 `tools/clean.py`：一键清掉 `build/`、`build_android/`、仓库根的 `aic_test_*` 临时目录、散落日志与
   `dist/` 里的旧版本包（`--dry-run` 只预演，`--all` 连当前版本产物一起清）；`.gitignore` 补上散落日志规则；
   `CONTRIBUTING.md` 新增「收尾清理（每次都做）」一节，把「写完代码或测完就清理」定为硬要求。
 - 清理仓库：删除 101 个仓库根 `aic_test_*` 目录、`build/`（180 MB）、`build_android/`（8.6 MB）、
   `dist/` 里 AIChat-1.0.0 与 Sai-1.0.0~1.3.0 的旧包及其展开目录；工作区从 285 MB 降到约 20 MB。
-
-## [0.1.0] - 2026-11-24
-
 按技术设计文档 V1.0（2026-11-21，FR-01 ~ FR-36）逐章复核，补齐第 17 章（内置知识库与来源引用）、
 第 18 章（设备能力与权限）与 FR-36（AI 发言修改与记忆同步），并把主色调改为深蓝。逐条对照见
 `docs/TDD-TRACE-0.1.0.md`，自动化验收见 `docs/FR-MATRIX.md`（36 条需求、719 项断言）。

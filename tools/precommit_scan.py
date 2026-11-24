@@ -8,7 +8,7 @@
 
 检查项：
     1. 敏感字符串：API Key 形态、私钥块、口令赋值
-    2. 许可证：LICENSE 必须是 MIT；third_party 必须有许可说明；源码不得出现 GPL/AGPL 声明
+    2. 许可证：LICENSE 必须是 Apache-2.0；third_party 必须有许可说明；源码不得出现 GPL/AGPL 声明
     3. 源码头：每个 .c/.h/.java 第一行必须是注释且写明自身文件名
     4. 大文件：third_party 之外不得有 >1 MB 的文本文件（防二进制误提交）
     5. 二进制混入：.c/.h 里不得出现 NUL 字节
@@ -99,8 +99,8 @@ def check_license(root, path, text):
     if r == "tools/precommit_scan.py":
         return  # 本文件的正则与文档里必然出现这些许可名称
     if r == "LICENSE":
-        if "MIT License" not in text and "Permission is hereby granted, free of charge" not in text:
-            problems.append(("许可证", r, 0, "LICENSE 不是 MIT 文本"))
+        if "Apache License" not in text or "Version 2.0, January 2004" not in text:
+            problems.append(("许可证", r, 0, "LICENSE 不是 Apache-2.0 文本"))
     if r.startswith("third_party/") and path.endswith("README.md"):
         if "Public Domain" not in text and "License" not in text:
             problems.append(("许可证", r, 0, "第三方目录缺少许可说明"))

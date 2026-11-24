@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Target cli
   python tools\precommit_scan.py     # 退出码 = 问题数，0 才能提交
   ~~~
 
-  扫描内容：Key 形态与私钥块、LICENSE 必须是 MIT 且源码不得出现 GPL/AGPL 声明、每个 `.c/.h/.java` 头注释必须写明文件名、third_party 之外不得有 >1 MB 文本文件、源码不得混入 NUL 字节。
+  扫描内容：Key 形态与私钥块、LICENSE 必须是 Apache-2.0 且源码不得出现 GPL/AGPL 声明、每个 `.c/.h/.java` 头注释必须写明文件名、third_party 之外不得有 >1 MB 文本文件、源码不得混入 NUL 字节。
   确属说明性内容的文件（扫描器自身、含假夹具的测试与验收器）在脚本顶部的 `EXEMPT` 里逐条登记原因，不允许整目录豁免。
 - 每个源文件第一行写 `/* 文件名 —— 一句话职责 */`，方便 grep 与提交前检查。
 - 新增用户可感知的功能时同步更新：`CHANGELOG.md`（[未发布] 段）、`docs/ADVANCED.md` 或 `docs/PLUGIN.md`、必要时 `DEPENDENCIES.md`。

@@ -28,18 +28,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\Sai.exe（Windows 界面，0.1.0） | 1688149 | be53f291fc7e460ac8afadeefb9622dbd02c08c6aa610f04701a6b5be2152a4c |
-| build\aic.exe（验收/基准/采样/自检 CLI） | 1641726 | b0f4303102d0da1f58d1f463fb090673ff5e8c38f2f6b21876b032135ac6ab3e |
-| build\aic_plugin_host.exe（插件宿主） | 40036 | d11660577120ec7ca57ac57399bfd60f4df9958619fd0117d4b00faeda15839c |
-| build\test_core.exe（单元测试） | 1718621 | 67cc3da4150d8eacd0c857141d8f303dae05a5df3cd3ba5a29c4ae29a000b25d |
-| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1604096 | 708063228e038afb91a3c71895d92427aa1ffcc5aaad08b92d3928a110b52fe9 |
-| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | 4270e499c17b0073428b6f4e1326e9cd305d19ab1938a425bd82b0b740019cc5 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | ab82cb144d5dbcc76c61a3224fbe39774d851688f42cd9d9e6110cde4c0514b9 |
-| build_android\Sai.apk（Android ARM64 安装包，versionCode 5 / versionName 0.1.0） | 905678 | c7236737bd463017f18400ec829168104983c423d3bffff26dc698741fa129d2 |
-| dist\Sai-0.1.0-win-x64-portable.zip | 1679912 | 13c74225caf0df8487eac676c19ea7d8ee7405a2ea93508414dc1b0e71b4907f |
-| dist\Sai-0.1.0-win-x64-setup.exe | 4107274 | 6eed9b51f7b7ec2981c522a02acb675a378c95547cbee55a523a57b0572d114a |
-| dist\Sai-0.1.0-win-arm64-portable.zip | 946318 | 4a97d10eb69c566f5597882d453c86faee709b4fc7a3799d9d043abfb93f4b42 |
-| dist\Sai-0.1.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 905678 | c7236737bd463017f18400ec829168104983c423d3bffff26dc698741fa129d2 |
+| build\Sai.exe（Windows 界面，0.1.0） | 1688149 | b793f4724909e4da13c830fc808c7ecf40f774482175cf8aeaa333663871ac7e |
+| build\aic.exe（验收/基准/采样/自检 CLI） | 1641726 | 2fff0d5dbf932b6fe1c39bf8a8f8a9678a20e805c57d95e34a81a1ece07f70cd |
+| build\aic_plugin_host.exe（插件宿主） | 40036 | ff46e792197767eec4ef5134e78c9000c8db9ed2f9133066496bea105e7c3df1 |
+| build\test_core.exe（单元测试） | 1718621 | eb4109531928071ac06a0c63e92116e132856c7ecff9bd865996741c783f467e |
+| build\arm64\Sai.exe（Windows ARM64 界面，交叉编译） | 1604096 | f84be7b4613e8973948bf0569786044a03f40c3d49a2e4966371d3f0b9e8f23c |
+| build\arm64\aic_plugin_host.exe（ARM64 插件宿主） | 79872 | a644401965890c670398930c15e982527c3ba490141b07ccdf91e5a2bd69a20a |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | a855ff89c1842332a57006043038c2e65ff19b7930359231775f95d75e0d99c1 |
+| build_android\Sai.apk（Android ARM64 安装包，versionCode 5 / versionName 0.1.0） | 905678 | 37cc12291f06f3e6ac339e86fc332a7ea1c250013292a6c3f3e6d27e170a2480 |
+| dist\Sai-0.1.0-win-x64-portable.zip | 1685291 | 44699545e53b033ab07523fee5a2038cef5613d3dda626e3e2c5919d4d55f4bf |
+| dist\Sai-0.1.0-win-x64-setup.exe | 4122037 | 2677666c7fadf08813c63e656193e00695d563d8f16dfbac488999f736115c79 |
+| dist\Sai-0.1.0-win-arm64-portable.zip | 951696 | 3144f1332271e27298a98d50b16acafeb6618b007153f6757d85d0b2dd899529 |
+| dist\Sai-0.1.0-android-arm64.apk（与 build_android\Sai.apk 同一文件） | 905678 | 37cc12291f06f3e6ac339e86fc332a7ea1c250013292a6c3f3e6d27e170a2480 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -109,11 +109,11 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
-| 万条分页 | 11.89 ms/页 | 300 ms | 350 ms | 达标 |
-| 万条导出 | 50 ms | 2000 ms | 2500 ms | 达标 |
+| 万条分页 | 12.06 ms/页 | 300 ms | 350 ms | 达标 |
+| 万条导出 | 46 ms | 2000 ms | 2500 ms | 达标 |
 | 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
-（0.1.0 复跑三次：分页 11.78 / 12.03 / 12.29 ms，导出 49 / 49 / 51 ms，内存 11.9 / 12.0 / 12.0 MB，稳定。
+（0.1.0 多个构建轮次复跑：分页 11.76 / 11.89 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.9 / 12.0 / 12.0 MB，稳定。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -123,8 +123,8 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
     build\aic.exe perf
 
-本机实测输出（rss_ok=true）：rss_kb 9624（9.4 MB）、frame_budget_ms 16.7、db_bytes 106496、
-wal_bytes 172880、storage_kb 272、rss_ring_kb[9624]、rss_avg_kb 9624、rss_peak_kb 9624，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（rss_ok=true）：rss_kb 9288（9.1 MB）、frame_budget_ms 16.7、db_bytes 217088、
+wal_bytes 32768、rss_ring_kb[9288]、rss_avg_kb 9288、rss_peak_kb 9288，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
@@ -221,10 +221,10 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 
 - setup 退出码 0，落地 **21 个文件**（Sai.exe、tools\aic.exe、aic_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
-- 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致：
+- 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（0.1.0 终版重打包后复测 `build\instest02`）：
 
       Sai Setup 0.1.0
-      time=2026-11-24 09:51:01
+      time=2026-11-25 02:48:39
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，3 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
@@ -247,7 +247,7 @@ pe_imports 自检显示只导入系统 DLL）。实测：
 - 敏感字符串 0：Key 形态（`sk-` / `ghp_` / `AKIA`）、私钥块、硬编码口令全部未命中；
   说明性文件（`src/core/util.c` 的模式表、`src/cli/aic_verify.c` 与 `tests/unit/test_core.c` 的假夹具、扫描器自身）
   在脚本 `EXEMPT` 里逐条登记原因，不做整目录豁免。
-- 许可证：LICENSE 为 MIT 文本；`third_party/sqlite/README.md` 声明 Public Domain；源码中无 GPL/AGPL 声明（本文件与扫描器自身除外）。
+- 许可证：LICENSE 为 Apache License 2.0 全文（2026-11-25 由 MIT 更换，扫描器已同步改为校验 Apache-2.0）；`third_party/sqlite/README.md` 声明 Public Domain（与 Apache-2.0 兼容）；源码中无 GPL/AGPL 声明（本文件与扫描器自身除外）。
 - 源码头：每个 `.c/.h/.java` 头注释前 5 行都写明自身文件名（本轮补了 `MainActivity.java`、`Native.java`、`aic_cli.c`）。
 - 大文件与二进制混入：third_party 之外无 >1 MB 文本文件；源码无 NUL 字节。
 

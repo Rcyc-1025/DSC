@@ -108,4 +108,4 @@ python tools\make_installer.py       # dist\Sai-0.1.0-win-x64-setup.exe + .sha25
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+本项目使用 [Apache License 2.0](LICENSE)（SPDX：`Apache-2.0`）：可自由使用、修改、商用与再分发，须保留版权与许可声明、标注修改，并附带许可证全文；同时授予专利许可。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。

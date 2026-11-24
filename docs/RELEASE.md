@@ -49,7 +49,22 @@
    - Android：`python tools\sign_android.py`。keystore 用环境变量 `SAI_ANDROID_KEYSTORE` / `SAI_ANDROID_STOREPASS` / `SAI_ANDROID_KEYPASS` / `SAI_ANDROID_ALIAS`，缺任一项退出码 `3`，产出 v2+v3 签名并当场 `apksigner verify --print-certs`。`tools\build_android.py` 打出来的 `build_android\Sai.apk` 只是开发用自签包，发布前必须用发布方证书重新签名。
 8. **校验和**：把每个产物的 SHA-256 写进 `docs/PRE-RELEASE-EVIDENCE.md` 的产物表，并生成 `.sha256` 旁挂文件。**便携包 zip 不能包含自己的哈希**，该行写"见同名 .sha256 文件"。
 9. **变更记录**：把 `CHANGELOG.md` 的 `[未发布]` 改成 `[0.1.0] - 2026-11-24` 并新建空的 `[未发布]` 段。
-10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表 + 未实测清单（`docs/PRE-RELEASE-EVIDENCE.md` 第 9 节）。
+10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
+    未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文（0.1.0 正式发布的口径，见 `docs/RELEASE-NOTES-v0.1.0.md`）。
+11. **发布到 GitHub**（0.1.0 起的固定步骤）：
+
+    ```powershell
+    gh release create v0.1.0 --repo <owner>/Sai --title "Sai 0.1.0" ^
+      --notes-file docs\RELEASE-NOTES-v0.1.0.md ^
+      dist\Sai-0.1.0-win-x64-portable.zip dist\Sai-0.1.0-win-x64-portable.zip.sha256 ^
+      dist\Sai-0.1.0-win-x64-setup.exe dist\Sai-0.1.0-win-x64-setup.exe.sha256 ^
+      dist\Sai-0.1.0-win-arm64-portable.zip dist\Sai-0.1.0-win-arm64-portable.zip.sha256 ^
+      dist\Sai-0.1.0-android-arm64.apk dist\Sai-0.1.0-android-arm64.apk.sha256
+    gh release view v0.1.0 --repo <owner>/Sai --json assets --jq '.assets[] | "\(.name) \(.size)"'
+    ```
+
+    推送前先确认远端标签与本地一致（`git ls-remote --tags origin`），标签一旦推送不再移动；Release 不是预发布，
+    每个产物都要挂同名 `.sha256`。
 
 ## 产物口径与命名
 
@@ -76,4 +91,4 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/aic.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-24（对应版本 v0.1.0，含 ARM64 交叉编译产物、两端签名通道、内置知识库/错误中心/设备权限/AI 记忆）。
+最后更新：2026-11-25（对应版本 v0.1.0；许可证改为 Apache-2.0；发布流程新增第 11 步「发布到 GitHub」，发布说明不再包含未实测清单）。
