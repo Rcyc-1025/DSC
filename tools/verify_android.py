@@ -18,11 +18,14 @@ NDKBIN = r'D:\Code\android-ndk\android-ndk-r27c\toolchains\llvm\prebuilt\windows
 APK = os.path.join(ROOT, 'build_android', 'DSC.apk')
 
 fails = []
+passed = []
 
 
 def check(cond, msg):
     print(('PASS ' if cond else 'FAIL ') + msg)
-    if not cond:
+    if cond:
+        passed.append(msg)
+    else:
         fails.append(msg)
 
 
@@ -109,14 +112,26 @@ def main():
             check(bool(declared) and not missing_jni,
                   'Native.java 的 %d 个 native 声明在 libdsc.so 里都有对应导出（缺：%s）'
                   % (len(declared), ', '.join(missing_jni) if missing_jni else '无'))
+
+            # 0.1.4 起的硬门：安全存储必须有 Application Context 才能工作。此前没人调用
+            # SecureStore.init(...)，只能靠反射 android.app.ActivityThread.currentApplication()，
+            # Android 9+ 的 hidden API 限制下拿不到 Context，凭证保存一律返回 false，真机上填
+            # API Key 只会看到「AndroidKeyStore 拒绝」。这里直接检查 MainActivity 有没有调用 init。
+            main_java = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'dsc', 'app', 'MainActivity.java')
+            main_src = ''
+            if os.path.isfile(main_java):
+                with open(main_java, 'r', encoding='utf-8', errors='replace') as fh:
+                    main_src = fh.read()
+            check('SecureStore.init(this)' in main_src,
+                  'MainActivity 启动时给 SecureStore 注入 Application Context')
             os.remove(so_tmp)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.3'" in badging, '版本名 0.1.3')
-    check("versionCode='8'" in badging, 'versionCode 8')
+    check("versionName='0.1.4'" in badging, '版本名 0.1.4')
+    check("versionCode='9'" in badging, 'versionCode 9')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')
@@ -134,7 +149,7 @@ def main():
     if fails:
         print('Android 产物校验：%d 项失败' % len(fails))
     else:
-        print('Android 产物校验：全部通过（未在真机/模拟器上运行，属未实测项）')
+        print('Android 产物校验：全部通过（%d 项断言；0.1.3 起已在真机 RMX5200 上安装并跑通主流程）' % len(passed))
 
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, 'build')
 DIST = os.path.join(ROOT, 'dist')
-VER = '0.1.3'
+VER = '0.1.4'
 ARCH = 'arm64' if '--arm64' in sys.argv else 'x64'
 NAME = 'DSC-%s-win-%s' % (VER, ARCH)
 OUTDIR = os.path.join(DIST, NAME)
@@ -167,7 +167,7 @@ def main():
     if ARCH == 'arm64':
         # 交叉编译产物没有 dsc-cli.exe（验收器只有 x64 版），把第 4 条换成如实说明
         notes = notes.replace(
-            '4. tools\dsc-cli.exe 是命令行验收器：\n'
+            '4. tools\\dsc-cli.exe 是命令行验收器：\n'
             '     dsc-cli.exe verify            逐条跑 FR-01 ~ FR-24 自动化检查\n'
             '     dsc-cli.exe bench             万条消息分页 / 导出 / 常驻内存基准\n'
             '     dsc-cli.exe doctor            环境自检（数据库、凭据、插件宿主）\n',

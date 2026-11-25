@@ -53,7 +53,10 @@ BASE = [
 ]
 LIBS = ["-lkernel32", "-luser32", "-lgdi32", "-ladvapi32", "-lshell32", "-lcomctl32",
         "-lcomdlg32", "-lole32", "-luuid", "-lshlwapi", "-lws2_32", "-lwshbth", "-lbthprops", "-lpsapi",
-        "-lwinhttp", "-lgdiplus"]
+        "-lwinhttp", "-lgdiplus",
+        # 0.1.4：弹窗遮罩用 AlphaBlend（GDI 混合），需要 msimg32；x64 侧 build.ps1 已加，
+        # ARM64 侧漏了会报 "undefined symbol: __declspec(dllimport) AlphaBlend"。
+        "-lmsimg32"]
 
 
 def die(msg):

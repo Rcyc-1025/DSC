@@ -34,7 +34,7 @@
 
 3. **基准**：`dsc-cli.exe bench` 与 `dsc-cli.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入 + 残留旧名 `aic_`/`Sai`）。退出码即问题数，必须为 0。
-5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.3 实测为 `git tag -a v0.1.3 -m "DSC 0.1.3"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
+5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.4 实测为 `git tag -a v0.1.4 -m "DSC 0.1.4"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
    之后若只改文档（不动代码、不改产物），在推 Release 前允许把标签前移到最新提交一次；Release 发布之后一律不再移动，
    后续修正走新的 PATCH 版本（见「回滚」一节）。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
@@ -53,9 +53,9 @@
 9. **变更记录**：在 `CHANGELOG.md` 顶部新建 `## [<版本>] - <日期>` 段落（0.1.0 首发时是把 `[未发布]` 改名，此后每版新建一段）。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
     未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文。发布说明同时存档到
-    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，0.1.3 为 `docs/RELEASE-NOTES-0.1.3.md`），
+    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，最新版为 `docs/RELEASE-NOTES-0.1.4.md`），
     `--notes-file` 指的就是这份文件。
-    **实测记录**：0.1.0、0.1.1、0.1.2、0.1.3（都是 2026-11-25）用这套命令发布，各自 8 个资产（4 个产物 + 4 个 `.sha256`）
+    **实测记录**：0.1.0 ~ 0.1.4 用这套命令发布（0.1.0 ~ 0.1.3 是 2026-11-25、0.1.4 是 2026-11-26），各自 8 个资产（4 个产物 + 4 个 `.sha256`）
     全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
 11. **发布到 GitHub**（0.1.0 起的固定步骤，`pwsh` 里直接用数组传参）：
 
@@ -97,10 +97,10 @@
 | Windows 便携包 | `DSC-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `DSC-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\DSC` |
 | Windows ARM64 便携包 | `DSC-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.3` / `versionCode 8`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.4` / `versionCode 9`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
 
 Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` 决定，`aapt2 link --version-code` 不覆盖它；
-两处必须同时改（0.1.3 为 `versionCode="8"` / `versionName="0.1.3"`），`tools\verify_android.py` 会断言两者一致。
+两处必须同时改（0.1.4 为 `versionCode="9"` / `versionName="0.1.4"`），`tools\verify_android.py` 会断言两者一致。
 **16KB 页对齐是硬要求**：`tools\build_android.py` 的链接命令必须带 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`，
 否则 `libdsc.so` 的 `PT_LOAD` 段只有 4KB 对齐，在 16KB 页内核的 Android 15/16 新机上 `dlopen` 失败、应用一启动就退出。
 `tools/verify_android.py` 有一条断言读 ELF 程序头，要求最小 `p_align` ≥ 0x4000。
@@ -121,6 +121,16 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 `Java_com_dsc_app_Native_<名字>`。**能连真机时先真机验证再发版**：这两次闪退（缺符号、符号名不一致）都是构建期与静态校验全绿、
 只有装到设备上才暴露的，`adb install` + `am start` + 截图十分钟就能覆盖。
 
+**Android 的安全存储有两条硬约束（0.1.4 的教训）**：
+- 必须在 `MainActivity.onCreate` 里先 `SecureStore.init(this)`。不注入 Application Context 时只能反射
+  `android.app.ActivityThread.currentApplication()`，Android 9+ 的 hidden API 限制下拿不到对象，写入直接返回 false。
+  `tools/verify_android.py` 有一条断言守着这件事。
+- AndroidKeyStore 生成的 AES 密钥默认 `setRandomizedEncryptionRequired(true)`，此时**加密时调用方不能自带 IV**
+  （`cipher.init(ENCRYPT_MODE, key, new GCMParameterSpec(...))` 会抛 `InvalidAlgorithmParameterException: Caller-provided IV not permitted`）。
+  正确写法是 `cipher.init(Cipher.ENCRYPT_MODE, key)` 之后 `cipher.getIV()`；解密时才传 `GCMParameterSpec`。
+- 失败原因要能从 Java 侧带回界面（`SecureStore.lastError()` → `credential_android.c` 的 `append_reason()`），
+  否则用户只看到「（AndroidKeyStore 拒绝）」，排查时全靠猜。
+
 **Android 签名密钥必须仓库外持久化**：keystore 固定为 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
 `tools/build_android.py` 不存在时才生成。切勿把它放回 `build_android\`——清理脚本会删掉它，下一版就会换证书，
 用户无法覆盖升级（0.1.1 → 0.1.2 就是这样，只能先卸载）。密钥要单独备份，丢了只能换证书、让用户重装。
@@ -138,7 +148,7 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/dsc.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-25（对应版本 v0.1.3；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
+最后更新：2026-11-26（对应版本 v0.1.4；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
 数组传参，第 12 步「收尾清理」；Android 产物必须 16KB 页对齐、共享库必须 `--no-undefined`、JNI 导出符号必须与 Java 声明一致、
 签名密钥仓库外持久化；能连真机时先真机验证；
 发布说明不包含未实测清单）。

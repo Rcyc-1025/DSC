@@ -1,6 +1,6 @@
 # DSC 技术设计（实现说明）
 
-> 本文件说明 "DSC" 0.1.3 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.4 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -273,6 +273,17 @@ dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）�
   改 `Native.java` 里的 `native` 方法名，必须同步改 `android/app/src/main/cpp/dsc_jni.c` 的导出，否则编译、链接、`dlopen`
   全部通过，只有运行时第一次调用才抛 `No implementation found for ...`（0.1.2 → 0.1.3 的实际故障）。
   `tools/verify_android.py` 会解析 Java 侧每个 `native` 声明，逐一要求 `.dynsym` 里有对应符号。
+- **Android 的安全存储依赖两件事，缺一个就写不进去（0.1.4 的实际故障）**：
+  ① Application Context 必须显式注入——`MainActivity.onCreate` 先调 `SecureStore.init(this)`；靠反射
+  `ActivityThread.currentApplication()` 在 Android 9+ 拿不到对象，`save()` 会静默返回 false。
+  ② AndroidKeyStore 生成的 AES 密钥默认 `setRandomizedEncryptionRequired(true)`，**加密时不能自带 IV**：
+  要 `cipher.init(Cipher.ENCRYPT_MODE, key)` 之后取 `cipher.getIV()`，自带 IV 会抛
+  `InvalidAlgorithmParameterException: Caller-provided IV not permitted`；解密才传 `GCMParameterSpec`。
+  失败原因必须能从 Java 侧带回界面（`SecureStore.lastError()` → `credential_android.c` 的 `append_reason()`），
+  `tools/verify_android.py` 有 `SecureStore.init(this)` 断言守着第一条。
+- **夜间配色必须按对比度取前景色，不能写死白字**：主色 `#6194C9` 配白字只有 2.93:1（低于 4.5:1 的可读线），
+  配深色字是 7.17:1。Android 侧 `relLum()` / `textOn()`、桌面侧 `color_lum()` / `text_on()` 都是按背景亮度二选一；
+  新增配色改动时不要绕过它们直接写 `Color.WHITE` / `RGB(255,255,255)`。
 - **签名密钥必须放在仓库与构建目录之外**：keystore 固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
   `tools/build_android.py` 缺了才生成。密钥若跟着 `build_android\` 被清理脚本删掉，下一版就会换证书，
   用户无法覆盖升级（0.1.1 → 0.1.2 就发生了这件事，只能先卸载）。发布方的正式签名另有 `tools/sign_android.py`。

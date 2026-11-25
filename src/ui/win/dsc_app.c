@@ -12,6 +12,7 @@
 #include <windowsx.h>
 #include <commdlg.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1263,7 +1264,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "0.1.3"
+#define APP_VERSION    "0.1.4"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -1335,11 +1336,35 @@ static int measure_text(HDC dc, HFONT f, const char *utf8, int width, int *out_w
 }
 
 /* ---------- 通用控件绘制 ---------- */
+/* 0.1.4：夜间主色 #6194C9 是浅蓝，白字只有 2.93:1（低于 3:1 门槛），深字 #0B1220 是 7.17:1。
+ * 所以底色上的字色不能写死白色，按 WCAG 相对亮度取对比度更高的一侧。 */
+static double color_lum(COLORREF bg)
+{
+    double ch[3], w[3] = { 0.2126, 0.7152, 0.0722 }, l = 0.0;
+    int i;
+    ch[0] = GetRValue(bg) / 255.0;
+    ch[1] = GetGValue(bg) / 255.0;
+    ch[2] = GetBValue(bg) / 255.0;
+    for (i = 0; i < 3; i++) {
+        double c = ch[i];
+        l += w[i] * (c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4));
+    }
+    return l;
+}
+
+static COLORREF text_on(COLORREF bg)
+{
+    double l = color_lum(bg);
+    double vs_white = 1.05 / (l + 0.05);
+    double vs_black = (l + 0.05) / 0.05;
+    return vs_white >= vs_black ? RGB(255, 255, 255) : RGB(0x0B, 0x12, 0x20);
+}
+
 static void draw_pill(App *a, HDC dc, RECT rc, const char *label, int id, int primary)
 {
     if (primary) {
         fill_round(dc, rc, 8, tok(a, DSC_TOK_PRIMARY));
-        draw_text(dc, a->font_ui, label, rc, RGB(255, 255, 255),
+        draw_text(dc, a->font_ui, label, rc, text_on(tok(a, DSC_TOK_PRIMARY)),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
         stroke_round(dc, rc, 8, tok(a, DSC_TOK_DIVIDER), 1);
@@ -1676,7 +1701,7 @@ static void paint_messages(App *a, HDC dc, RECT area)
             } else {
                 int tw = 0;
                 RECT br;
-                COLORREF fg = is_user ? RGB(255, 255, 255)
+                COLORREF fg = is_user ? text_on(tok(a, DSC_TOK_PRIMARY))
                                       : (m->recalled ? tok(a, DSC_TOK_TEXT_SECONDARY)
                                                      : tok(a, DSC_TOK_TEXT));
                 msg_height(dc, a, txt, bubble_max - 24, &tw);
@@ -1936,7 +1961,7 @@ static void paint_me(App *a, HDC dc, RECT content)
         } else {
             dsc_strlcpy_utf8(one, sizeof(one), "我");
         }
-        draw_text(dc, a->font_title, one, avatar, RGB(255, 255, 255),
+        draw_text(dc, a->font_title, one, avatar, text_on(tok(a, DSC_TOK_PRIMARY)),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     }
@@ -2184,6 +2209,42 @@ static void paint_qa(App *a, HDC dc, RECT content)
 }
 
 /* ---------- 浮层 ---------- */
+/* 0.1.4：弹窗出现时把背景压暗。GDI 没有 alpha 填充，用 1×1 的 32 位 DIB 做 AlphaBlend 平铺实现。 */
+static void fill_scrim(HDC dc, RECT rc, int alpha)
+{
+    HDC mem;
+    HBITMAP bmp, old;
+    BITMAPINFO bi;
+    void *bits = NULL;
+    BLENDFUNCTION bf;
+
+    if (alpha <= 0) return;
+    mem = CreateCompatibleDC(dc);
+    if (!mem) return;
+    ZeroMemory(&bi, sizeof(bi));
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = 1;
+    bi.bmiHeader.biHeight = 1;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!bmp) { DeleteDC(mem); return; }
+    old = (HBITMAP)SelectObject(mem, bmp);
+    if (bits) {
+        BYTE *p = (BYTE *)bits;
+        p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 0; /* 纯黑，透明度交给 SourceConstantAlpha */
+    }
+    ZeroMemory(&bf, sizeof(bf));
+    bf.BlendOp = AC_SRC_OVER;
+    bf.SourceConstantAlpha = (BYTE)alpha;
+    AlphaBlend(dc, (int)rc.left, (int)rc.top, (int)(rc.right - rc.left), (int)(rc.bottom - rc.top),
+               mem, 0, 0, 1, 1, bf);
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
 static void paint_overlay(App *a, HDC dc, RECT client)
 {
     int w = 560;
@@ -2195,6 +2256,9 @@ static void paint_overlay(App *a, HDC dc, RECT client)
     RECT tr;
 
     if (a->overlay == DSC_OV_NONE) return;
+
+    /* 夜间底色本来就深，遮罩要更重一点才分得清面板与背景。 */
+    fill_scrim(dc, client, color_lum(tok(a, DSC_TOK_PAGE_BG)) < 0.2 ? 150 : 70);
 
     for (int i = 0; i < a->field_n; i++) field_h += a->fields[i].multiline ? 112 : 68;
 
@@ -2536,7 +2600,7 @@ static void paint(App *a, HDC dc, RECT client)
         int tw = 320;
         RECT r = {client.right - tw - 24, client.bottom - 110, client.right - 24, client.bottom - 70};
         fill_round(dc, r, 10, tok(a, DSC_TOK_PRIMARY));
-        draw_text(dc, a->font_ui, a->toast, r, RGB(255, 255, 255),
+        draw_text(dc, a->font_ui, a->toast, r, text_on(tok(a, DSC_TOK_PRIMARY)),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
@@ -5410,12 +5474,19 @@ static void draw_field(App *a, HDC dc, RECT box, const char *text, int focus, in
 
 static void paint_credential(App *a, HDC dc, RECT client)
 {
-    RECT t = {client.left + 40, client.top + 66, client.right - 40, client.top + 112};
-    RECT d = {client.left + 40, client.top + 116, client.right - 60, client.top + 216};
-    RECT lbl = {client.left + 40, client.top + 232, client.right - 40, client.top + 256};
-    RECT box = {client.left + 40, client.top + 258, client.right - 40, client.top + 298};
-    RECT b1 = {client.left + 40, client.top + 316, client.left + 190, client.top + 356};
-    RECT b2 = {client.left + 206, client.top + 316, client.left + 346, client.top + 356};
+    /* 0.1.4：桌面窗口很宽时，首启页全宽拉伸会显得空荡——内容限宽 680 并水平居中。 */
+    int cw = (int)(client.right - client.left);
+    int x0 = (int)client.left + 40, x1 = (int)client.right - 40, w = 680;
+    if (cw - 80 > w) {
+        x0 = (int)client.left + (cw - w) / 2;
+        x1 = x0 + w;
+    }
+    RECT t = {x0, client.top + 66, x1, client.top + 112};
+    RECT d = {x0, client.top + 116, x1, client.top + 216};
+    RECT lbl = {x0, client.top + 232, x1, client.top + 256};
+    RECT box = {x0, client.top + 258, x1, client.top + 298};
+    RECT b1 = {x0, client.top + 316, x0 + 150, client.top + 356};
+    RECT b2 = {x0 + 166, client.top + 316, x0 + 306, client.top + 356};
 
     draw_text(dc, a->font_title, "配置 DeepSeek API Key", t, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -5435,12 +5506,16 @@ static void paint_credential(App *a, HDC dc, RECT client)
 /* ---------- 首次启动：默认模式选择（FR-30） ---------- */
 static void paint_mode_select(App *a, HDC dc, RECT client)
 {
-    RECT t = {client.left + 40, client.top + 66, client.right - 40, client.top + 112};
-    RECT d = {client.left + 40, client.top + 116, client.right - 60, client.top + 176};
-    RECT c1 = {client.left + 40, client.top + 200, client.left + 400, client.top + 358};
-    RECT c2 = {client.left + 420, client.top + 200, client.left + 780, client.top + 358};
-    RECT b1 = {client.left + 60, client.top + 306, client.left + 250, client.top + 346};
-    RECT b2 = {client.left + 440, client.top + 306, client.left + 630, client.top + 346};
+    /* 两张卡片合计 700 宽，同样限宽居中（0.1.4）。 */
+    int cw = (int)(client.right - client.left);
+    int x0 = (int)client.left + 40;
+    if (cw - 80 > 700) x0 = (int)client.left + (cw - 700) / 2;
+    RECT t = {x0, client.top + 66, x0 + 700, client.top + 112};
+    RECT d = {x0, client.top + 116, x0 + 700, client.top + 176};
+    RECT c1 = {x0, client.top + 200, x0 + 340, client.top + 358};
+    RECT c2 = {x0 + 360, client.top + 200, x0 + 700, client.top + 358};
+    RECT b1 = {x0 + 20, client.top + 306, x0 + 320, client.top + 346};
+    RECT b2 = {x0 + 380, client.top + 306, x0 + 680, client.top + 346};
 
     draw_text(dc, a->font_title, "选择默认模式", t, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);

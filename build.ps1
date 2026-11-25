@@ -107,14 +107,14 @@ switch ($Target) {
     'gui' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\DSC.exe'
-        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
+        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'DSC.exe'
         Write-Host 'built: build\DSC.exe'
     }
     'guidiag' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\DscDiag.exe'
-        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-static-libgcc')
+        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'DscDiag.exe'
         Write-Host 'built: build\DscDiag.exe'
     }

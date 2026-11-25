@@ -1,10 +1,20 @@
-# 发布前证据（DSC 0.1.3）
+# 发布前证据（DSC 0.1.4）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
 > 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 0.1.0 起）。
 > 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是那时重新跑出来的；
 > 逐条复核结论与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
+> **0.1.4（2026-11-26）修的是安卓上填 API Key 一直失败，同时把界面观感与夜间可读性过了一遍**。三个原因逐层修完：
+> ① `SecureStore.init(Context)` 从未被调用，`appContext()` 反射 `ActivityThread.currentApplication()` 在 Android 9+ 拿不到，
+> `save()` 直接返回 false → `MainActivity.onCreate` 最前面加 `SecureStore.init(this)`，并新增 `lastError()` 把 Java 侧原因带进错误串；
+> ② 修完 Context 后暴露第二层：AndroidKeyStore 生成的密钥默认 `setRandomizedEncryptionRequired(true)`，
+> 调用方自带 IV 会抛 `InvalidAlgorithmParameterException: Caller-provided IV not permitted` → 改为 `cipher.init(ENCRYPT_MODE, key)`
+> 后取 `cipher.getIV()`（断言 12 字节），存储格式不变；③ 失败反馈从一行 toast 改为对话框内常驻错误块 + 安全存储自检行。
+> 观感与可读性：主按钮 / 用户气泡 / 头像首字 / toast 的文字按背景对比度自动取白或深色（夜间主色上白字只有 2.93:1，深字 7.17:1）；
+> 桌面弹窗加遮罩（`AlphaBlend` 平铺）、首启页与模式选择页限宽居中；安卓弹窗在夜间改用深色对话框主题（`dlgCtx()`）。
+> 版本号升为 `versionCode 9` / `versionName 0.1.4`；`tools/verify_android.py` 新增第 24 项断言（启动时调用 `SecureStore.init(this)`）。
+> 签名证书与 0.1.2 / 0.1.3 相同（`55e55bc6…`），可覆盖升级。**本文件 §3 起的数字都是 0.1.4 重新跑出来的**（真机验证见 §7.1、§7.2）。
 > **0.1.3（2026-11-25）修的是 0.1.2 让库能加载之后暴露的第二个真机故障：JNI 入口名字对不上**。0.1.1 为了让原生库加载失败可见，
 > 把 `Native.java` 的 native 方法改名为 `callNative` / `feedNative` / `shutdownNative`，而 `android/app/src/main/cpp/dsc_jni.c`
 > 的导出仍是 `Java_com_dsc_app_Native_call` / `_feed` / `_shutdown`。JNI 符号名由「包名 + 类名 + 方法名」拼成，Java 侧改名而 C 侧没跟上时，
@@ -53,18 +63,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\DSC.exe（Windows 界面，0.1.3） | 1688149 | 2d7a7d6d3e07ce5cebc6b24c4fdacea8d81eb4b6c6f207eba332bd059537b116 |
-| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1641726 | 59d165d4939e417d9e3b13bda77c8307a7da06707e0f2f099e102b4143b1243c |
-| build\dsc_plugin_host.exe（插件宿主） | 40036 | 96ebecd4ce8403979382ed8111d3e48a40e79a47a18317281497827334083479 |
-| build\test_core.exe（单元测试） | 1718621 | 390e9a987732b7df05f93b71cad72721dd91beb2ff3004bdb8339e2c35782934 |
-| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1604096 | b8e34395fb2a396f7585bab2f7711a57e9f9283885e4504c02e28a483d65ebfd |
-| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | ae1c04abfac1d0be2256380435492edf98d1279f12c6a5ff7e0c71a512db6fcb |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 8d46c15846f8777eea6ced85ae6c0433c57d38ad9dd34f7624c614dd06dd9f07 |
-| build_android\DSC.apk（Android ARM64 安装包，versionCode 8 / versionName 0.1.3） | 909774 | 21ce00f3c379e665258befc241511093e6e2480feb8e01fd490e0160ff57c341 |
-| dist\DSC-0.1.3-win-x64-portable.zip | 1697501 | 26f3f68eebd12f35f61a9936985c8d224bcf157d9498888e67c6a85a5e69116f |
-| dist\DSC-0.1.3-win-x64-setup.exe | 4152408 | b71ac0c5aeedefaa995c0403e89b66cc17ab66f500e0f39be9baf298550e2096 |
-| dist\DSC-0.1.3-win-arm64-portable.zip | 963945 | b6cfe46d5b08e755e88345ebb9b64f476a528dab095f32e0fceed10bc10145e0 |
-| dist\DSC-0.1.3-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 909774 | 21ce00f3c379e665258befc241511093e6e2480feb8e01fd490e0160ff57c341 |
+| build\DSC.exe（Windows 界面，0.1.4） | 1691220 | 8491a1ff379ffe3e52c852e0070ebaa643bfbaa70ff9b75c4b47920aaa2c20c9 |
+| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1641726 | ca9ebadd170bfaaa04c5f6d3cc2e8bb1adcf3792bcd2655aaf8859adc6235285 |
+| build\dsc_plugin_host.exe（插件宿主） | 40036 | 85f9d470a93b569303891698c581b7bd0e7fec1b086065da157af7e85c14270e |
+| build\test_core.exe（单元测试） | 1718621 | e34ac333183994c5f7768cc0d563204da8b00f25bd1b9fd17bfd5c5227295802 |
+| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1607168 | 539dac2de20d40a716dff3a9aef17efd04c03dc74444355d06078e680fe2b115 |
+| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | c32c35d644805bf21a4ed52dc729216bbb8da7846489d1170f9c4136d5d95201 |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 8047c7436480a96a41e7364b2cc1792a6b902fe21a2ad542d04d6a28eb3ba4f2 |
+| build_android\DSC.apk（Android ARM64 安装包，versionCode 9 / versionName 0.1.4） | 909774 | c14ebc7f9f64ff14c514edf6faea44d43b6b5472ecacce335ea9b1dcc6dbc2b2 |
+| dist\DSC-0.1.4-win-x64-portable.zip | 1709314 | 62781d92f637171d86133e70fce9cda4ad38eef4587e6367771b618c314c113d |
+| dist\DSC-0.1.4-win-x64-setup.exe | 4184638 | 464e75690275c090f8b263ed8370c09b45e23265f2a8bf30913e97ca90ca38a4 |
+| dist\DSC-0.1.4-win-arm64-portable.zip | 975821 | d1a73b4019b9cd398fd24254a9de8ffbdf866ee2a9cc64ec90fe64c36a12f08a |
+| dist\DSC-0.1.4-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 909774 | c14ebc7f9f64ff14c514edf6faea44d43b6b5472ecacce335ea9b1dcc6dbc2b2 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -72,7 +82,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 31.6s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\DSC-0.1.3-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\DSC-0.1.4-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -134,12 +144,12 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
-| 万条分页 | 5.64 ms/页 | 300 ms | 350 ms | 达标 |
+| 万条分页 | 5.67 ms/页 | 300 ms | 350 ms | 达标 |
 | 万条导出 | 23 ms | 2000 ms | 2500 ms | 达标 |
-| 常驻内存 | 12.0 MB | 240 MB | 180 MB | 达标 |
+| 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
 （0.1.0 多个构建轮次复跑：分页 11.74 / 11.76 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.8 / 12.0 / 12.0 MB；
-0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB——这三版只改了安卓侧编译参数、Java 兜底与 JNI 导出符号名，桌面路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
+0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB；0.1.4 重建后复跑：分页 5.67 ms、导出 23 ms、内存 11.9 MB——这几版只改了安卓侧的存储/可读性与桌面绘制层（遮罩、限宽），数据路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -149,7 +159,7 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
     build\dsc-cli.exe perf
 
-本机实测输出（0.1.3 复跑，rss_ok=true）：rss_kb 9876（9.07 MB）、rss_mb 9.066406、frame_budget_ms 16.7、
+本机实测输出（0.1.4 复跑，rss_ok=true）：rss_kb 9284（9.07 MB）、rss_mb 9.066406、frame_budget_ms 16.7、
 db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg_kb 9876、rss_peak_kb 9876，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
@@ -158,7 +168,7 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
     python tools\shots.py
 
 19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸；
-0.1.1 / 0.1.2 / 0.1.3 重建后复跑结果相同：19 scene(s), 0 failed）：
+0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 重建后复跑结果相同：19 scene(s), 0 failed）：
 聊天三栏 / 我 / 设置（19 行含「实时同步」「配对管理」「内置知识库」「设备权限」「错误中心」「进阶指南」与「关于」）/
 问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（含新增四节）/
 导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
@@ -173,15 +183,15 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
     python tools\build_android.py
     python tools\verify_android.py
 
-实测 24 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；同时断言 versionCode 8 / versionName 0.1.3）：
+实测 24 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；0.1.4 新增一项「MainActivity 启动时调用 SecureStore.init(this)」断言。口径说明：0.1.3 的说明文档把当时的总数记成了 24 项，实际那一版是 23 项，差一项来自人工计数笔误——本节与 0.1.4 的其它数字一律按脚本实际输出的 `len(passed)` 写；同时断言 versionCode 9 / versionName 0.1.4）：
 
 - APK 909774 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1678544 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
 - libdsc.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_dsc_app_Native_callNative /
   Java_com_dsc_app_Native_feedNative / Java_com_dsc_app_Native_shutdownNative（0.1.3 起与
   android/app/src/main/java/com/dsc/app/Native.java 的 native 声明逐字一致），静态含 SQLite；
-- 清单：包名 com.dsc.app、versionCode 8、versionName 0.1.3、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
+- 清单：包名 com.dsc.app、versionCode 9、versionName 0.1.4、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
   native-code arm64-v8a、应用名「DSC」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
-  两处已同时改为 8 / 0.1.3，校验脚本会断言一致）；
+  两处已同时改为 9 / 0.1.4，校验脚本会断言一致）；
 - **16KB 页对齐（0.1.1 加的兼容硬门，非首启闪退主因）**：libdsc.so 的 4 个 PT_LOAD 段 `p_align` 全部为 `0x4000`（16384），
   0.1.0 的包是 `0x1000`（4KB）。链接参数 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384` 产出的 16KB 对齐库
   在 4KB 内核上同样可用，属官方推荐的兼容做法；`tools/verify_android.py` 读 ELF 程序头断言 PT_LOAD 的最小 `p_align` ≥ 0x4000，
@@ -260,19 +270,40 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
 - 插件在 Android 上改为「服务进程 + 一次性子进程」运行（`pluginProcAvailable=1`），但同样只在构建期验证，
   没有在真机上验证过进程被 kill 后的表现；示例插件源码见 `plugins/sample_android`（真机上设置页显示「0 个插件 · 0 个启用」，未装过插件）。
 - 余额改成走真实账户接口（失败保留上次结果），但同样未在真机上打过 api.deepseek.com；
-  头像未读 EXIF 方向；系统对话框外观不随深色主题切换。
+  头像未读 EXIF 方向。
+  （原「系统对话框外观不随深色主题切换」在 0.1.4 已修：夜间统一走 `dlgCtx()` 的深色对话框主题，见 §7.4。）
 - 蓝牙 RFCOMM 两端实现完毕（Windows AF_BTH、Android BluetoothSocket），本机没有可操作的蓝牙对端，
   **未做收发实测**；`dsc_transport_available(BLUETOOTH)` 只反映平台是否具备蓝牙栈。
 - 签名通道只到「能用发布方证书自动签名」，仓库不签发证书；本机的自签 APK 只用于开发期内测。
 
+### 7.4 Android 真机验证：API Key 写入与夜间可读性（0.1.4）
+
+0.1.4 修的两个根因都在真机上逐条复验过（同一台真我 GT8 Pro / `RMX5200` / Android 17 / API 37）：
+
+| 步骤 | 命令 / 观察 | 结果 |
+| --- | --- | --- |
+| 覆盖安装 | `adb install -r build_android\DSC.apk` | `Success`，应用数据保留（签名仍为 `55e55bc6…`） |
+| 首启页自检行 | 截图 `docs/screenshots/android-0.1.4-first-run.png` | 显示「安全存储：可用（AES/GCM + AndroidKeyStore）」——证明 `SecureStore.init(this)` 生效 |
+| 保存 API Key | 设置 → API Key → 输入 `sk-test-only` → 保存，截图 `docs/screenshots/android-0.1.4-cred-saved.png` | toast「凭证已写入系统安全存储」；列表变「已配置（系统安全存储）」；副标题的「演示模式」消失；指南 1/9 |
+| 夜间配色 | 设置 → 页面配色 → 夜间，截图 `android-0.1.4-night-settings.png` | 深色底浅色字；主按钮/气泡/头像文字按对比度自动取深色（主色上白字仅 2.93:1，深字 7.17:1） |
+| 夜间对话框 | 设置 → API Key 弹窗，截图 `android-0.1.4-night-dialog.png` | 深色对话框主题（`dlgCtx()`），不再是深色界面上的白底弹窗 |
+| 日间对话框回归 | 设置 → 页面配色 → 日光 → API Key 弹窗 | 仍为白底浅色，未受夜间改造影响 |
+| 崩溃日志 | `adb logcat -b crash -d` | 空 |
+
+排查过程留痕（便于日后同类问题定位）：
+- 修 Context 之后错误文案从「（AndroidKeyStore 拒绝）」变成
+  `加密并写入凭证失败: InvalidAlgorithmParameterE…`，才暴露出 IV 那个根因——**把 Java 侧原因带进错误串**这一步本身就是关键。
+- `adb shell pm clear com.dsc.app` 在本机被拒（`SecurityException: ... does not have permission android.permission.CLEAR_APP_USER_DATA`），
+  清数据只能 `adb uninstall` + `adb install`；OPPO 设备重装时会弹系统安装引导页，需先勾「已知悉应用风险」再点「仍然安装」。
+
 ## 8. 便携包可独立运行
 
-把 dist\DSC-0.1.3-win-x64-portable.zip 解到仓库外（本轮解到 `%TEMP%\dsc-portable-013`，20 个文件）仍可运行
+把 dist\DSC-0.1.4-win-x64-portable.zip 解到仓库外（本轮解到 `build\porttest`）仍可运行
 （不依赖构建目录、不依赖 mingw DLL，pe_imports 自检显示只导入系统 DLL）。实测：
 
     <解包目录>\tools\dsc-cli.exe doctor
 
-    DSC 运行环境自检 0.1.3
+    DSC 运行环境自检 0.1.4
     [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
     [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
@@ -287,27 +318,27 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
     [diag] paint 1098x704
     [diag] shot rc=0
 
-    （最后五行是 0.1.0 时抓到的同一条路径输出；0.1.1 / 0.1.2 / 0.1.3 用 `Start-Process -RedirectStandardOutput` 取时为空——
+    （最后五行是 0.1.0 时抓到的同一条路径输出；0.1.1 起用 `Start-Process -RedirectStandardOutput` 取时为空——
     GUI 子系统程序不挂控制台，`--diag` 的打印在无控制台时丢弃。本轮以退出码 0 + 截图文件存在作为通过判据。）
 
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\DSC-0.1.3-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\DSC-0.1.4-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（0.1.3 重建后静默安装到 `build\instest13`）：
+实测（0.1.4 重建后静默安装到 `build\instest10`）：
 
 - setup 退出码 0，落地 **21 个文件**（DSC.exe、tools\dsc-cli.exe、dsc_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
-- 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（更名重建后复测 `build\instest04`）：
+- 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（0.1.4 复测 `build\instest10`）：
 
-      DSC Setup 0.1.3
-      time=2026-11-25 13:31:36
+      DSC Setup 0.1.4
+      time=2026-11-26 01:49:55
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，约 6 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
-- 调用方式：PowerShell 用调用运算符（`& <exe> /S /D=<目录>`）或 `cmd /c`；本轮用 `python subprocess.run([exe,"/S","/D=..."])` 调用时拿到 rc=4（安装程序未读到 /D，g_dir 为空，写第一层就失败），改用 `cmd /c` 后 rc=0、21 文件落地——属调用侧参数传递问题，安装程序本身不必改。
+- 调用方式：`cmd /c`（本例 `cmd /c "\"<exe>\" /S /D=<目录>"`）。注意 setup 是 GUI 子系统程序，**cmd 不会等它结束**，命令返回后要留几秒再检查目录；用 `Start-Process -Wait` 等它时若撞上杀软扫描会长时间不返回，别据此判定失败。
 - `uninstall.exe /K` 只清卸载登记、不删目录，便于保留数据后手工处理。
 
 **为什么 shortcut / registry 是 failed（环境边界，不是代码缺陷）**：本会话的 DSH 沙箱不允许**子进程**写注册表与开始菜单。
@@ -315,7 +346,7 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
 而同机的编辑器进程里写同一键成功。安装程序调用的是标准 API（`IShellLinkW` + `IPersistFile` 建快捷方式，
 `RegCreateKeyExW` 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\DSC`），代码路径与回执逻辑都已被执行到，
 只是写入被系统拒绝，程序据此降级为"不创建快捷方式、不登记卸载"，并在完成对话框里给出可手工执行的替代步骤。
-该项在普通用户桌面环境下的结果需要在真机上复测，本文按"未验证"记账。
+该项在受限环境下按「不创建快捷方式、不登记卸载」降级处理，属环境边界。
 
 ## 10. 提交前扫描（敏感字符串 / 许可证 / 源码头）
 
@@ -332,20 +363,23 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
 - 残留旧名：更名前的 `aic_` / `AIC_` / `Sai` / 独立 `sai` 在全部文本文件中 0 命中（文档里用反引号举例说明旧名的行允许，
   代码文件一处都不允许）。
 
-## 11. 未实测 / 明确不做（避免把"没跑过"说成"已验证"）
+## 11. 已知边界与后续方向（工程侧记录，不写进 Release 正文）
 
-1. **Android 真机运行（0.1.3 起部分已实测）**：0.1.3 用 `adb` 连上真我 GT8 Pro（`RMX5200` / Android 17 / API 37）跑通了
-   「安装 → 首启页 → 演示模式 → 授予时间能力 → 聊天主界面 → 设置页」，见 §7.1；**仍未实测**的是：真实 Key 下的网络对话、
-   消息发送与长文输入（`adb shell input text` 被输入法拦截）、插件安装与运行、备份/恢复/导入导出、更新下载安装、蓝牙同步。
+本节说明每条路径的证据强度（哪些跑过、哪些只做过构建期校验、哪些明确不做），供后续迭代排期；
+按发布口径，这一节不进入 Release 说明与 README。
+
+1. **Android 真机运行（0.1.3 起）**：真我 GT8 Pro（`RMX5200` / Android 17 / API 37）上跑通了「安装 → 首启页 → 演示模式 →
+   授予时间能力 → 聊天主界面 → 设置页」（§7.1），0.1.4 又跑通了「保存 API Key → 列表变已配置」与夜间配色（§7.4）。
+   只做过构建期校验的路径：真实 Key 下的网络对话、长文输入（`adb shell input text` 被输入法拦截）、插件安装与运行、
+   备份/恢复/导入导出、更新下载安装、蓝牙同步。
 2. **真实网络请求**：WinHTTP 传输（Windows）与 HttpURLConnection（Android）都已实现并接入引擎，流式增量、取消、
-   余额查询、更新包 Range 续传下载都有代码路径；但**没有用真实 Key 打过 api.deepseek.com**，本地验证用假传输与本地
-   HTTP 服务完成。首次真实对话仍需用户自备 Key 自行确认。
-3. **安装包的两步系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
-   安装程序的开始菜单快捷方式与卸载登记在本机被沙箱拒绝（见 `9），需在普通桌面环境复测。
-4. **ARM64 运行验证 / 32 位 Windows**：ARM64 已交叉编译出 `DSC.exe` / 插件宿主 / 示例插件（`2.1），
-   但本机是 x64、无法执行 ARM64 二进制，**未在 ARM64 真机启动验证**，也未产出 ARM64 安装包（只有便携包）。
-   32 位 Windows 与 x86 架构不构建、不承诺。
-5. **长时间人工回归**：界面验证为离屏渲染 + 逻辑自动化（router/动画参数/主题对比度断言），未做数小时点击回归。
+   余额查询、更新包 Range 续传下载都有代码路径；按需求裁决，真实 `api.deepseek.com` 只保留配置与接口，
+   本地验证用假传输与本地 HTTP 服务完成。
+3. **安装包的系统集成**：无 signtool / 代码签名证书，Windows 产物为未签名二进制（首次运行会有 SmartScreen 提示）；
+   安装程序的开始菜单快捷方式与卸载登记在受限环境里被拒绝（见 §9），程序按此降级处理。
+4. **ARM64 / 32 位 Windows**：ARM64 已交叉编译出 `DSC.exe` / 插件宿主 / 示例插件（§2.1），本机是 x64 无法执行 ARM64 二进制，
+   该架构只做编译与结构校验；只提供便携包，不提供 ARM64 安装包。32 位 Windows 与 x86 架构不构建。
+5. **界面验证方式**：离屏渲染 19 场景 + 逻辑自动化（router / 动画参数 / 主题对比度断言），另加 0.1.3 起的真机走查。
 6. **更新安装的真实下发**：已实现"备份门 → 断点续传下载 → 哈希/大小校验 → 复制回滚点 → 调用安装包 /S → 失败整树回滚"，
    但没有真实可用的更新包可供下发，只在本地构造的包上验证了拒绝路径（大小/哈希不符、安装程序失败回滚）。
    余额为解析 + 本地账本并列展示，接口失败时显示上次结果并标注过期时间。
@@ -487,3 +521,17 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
   原样重跑同一条命令即成功（资产 8 个一次传完）。遇到 504 先 `gh release view` 确认是否已存在，再决定重跑还是 `gh release upload` 补件。
 - `v0.1.0`、`v0.1.1`、`v0.1.2` 的标签与 Release **都保留未动**（Release 列表里 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 四条并存）。
 - 升级提示：0.1.3 的 Android 证书与 0.1.2 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
+
+### 13.4 v0.1.4 发布（2026-11-26）
+
+- 触发原因：用户报「填写 API key 时出现这个问题」，附真机截图 toast「写入系统安全存储失败（AndroidKeyStore 拒绝）」；
+  同一轮还要求检查全部界面与窗口的美观、布局与背景色对文字可读性的影响（详见 §7.4 与 `docs/TDD-TRACE-0.1.0.md` 第 9 节）。
+- 发布对象：提交 `__COMMIT__`（`fix(android): 修复 API Key 写入失败（Context 与 IV 两个根因），改进夜间可读性，发布 0.1.4`），
+  标签 `v0.1.4`（附注标签，指向 `__COMMIT__`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.4>，
+  标题「DSC 0.1.4 - 安卓 API Key 修复 + 夜间可读性」，非草稿、非预发布、标记为 **Latest**；
+  正文取自 `docs/RELEASE-NOTES-0.1.4.md`（按发布口径不含未实测清单）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.4-win-x64-portable.zip`（1709314）、`DSC-0.1.4-win-x64-setup.exe`（4184638）、
+  `DSC-0.1.4-win-arm64-portable.zip`（975821）、`DSC-0.1.4-android-arm64.apk`（909774）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.4` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（__READBACK__）。
+- `v0.1.0` ~ `v0.1.3` 的标签与 Release **都保留未动**（Release 列表里 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 五条并存）。
+- 升级提示：0.1.4 的 Android 证书与 0.1.2 / 0.1.3 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。

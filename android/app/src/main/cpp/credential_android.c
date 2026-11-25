@@ -19,6 +19,7 @@ static jmethodID g_m_avail;
 static jmethodID g_m_save;
 static jmethodID g_m_load;
 static jmethodID g_m_del;
+static jmethodID g_m_lasterr;   /* 0.1.4：SecureStore.lastError() 取回失败原因 */
 static int       g_lookup_tried;
 
 /* 库被 System.loadLibrary 载入时拿到 JavaVM：之后无论从哪个线程调用都能 Attach。 */
@@ -59,6 +60,37 @@ static void put_env(cred_env *e)
     if (e->detach && g_vm) (*g_vm)->DetachCurrentThread(g_vm);
 }
 
+/* 0.1.4：把 Java 侧记录的失败原因拼进 err，界面就能看到真实原因（异常类型 + 消息），
+ * 而不是笼统的「AndroidKeyStore 拒绝」。调用前必须已清掉挂起异常，调用时 env 必须有效。 */
+static void append_reason(JNIEnv *env, char *err, size_t errlen, const char *prefix)
+{
+    jstring js;
+    const char *utf;
+
+    if (!err || errlen == 0) return;
+    if (!g_cls || !g_m_lasterr) {
+        snprintf(err, errlen, "%s", prefix);
+        return;
+    }
+    js = (jstring)(*env)->CallStaticObjectMethod(env, g_cls, g_m_lasterr);
+    if ((*env)->ExceptionCheck(env) || !js) {
+        (*env)->ExceptionClear(env);
+        snprintf(err, errlen, "%s", prefix);
+        return;
+    }
+    utf = (*env)->GetStringUTFChars(env, js, NULL);
+    if (!utf) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, js);
+        snprintf(err, errlen, "%s", prefix);
+        return;
+    }
+    if (utf[0]) snprintf(err, errlen, "%s：%s", prefix, utf);
+    else        snprintf(err, errlen, "%s（Java 侧未给出原因）", prefix);
+    (*env)->ReleaseStringUTFChars(env, js, utf);
+    (*env)->DeleteLocalRef(env, js);
+}
+
 /* 解析 Java 侧实现：JNI_OnLoad 时通常已经拿到；拿不到时允许在任意 Java 线程上再试一次。 */
 static int resolve_cls(JNIEnv *env)
 {
@@ -81,6 +113,7 @@ static int resolve_cls(JNIEnv *env)
                      "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
     g_m_del   = (*env)->GetStaticMethodID(env, g_cls, "remove",
                      "(Ljava/lang/String;Ljava/lang/String;)Z");
+    g_m_lasterr = (*env)->GetStaticMethodID(env, g_cls, "lastError", "()Ljava/lang/String;");
     if (!g_m_avail || !g_m_save || !g_m_load || !g_m_del) {
         (*env)->ExceptionClear(env);
         (*env)->DeleteGlobalRef(env, g_cls);
@@ -145,7 +178,7 @@ int dsc_cred_save(const char *service, const char *account, const char *secret,
         ok = (*e.env)->CallStaticBooleanMethod(e.env, g_cls, g_m_save, js, ja, jv);
         if (clear_pending(e.env) || !ok) {
             rc = DSC_E_IO;
-            if (err && errlen) snprintf(err, errlen, "写入系统安全存储失败（AndroidKeyStore 拒绝）");
+            append_reason(e.env, err, errlen, "写入系统安全存储失败");
         }
     }
     if (js) (*e.env)->DeleteLocalRef(e.env, js);
@@ -187,6 +220,7 @@ int dsc_cred_load(const char *service, const char *account, char *out, size_t ca
     jv = (jstring)(*e.env)->CallStaticObjectMethod(e.env, g_cls, g_m_load, js, ja);
     if (clear_pending(e.env) || !jv) {
         rc = DSC_E_NOTFOUND;   /* 不存在或密文解不开，都按「未配置」处理 */
+        append_reason(e.env, err, errlen, "系统安全存储里没有这个凭证");
     } else {
         utf = (*e.env)->GetStringUTFChars(e.env, jv, NULL);
         if (!utf) {
@@ -202,7 +236,9 @@ int dsc_cred_load(const char *service, const char *account, char *out, size_t ca
     (*e.env)->DeleteLocalRef(e.env, js);
     (*e.env)->DeleteLocalRef(e.env, ja);
     put_env(&e);
-    if (rc == DSC_E_NOTFOUND && err && errlen) snprintf(err, errlen, "系统安全存储里没有这个凭证");
+    if (rc == DSC_E_NOTFOUND && err && errlen && !err[0]) {
+        snprintf(err, errlen, "系统安全存储里没有这个凭证");
+    }
     return rc;
 }
 
@@ -233,7 +269,7 @@ int dsc_cred_delete(const char *service, const char *account, char *err, size_t 
         ok = (*e.env)->CallStaticBooleanMethod(e.env, g_cls, g_m_del, js, ja);
         if (clear_pending(e.env) || !ok) {
             rc = DSC_E_IO;
-            if (err && errlen) snprintf(err, errlen, "清除凭证失败");
+            append_reason(e.env, err, errlen, "清除凭证失败");
         }
     }
     if (js) (*e.env)->DeleteLocalRef(e.env, js);

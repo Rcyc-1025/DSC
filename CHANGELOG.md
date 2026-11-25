@@ -2,7 +2,93 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 / 0.1.1 / 0.1.2 的 Release 分别保留在 `v0.1.0`、`v0.1.1`、`v0.1.2`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.4` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+
+## [0.1.4] - 2026-11-26（安卓 API Key 写入修复 + 夜间可读性）
+
+> 本节同时是 GitHub Release `v0.1.4` 的发布说明。
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 7 节 Android 校验、第 7.1 节真机验证、第 9 节安装回执、第 13.4 节发布结果）。
+
+### 修复（安卓填 API Key 一直失败的三个原因，逐层修完）
+
+- **第一个根因：安全存储拿不到 Context**。0.1.3 及更早，`SecureStore.init(Context)` 从来没有被调用过，
+  `appContext()` 只能反射 `android.app.ActivityThread.currentApplication()`；Android 9 起的 hidden API 限制下
+  这个反射拿不到对象，`save()` 直接返回 false，界面上就是「写入系统安全存储失败（AndroidKeyStore 拒绝）」。
+  - `MainActivity.java` 的 `onCreate` 最前面加 `SecureStore.init(this)`；`SecureStore` 重写并新增 `lastError()`，
+    把失败原因从 Java 侧带出来，`credential_android.c` 用 `append_reason()` 拼进错误串。
+  - 修完 Context 之后错误文案变成 `加密并写入凭证失败: InvalidAlgorithmParameterE…`，暴露出第二个根因。
+- **第二个根因：AndroidKeyStore 的 AES 不允许调用方自带 IV**。这个 Provider 生成的密钥默认
+  `setRandomizedEncryptionRequired(true)`，此时 `cipher.init(ENCRYPT_MODE, key, new GCMParameterSpec(...))`
+  必然抛 `InvalidAlgorithmParameterException: Caller-provided IV not permitted`。
+  - 改为 `Cipher.getInstance(TRANSFORM)` → `cipher.init(Cipher.ENCRYPT_MODE, key())` → `cipher.getIV()`
+    （IV 长度断言 12 字节，不是 12 就抛 `IllegalStateException`）；解密仍用 `GCMParameterSpec(TAG_BITS, iv)`。
+    存储格式不变（`Base64(iv[12] || ct || tag)`），已存在的数据可以照常解密。
+- **第三个原因：失败反馈只有一行 toast**，看不到原因、也没法复制给开发者。
+  - 设置页「API Key」弹窗重写：对话框内常驻错误块（可选中复制）显示「保存失败：… / 原因：…」，
+    失败时不再关闭弹窗、已填内容保留；保存成功才刷新列表。
+  - 弹窗里新增常驻的「安全存储：可用（AES/GCM + AndroidKeyStore）」/「安全存储：不可用 —— 原因」自检行，
+    以后这类问题不用再靠 logcat 猜。
+
+### 变更（界面观感与夜间可读性）
+
+- **按钮 / 气泡 / 头像文字按对比度自动取色**：夜里主色按钮上的白字只有 2.93:1（`theme.c` 注释里写的 3.2:1 是错的），
+  现在 Android 用 `relLum()` / `textOn()`、桌面用 `color_lum()` / `text_on()`，在白与深色之间自动挑对比度高的那个
+  （夜间深字 7.17:1）。用户消息气泡、头像首字、主按钮、toast 全部走这套判定。
+- **桌面弹窗加遮罩**：`paint_overlay()` 开头用 `fill_scrim()`（1×1 32 位 DIB + `AlphaBlend` 平铺）铺一层底，
+  夜间压暗 150/255、日间 70/255，弹窗面板才真正浮起来；`build.ps1` 的 gui/guidiag 与 `tools/build_arm64.py` 都加了 `-lmsimg32`。
+- **桌面首启页与模式选择页限宽居中**：内容宽 680 / 700，不再在 1120 宽的窗口里贴左上角留一大片空白；
+  模式选择的两张卡片按钮改为铺满卡片内边距。
+- **安卓弹窗跟随主题**：夜间新增 `dlgCtx()`（`ContextThemeWrapper` + `Theme_Material_Dialog_Alert`），
+  全文件 52 处 `AlertDialog.Builder` 改为走它，深色界面里不再弹刺眼的白底对话框；日间路径不变。
+
+### 变更（版本与校验）
+
+- 版本号：`versionCode 8 → 9`、`versionName 0.1.3 → 0.1.4`（`AndroidManifest.xml` 与 `aapt2 link` 两处同改）；
+  Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.4。
+- `tools/verify_android.py` 新增第 24 项断言：`MainActivity` 启动时必须调用 `SecureStore.init(this)`（23 → 24 项）。
+  该脚本的结束文案不再写「未在真机/模拟器上运行，属未实测项」，改为如实报告断言数与真机验证状态。
+- 签名证书与 0.1.2 / 0.1.3 相同（`55e55bc6…`），**从 0.1.3 可以直接覆盖升级**。
+- 许可证、功能面、数据模型、schema 均无变化（仍是 Apache-2.0 / schema v5），0.1.3 的用户数据可直接沿用。
+
+### 真机验证（0.1.4，真我 GT8 Pro / RMX5200 / Android 17 / API 37）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 覆盖安装 0.1.4（adb install -r） | 成功，应用数据保留 |
+| 首启页「安全存储」自检行 | 显示「安全存储：可用（AES/GCM + AndroidKeyStore）」 |
+| 设置 → API Key → 填 `sk-test…` → 保存 | 成功：toast「凭证已写入系统安全存储」，列表变「已配置（系统安全存储）」，副标题「演示模式」消失，指南 1/9 |
+| 夜间配色（设置 → 页面配色 → 夜间） | 深色底浅色字，按钮/气泡/对话框文字可读；日间弹窗回归未受影响 |
+| 重装（adb uninstall + install） | 通过 OPPO 安装引导页后安装成功，首次启动流程正常 |
+
+### 复测（0.1.4 重建后全跑一遍）
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\test_core.exe` | 1014 通过 0 失败 |
+| `dsc-cli.exe verify . build\verify` | FR-01 ~ FR-36 全 PASS，719 断言 0 失败 |
+| `tools\shots.py` | 19 scene(s), 0 failed |
+| `tools\verify_android.py` | 24 项全部通过（新增 SecureStore.init 断言） |
+| `dsc-cli.exe bench` | 万条分页 5.67 ms/页（预算 300）、万条导出 23 ms（预算 2000）、常驻 11.9 MB（预算 240） |
+| `dsc-cli.exe perf JSON` | rss 9.07 MB、db 217088 B、wal 32768 B、storage 244 KB |
+| 安装包静默安装 | 落地 21 文件 + `install.log`（内容 `DSC Setup 0.1.4 / files=21`）；静默卸载后目录整体消失 |
+| 便携包 doctor | 五项通过，常驻内存 10.2 MB |
+| `tools\precommit_scan.py` | 0 问题 |
+
+### 产物（0.1.4）
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.4-win-x64-portable.zip` | 1709314 | `62781d92f637171d86133e70fce9cda4ad38eef4587e6367771b618c314c113d` |
+| `DSC-0.1.4-win-x64-setup.exe` | 4184638 | `464e75690275c090f8b263ed8370c09b45e23265f2a8bf30913e97ca90ca38a4` |
+| `DSC-0.1.4-win-arm64-portable.zip` | 975821 | `d1a73b4019b9cd398fd24254a9de8ffbdf866ee2a9cc64ec90fe64c36a12f08a` |
+| `DSC-0.1.4-android-arm64.apk` | 909774 | `c14ebc7f9f64ff14c514edf6faea44d43b6b5472ecacce335ea9b1dcc6dbc2b2` |
+
+每个包都附同名 `.sha256`。
+
+### 升级
+
+- Windows：解压便携包或覆盖安装 setup，用户数据（`%LOCALAPPDATA%\DSC`）不受影响。
+- Android：直接安装 0.1.4，覆盖 0.1.3 即可（签名未变）；从 0.1.1 及更早升级仍需先卸载。
 
 ## [0.1.3] - 2026-11-25（安卓 JNI 入口名称修复 + 首次真机验证）
 

@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节） |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节；0.1.4 起 versionCode 9 / 0.1.4、25 项，见第 9 节） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.3 起 versionCode 8 / 0.1.3，16KB 页对齐 + --no-undefined，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 0.1.3 起 24 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致断言）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.4 起 versionCode 9 / 0.1.4，16KB 页对齐 + --no-undefined，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.4 起 24 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致、SecureStore.init 注入断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
@@ -236,3 +236,65 @@ D:\Code\python312\python.exe tools\verify_android.py  # 0.1.3 起 24 项全部 P
    备份/导入导出、更新下载安装、蓝牙同步。
 6. **验收**：`verify_android.py` 24/24 PASS、`test_core` 1014 通过 0 失败、`verify` 36 条 FR 719 断言 0 失败、
    `shots.py` 19 场景 0 失败；APK `versionCode 8` / `versionName 0.1.3`，证书 SHA-256 `55e55bc6…`（与 0.1.2 相同，可覆盖升级）。
+## 9. 0.1.4 补记：安卓 API Key 写入失败的两个根因与夜间可读性（非需求变更）
+
+0.1.3 首次打通界面流程，但「保存 API Key」在真机上一直失败（用户反馈的 toast 为
+「写入系统安全存储失败（AndroidKeyStore 拒绝）」）。0.1.4 定位到两个**叠加**的根因，并顺带处理了
+用户同时提出的「界面美观、布局合理、背景色不影响文字阅读」。FR 条目与验收口径没有任何改动。
+
+### 9.1 根因一：SecureStore 从未拿到 Application Context
+
+`SecureStore.init(Context)` 定义在 `android/app/src/main/java/com/dsc/app/SecureStore.java`，
+但 `MainActivity` 从未调用它；`appContext()` 退化为反射 `android.app.ActivityThread.currentApplication()`，
+Android 9+ 的 hidden API 限制下拿不到实例 → `save()` 直接 `return false`，界面只看到「拒绝」。
+
+- 修复：`MainActivity.java` 的 `onCreate` 最前一行加 `SecureStore.init(this)`（注释写明 0.1.4 的原因）；
+- 防回归：`tools/verify_android.py` 新增第 24 项断言——主源码里必须出现 `SecureStore.init(this)`；
+- 可观测性：`SecureStore` 增加 `lastError()`，`credential_android.c` 增加 `append_reason()`，
+  把 Java 侧的失败原因拼进返回给界面的错误串。修完这一条再跑真机，错误串从「（AndroidKeyStore 拒绝）」
+  变成「加密并写入凭证失败: InvalidAlgorithmParameterE…」——**正是这条新信息暴露了根因二**。
+
+### 9.2 根因二：AndroidKeyStore 的 AES 密钥不允许调用方自带 IV
+
+`key()` 用 `KeyGenParameterSpec` 生成 AES 密钥时没有显式设置
+`setRandomizedEncryptionRequired(false)`，而该属性**默认为 true**。此时
+`cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv))`（调用方自带 IV）必然抛：
+
+~~~
+java.security.InvalidAlgorithmParameterException: Caller-provided IV not permitted
+~~~
+
+- 修复（`SecureStore.java` 的 `save()`）：加密**不再传 IV** ——
+  `Cipher cipher = Cipher.getInstance(TRANSFORM); cipher.init(Cipher.ENCRYPT_MODE, key()); byte[] iv = cipher.getIV();`，
+  并对 `iv.length == 12` 做断言（否则抛 `IllegalStateException`）；解密仍用 `GCMParameterSpec(TAG_BITS, iv)`；
+- 存储格式不变：`Base64(iv[12] || ct || tag)`，0.1.4 之前也从未成功写入过，不存在兼容包袱。
+
+真机复验（RMX5200 / Android 17 / API 37）：重装 0.1.4 的 APK → 设置页「API Key」弹窗显示
+「安全存储：可用（AES/GCM + AndroidKeyStore）」→ 输入测试 Key `sk-test-only` → 保存成功
+（toast「凭证已写入系统安全存储」，列表项变「已配置（系统安全存储）」，副标题的「演示模式」消失，操作指南 1/9）。
+**两个根因都已闭环。**
+
+### 9.3 界面观感与夜间可读性
+
+用户同轮要求「检查软件内所有界面与窗口，保证页面美观、布局合理、背景颜色不影响阅读」。
+
+| 问题 | 实测数据 | 处置 |
+| --- | --- | --- |
+| 夜间用户气泡是浅蓝底 + 白字 | 主色 `#6194C9` 上白字对比度 **2.93:1**（`theme.c` 注释里写的 3.2:1 是错的），深字 `#0B1220` 是 7.17:1 | `MainActivity` 新增 `relLum()` / `textOn()`，按背景亮度选白或深色，替换全部 `Color.WHITE` 写死处（按钮、气泡、头像首字） |
+| 夜间弹窗固定白底 | Activity 主题是 `Theme.Material.Light.NoActionBar`，弹窗不随主题 | 新增 `nightUi()` / `dlgCtx()`，全文件 52 处 `AlertDialog.Builder(this)` 改 `Builder(dlgCtx())`，夜间套 `Theme_Material_Dialog_Alert` |
+| 桌面弹窗背后不发暗、内容贴左边 | — | `dsc_app.c` 新增 `color_lum()` / `text_on()` / `fill_scrim()`（1×1 32 位 DIB + `AlphaBlend` 平铺；夜间 alpha 150、日间 70）；`paint_credential` 限宽 680、`paint_mode_select` 限宽 700 并居中 |
+| 保存失败只有一句 toast，看不到原因 | — | 设置页 API Key 弹窗内置常驻错误块（可选中复制）+ 安全存储自检行；失败不关窗、保留已填内容 |
+
+桌面侧新增 `-lmsimg32`（`AlphaBlend`）；x64 的 `build.ps1` 与 ARM64 的 `tools/build_arm64.py` 都要加，
+否则 ARM64 链接报 `undefined symbol: __declspec(dllimport) AlphaBlend`。
+
+### 9.4 版本与校验
+
+- 版本：`0.1.4`，`versionCode 9`（`AndroidManifest.xml`、`Diagnostics.java`、关于页、`dsc_app.c`、
+  `dsc_cli.c`、`dsc_setup.c`、`build_android.py`、`make_installer.py`、`package_win.py`、
+  `verify_android.py`、`sign_release.ps1` 全部同步）；
+- `tools/verify_android.py`：23 → **24 项**断言（0.1.3 的说明文档误记为 24 项，实际那一版是 23 项），结束文案不再写「未在真机上运行」（0.1.3 起已真机跑通）；
+- 回归：`test_core` 1014 通过 0 失败；`verify` FR-01~FR-36 全 PASS、719 断言 0 失败；
+  `shots.py` 19 场景 0 失败；`verify_android` 24 项全 PASS；`precommit_scan` 0 问题；
+- 证书 SHA-256 `55e55bc6…`（与 0.1.2 / 0.1.3 相同，可覆盖升级）。
+

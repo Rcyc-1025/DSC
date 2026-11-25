@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.view.ContextThemeWrapper;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -73,6 +74,7 @@ public class MainActivity extends Activity {
     /* 默认值与核心层深蓝色阶保持一致（FR-33）；readTheme() 会再用令牌覆盖一次。 */
     private int cPrimary = 0xFF103F7A;
     private int cAccent = 0xFF1F5FA8;
+    private int cDanger = 0xFFB3261E;
 
     private EditText input;
     private String enteredText = "";
@@ -138,7 +140,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        /* 0.1.1：先装崩溃记录器再碰界面——最早的失败也要留下证据。 */
+        /* 0.1.4：安全存储必须最先注入 Application Context。此前没人调 SecureStore.init，
+         * 只能靠反射 android.app.ActivityThread.currentApplication()，Android 9+ 的 hidden API 限制下
+         * 拿不到 Context，凭证保存一律返回 false → 真机上填 API Key 报「AndroidKeyStore 拒绝」。 */
+        SecureStore.init(this);
+        /* 0.1.1：再装崩溃记录器——最早的失败也要留下证据。 */
         Diagnostics.install(this);
         try {
             startUi(savedInstanceState);
@@ -218,7 +224,7 @@ public class MainActivity extends Activity {
     private void maybeShowLastCrash() {
         final String log = Diagnostics.read(this);
         if (log == null || log.length() == 0) return;
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("上次运行崩溃记录")
                 .setMessage(log.length() > 4000 ? log.substring(0, 4000) + "\n…（已截断）" : log)
                 .setPositiveButton("复制并发给开发者", new android.content.DialogInterface.OnClickListener() {
@@ -413,6 +419,7 @@ public class MainActivity extends Activity {
         cDivider = color(tokens, "divider", cDivider);
         cPrimary = color(tokens, "primary", cPrimary);
         cAccent = color(tokens, "accent", cAccent);
+        cDanger = color(tokens, "danger", cDanger);
     }
 
     private int color(JSONObject tokens, String key, int def) {
@@ -440,7 +447,7 @@ public class MainActivity extends Activity {
         header.setBackgroundColor(cBg);
         titleView.setTextColor(cText);
         subtitleView.setTextColor(cSub);
-        styleButton(headerAction, cPrimary, Color.WHITE);
+        styleButton(headerAction, cPrimary, textOn(cPrimary));
         nav.setBackgroundColor(cCard);
 
         /* 首启顺序（TDD §2.3 / §4.4 / FR-30）：没有凭证必须先配 API Key，
@@ -512,6 +519,40 @@ public class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    /* 0.1.4：夜间主色 #6194C9 是浅蓝，白字只有 2.93:1（低于 3:1 的门槛），
+     * 而深字 #0B1220 是 7.17:1。所以按钮文字色不能写死白色，得按底色亮度取舍。 */
+    private static double relLum(int color) {
+        double[] ch = { ((color >> 16) & 0xFF) / 255.0, ((color >> 8) & 0xFF) / 255.0,
+                (color & 0xFF) / 255.0 };
+        double[] w = { 0.2126, 0.7152, 0.0722 };
+        double sum = 0;
+        for (int i = 0; i < 3; i++) {
+            double c = ch[i];
+            sum += w[i] * (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+        }
+        return sum;
+    }
+
+    /** 底色上该用白字还是深字：取对比度更高的一侧。 */
+    private static int textOn(int bg) {
+        double l = relLum(bg);
+        double vsWhite = 1.05 / (l + 0.05);
+        double vsBlack = (l + 0.05) / 0.05;
+        return vsWhite >= vsBlack ? Color.WHITE : 0xFF0B1220;
+    }
+
+    /* 0.1.4：系统对话框默认跟着 Activity 主题（Material.Light）走，夜间也是白底白边框，
+     * 在深色界面里很刺眼。页面底色够暗时改用系统的深色对话框主题（文字、下划线、按钮色
+     * 都由它自己处理），白天保持原来的浅色弹窗。 */
+    private boolean nightUi() {
+        return relLum(cBg) < 0.2;
+    }
+
+    private Context dlgCtx() {
+        if (!nightUi()) return this;
+        return new ContextThemeWrapper(this, android.R.style.Theme_Material_Dialog_Alert);
     }
 
     private void styleButton(Button b, int bg, int fg) {
@@ -703,7 +744,7 @@ public class MainActivity extends Activity {
         send.setText(streaming ? "停止" : "发送");
         send.setAllCaps(false);
         send.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        styleButton(send, streaming ? cAccent : cPrimary, Color.WHITE);
+        styleButton(send, streaming ? cAccent : cPrimary, textOn(streaming ? cAccent : cPrimary));
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         sp.leftMargin = dp(8);
@@ -777,7 +818,7 @@ public class MainActivity extends Activity {
         if (m.optBoolean("edited", false)) text = text + "（已修改）";
         tv.setText(text);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        tv.setTextColor(mine ? Color.WHITE : cText);
+        tv.setTextColor(mine ? textOn(cPrimary) : cText);
         tv.setPadding(dp(12), dp(9), dp(12), dp(9));
         GradientDrawable d = new GradientDrawable();
         d.setColor(mine ? cPrimary : cCard);
@@ -822,7 +863,7 @@ public class MainActivity extends Activity {
             acts.add("重新生成");
         }
         final String[] items = acts.toArray(new String[acts.size()]);
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("消息操作")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -904,7 +945,7 @@ public class MainActivity extends Activity {
         final EditText e = new EditText(this);
         e.setMinLines(3);
         e.setText(findContent(id));
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(ai ? "修改 AI 发言（会同步更改 AI 记忆）" : "修改消息")
                 .setMessage(ai ? "保存后本条发言重新抽取记忆：旧记忆条目整批删除、重新抽取，不接受的部分请直接改写这句话。"
                         : "原内容会保留一次，之后可以在消息上撤销这次修改。")
@@ -978,7 +1019,7 @@ public class MainActivity extends Activity {
                     + (sum.isEmpty() ? "" : " · " + sum));
             actions.add("group:" + gi);
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("内置知识库 · v" + optStr(kb, "version", ""))
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1013,7 +1054,7 @@ public class MainActivity extends Activity {
             toast("这里还没有条目");
             return;
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(title + "（" + refs.size() + " 篇）")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1038,7 +1079,7 @@ public class MainActivity extends Activity {
             refs.add(optStr(a, "id", ""));
             labels.add((a.optBoolean("bookmarked", false) ? "★ " : "") + optStr(a, "title", ""));
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(optStr(g, "title", "章节"))
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1119,7 +1160,7 @@ public class MainActivity extends Activity {
                 if (s != null) sb.append("  ").append(optStr(s, "line", "")).append("\n");
             }
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(optStr(ar, "title", "知识条目"))
                 .setMessage(sb.toString())
                 .setPositiveButton("引用这一段", new android.content.DialogInterface.OnClickListener() {
@@ -1167,7 +1208,7 @@ public class MainActivity extends Activity {
             String p = paras.optString(i, "");
             labels.add("第 " + (i + 1) + " 段：" + (p.length() > 40 ? p.substring(0, 40) + "…" : p));
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("引用哪一段")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1193,7 +1234,7 @@ public class MainActivity extends Activity {
     private void kbSearchDialog() {
         final EditText e = new EditText(this);
         e.setHint("例如：上下文 / token / 记忆");
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("检索内置知识库")
                 .setView(e)
                 .setPositiveButton("检索", new android.content.DialogInterface.OnClickListener() {
@@ -1241,7 +1282,7 @@ public class MainActivity extends Activity {
             refs.add(optStr(h, "id", ""));
             labels.add(optStr(h, "title", "") + " · " + optStr(h, "summary", ""));
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("「" + q + "」命中 " + refs.size() + " 篇")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1296,7 +1337,7 @@ public class MainActivity extends Activity {
                     + "（" + optStr(it, "time", "") + (it.optBoolean("ack", false) ? "" : " · 未查看") + "）");
             items.add(it);
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("错误中心 · " + r.optInt("unread", 0) + " 条未查看 / 共 " + r.optInt("total", 0) + " 条")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -1332,7 +1373,7 @@ public class MainActivity extends Activity {
         sb.append("描述：").append(optStr(it, "message", "")).append("\n");
         if (!optStr(it, "detail", "").isEmpty()) sb.append("原始响应：已脱敏存于 errors/ 目录，可用诊断包带走\n");
         int action = it.optInt("action", 0);
-        final AlertDialog.Builder b = new AlertDialog.Builder(this)
+        final AlertDialog.Builder b = new AlertDialog.Builder(dlgCtx())
                 .setTitle("错误详情")
                 .setMessage(sb.toString())
                 .setNegativeButton("关闭", null);
@@ -1415,7 +1456,7 @@ public class MainActivity extends Activity {
         b.setText("授予并进入");
         b.setAllCaps(false);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        styleButton(b, cPrimary, Color.WHITE);
+        styleButton(b, cPrimary, textOn(cPrimary));
         b.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1467,7 +1508,7 @@ public class MainActivity extends Activity {
         kinds.add("pick:files");
         labels.add("选择已安装软件…（只列选中的那几条）");
         kinds.add("pick:apps");
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("设备权限")
                 .setMessage("申请前先展示用途；拒绝不影响主对话。原始图片、原始文件、完整软件清单都不上传，注入前脱敏。")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
@@ -1492,7 +1533,7 @@ public class MainActivity extends Activity {
         JSONObject r = Native.req("capRequest", extra);
         String purpose = optStr(r, "purpose", "");
         boolean required = "time".equals(kind);
-        AlertDialog.Builder b = new AlertDialog.Builder(this)
+        AlertDialog.Builder b = new AlertDialog.Builder(dlgCtx())
                 .setTitle(optStr(r, "name", "设备能力"))
                 .setMessage(purpose.isEmpty() ? "这项能力用来把设备上的少量信息转成文本，参与本次对话。" : purpose)
                 .setNegativeButton("取消", null);
@@ -1535,7 +1576,7 @@ public class MainActivity extends Activity {
         }
         JSONObject r = Native.req("capRequest", extra);
         String purpose = optStr(r, "purpose", "");
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("授予「" + optStr(r, "name", "时间") + "」")
                 .setMessage(purpose.isEmpty() ? "用来把本机当前时间转成一句简短文本。" : purpose)
                 .setPositiveButton("允许", new android.content.DialogInterface.OnClickListener() {
@@ -1593,7 +1634,7 @@ public class MainActivity extends Activity {
             if (name.isEmpty()) continue;
             labels.add(name);
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("选一条作为「已安装软件」")
                 .setMessage("只把选中的这一条注入对话，不上传完整软件清单。")
                 .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
@@ -1832,7 +1873,7 @@ public class MainActivity extends Activity {
             avatar.setText(shown);
             avatar.setGravity(Gravity.CENTER);
             avatar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-            avatar.setTextColor(Color.WHITE);
+            avatar.setTextColor(textOn(cPrimary));
             GradientDrawable d = new GradientDrawable();
             d.setShape(GradientDrawable.OVAL);
             d.setColor(cPrimary);
@@ -1873,7 +1914,7 @@ public class MainActivity extends Activity {
         Button edit = new Button(this);
         edit.setText("编辑资料");
         edit.setAllCaps(false);
-        styleButton(edit, cPrimary, Color.WHITE);
+        styleButton(edit, cPrimary, textOn(cPrimary));
         edit.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2089,7 +2130,7 @@ public class MainActivity extends Activity {
             sb.append("\n同标识的插件已安装，确认后会覆盖旧记录。\n");
         }
         sb.append('\n').append(optStr(r, "procNote", "Android 上仅可管理清单，扩展点运行需桌面端"));
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(exists ? "覆盖安装插件？" : "安装插件？")
                 .setMessage(sb.toString())
                 .setPositiveButton("确认安装", new android.content.DialogInterface.OnClickListener() {
@@ -2182,7 +2223,7 @@ public class MainActivity extends Activity {
         final EditText birthday = field(form, "生日（YYYY-MM-DD）", p == null ? "" : optStr(p, "birthday", ""));
         final EditText occ = field(form, "职业（最长 60 字符）", p == null ? "" : optStr(p, "occupation", ""));
         final EditText note = field(form, "补充说明（最长 500 字符）", p == null ? "" : optStr(p, "extraNote", ""));
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("编辑资料")
                 .setView(form)
                 .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
@@ -2396,12 +2437,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "DSC 0.1.3", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.4", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                new AlertDialog.Builder(MainActivity.this)
+                new AlertDialog.Builder(dlgCtx())
                         .setTitle("关于 DSC")
-                        .setMessage("DSC 0.1.3\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setMessage("DSC 0.1.4\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")
@@ -2436,7 +2477,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmExit() {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("退出 DSC？")
                 .setMessage("会话记录保存在本地，不会丢失。")
                 .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
@@ -2482,27 +2523,73 @@ public class MainActivity extends Activity {
         save.setText("保存并继续");
         save.setAllCaps(false);
         save.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        styleButton(save, cPrimary, Color.WHITE);
+        styleButton(save, cPrimary, textOn(cPrimary));
         save.setPadding(0, dp(12), 0, dp(12));
+        /* 0.1.4：失败原因必须留在页面上，不能被一个两秒的 toast 带走——用户要能复制、能截图。 */
+        final TextView errv = new TextView(this);
+        errv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        errv.setTextColor(cDanger);
+        errv.setTextIsSelectable(true);
+        errv.setPadding(0, dp(12), 0, 0);
+        errv.setVisibility(View.GONE);
+
         save.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                String key = e.getText().toString().trim();
+                if (key.isEmpty()) {
+                    errv.setText("请先填写 API Key（以 sk- 开头）。");
+                    errv.setVisibility(View.VISIBLE);
+                    return;
+                }
                 JSONObject extra = new JSONObject();
                 try {
-                    extra.put("key", e.getText().toString().trim());
+                    extra.put("key", key);
                 } catch (Exception ignored) {
                 }
                 JSONObject r = Native.req("saveCredential", extra);
-                e.setText("");
-                toast(opt(r, "ok") ? optStr(r, "note", "凭证已写入系统安全存储，接下来选择默认模式")
-                        : optStr(r, "err", "保存失败"));
-                refresh();
+                if (opt(r, "ok")) {
+                    e.setText("");
+                    errv.setVisibility(View.GONE);
+                    toast(optStr(r, "note", "凭证已写入系统安全存储，接下来选择默认模式"));
+                    refresh();
+                } else {
+                    /* 保留已填内容，让用户能直接重试；错误块常驻页面，可长按复制。 */
+                    errv.setText("保存失败：" + optStr(r, "err", "未知原因")
+                            + "\n\n如果反复失败，请把这段文字连同手机型号反馈给开发者。");
+                    errv.setVisibility(View.VISIBLE);
+                    toast("保存失败，原因已显示在下方");
+                }
             }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(18);
         col.addView(save, lp);
+        col.addView(errv);
+
+        /* 安全存储自检：Java 侧直接问一次，把「可用/不可用 + 原因」摆在页面上，
+         * 省得用户填完 Key 才在 toast 里看到一句看不懂的拒绝。 */
+        TextView storeState = new TextView(this);
+        storeState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        String why = SecureStore.lastError();
+        boolean okStore;
+        try {
+            okStore = SecureStore.available();
+            why = SecureStore.lastError();
+        } catch (Throwable t) {
+            okStore = false;
+            why = Diagnostics.describe(t);
+        }
+        if (okStore) {
+            storeState.setText("安全存储：可用（AES/GCM + AndroidKeyStore）");
+            storeState.setTextColor(cSub);
+        } else {
+            storeState.setText("安全存储：不可用 —— " + (why == null || why.isEmpty() ? "原因未知" : why));
+            storeState.setTextColor(cDanger);
+        }
+        storeState.setPadding(0, dp(10), 0, 0);
+        col.addView(storeState);
 
         Button demo = new Button(this);
         demo.setText("演示模式（不写凭证、不发网络请求）");
@@ -2561,7 +2648,7 @@ public class MainActivity extends Activity {
         chat.setAllCaps(false);
         chat.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         chat.setPadding(0, dp(20), 0, dp(20));
-        styleButton(chat, cPrimary, Color.WHITE);
+        styleButton(chat, cPrimary, textOn(cPrimary));
         chat.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2828,7 +2915,7 @@ public class MainActivity extends Activity {
 
         ScrollView sv = new ScrollView(this);
         sv.addView(col);
-        pairDialog = new AlertDialog.Builder(this)
+        pairDialog = new AlertDialog.Builder(dlgCtx())
                 .setTitle("配对与同步")
                 .setView(sv)
                 .setNegativeButton("关闭", null)
@@ -2966,7 +3053,7 @@ public class MainActivity extends Activity {
             JSONObject d = list.optJSONObject(i);
             labels[i] = optStr(d, "name", "设备") + " · " + optStr(d, "addr", "?");
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("已配对的蓝牙设备")
                 .setItems(labels, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3031,7 +3118,7 @@ public class MainActivity extends Activity {
                             labels[i] = optStr(p, "name", "对端") + " · " + optStr(p, "addr", "?")
                                     + ":" + p.optInt("port", 45871);
                         }
-                        new AlertDialog.Builder(MainActivity.this)
+                        new AlertDialog.Builder(dlgCtx())
                                 .setTitle("发现 " + peers.length() + " 台设备")
                                 .setItems(labels, new android.content.DialogInterface.OnClickListener() {
                                     @Override
@@ -3053,7 +3140,7 @@ public class MainActivity extends Activity {
         final EditText e = new EditText(this);
         e.setHint("192.168.1.20:45871");
         e.setInputType(InputType.TYPE_CLASS_TEXT);
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("直连地址")
                 .setMessage("填对端配对页上显示的「本机地址」（同一局域网）。")
                 .setView(e)
@@ -3158,7 +3245,7 @@ public class MainActivity extends Activity {
             }
             b.append("\n规则：按逻辑时钟取大者，相等时比设备标识字典序；落败方内容作为副本保留，不直接丢。");
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("同步冲突（最多列最近 100 条）")
                 .setMessage(b.toString())
                 .setPositiveButton("好", null)
@@ -3166,7 +3253,7 @@ public class MainActivity extends Activity {
     }
 
     private void pairUnpairConfirm() {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("解除配对？")
                 .setMessage("解除后断开链路并停止实时同步；两端本地数据都保留，重新配对可以继续。")
                 .setPositiveButton("解除", new android.content.DialogInterface.OnClickListener() {
@@ -3214,7 +3301,7 @@ public class MainActivity extends Activity {
                 + "四、插件与更新\n"
                 + "· 插件清单在安装时校验，覆盖安装需要二次确认。\n"
                 + "· 更新只检查清单并提示，安装包由你确认后才下载执行。";
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("进阶指南")
                 .setMessage(text)
                 .setPositiveButton("好", null)
@@ -3232,7 +3319,7 @@ public class MainActivity extends Activity {
                 per == null ? "" : optStr(per, "prompt", ""));
         prompt.setMinLines(4);
         prompt.setMaxLines(10);
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("AI 信息与人设（当前版本 v" + (per == null ? 1 : per.optInt("version", 1)) + "）")
                 .setView(form)
                 .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
@@ -3279,7 +3366,7 @@ public class MainActivity extends Activity {
             boolean cur = v != null && v.optBoolean("current", false);
             items[i] = "v" + vers[i] + (cur ? "（当前）" : "") + (at.length() == 0 ? "" : " · " + at);
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("人设历史版本")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3296,7 +3383,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmRollback(final String versionId, final int version) {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("回退到 v" + version + "？")
                 .setMessage("会用该版本内容生成一个新版本；当前版本仍留在历史里，可再回退。")
                 .setPositiveButton("回退", new android.content.DialogInterface.OnClickListener() {
@@ -3322,7 +3409,7 @@ public class MainActivity extends Activity {
     private void chooseTheme() {
         final String[] items = new String[]{"日光", "夜间", "跟随系统"};
         final String[] vals = new String[]{"day", "night", "system"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("页面配色")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3353,7 +3440,7 @@ public class MainActivity extends Activity {
             ids[i] = optStr(m, "id", "");
             labels[i] = optStr(m, "name", ids[i]) + " — " + optStr(m, "summary", "");
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("选择模型")
                 .setItems(labels, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3372,33 +3459,80 @@ public class MainActivity extends Activity {
     }
 
     private void editKey() {
+        /* 0.1.4：保存失败不再只弹一闪而过的 toast —— 弹窗内留常驻错误文本，
+         * 用户可以长按选中把原因复制走；失败时弹窗不关闭、已填内容保留。 */
+        final TextView errv = new TextView(this);
+        errv.setVisibility(android.view.View.GONE);
+        errv.setTextColor(cDanger);
+        errv.setTextSize(13f);
+        errv.setPadding(0, dp(8), 0, 0);
+        errv.setTextIsSelectable(true);
+
+        final TextView store = new TextView(this);
+        store.setTextSize(12f);
+        store.setTextColor(cSub);
+        store.setPadding(0, dp(6), 0, 0);
+        store.setText(SecureStore.available()
+                ? "安全存储：可用（AES/GCM + AndroidKeyStore）"
+                : ("安全存储：不可用 —— " + SecureStore.lastError()));
+        store.setTextIsSelectable(true);
+
         final EditText e = new EditText(this);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         e.setHint("sk-…");
-        new AlertDialog.Builder(this)
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(e);
+        box.addView(store);
+        box.addView(errv);
+
+        final AlertDialog dlg = new AlertDialog.Builder(dlgCtx())
                 .setTitle("DeepSeek API Key")
                 .setMessage("Key 写入系统安全存储（界面与日志不出现明文，导出包与备份包都不含凭证）。")
-                .setView(e)
-                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        JSONObject extra = new JSONObject();
-                        try {
-                            extra.put("key", e.getText().toString().trim());
-                        } catch (Exception ignored) {
-                        }
-                        JSONObject r = Native.req("saveCredential", extra);
-                        if (opt(r, "ok")) {
-                            markGuide("api_key");
-                            toast("凭证已写入系统安全存储");
-                        } else {
-                            toast(optStr(r, "err", "保存失败"));
-                        }
-                        refresh();
-                    }
-                })
+                .setView(box)
+                .setPositiveButton("保存", null)
                 .setNegativeButton("取消", null)
-                .show();
+                .create();
+        dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+            @Override
+            public void onShow(android.content.DialogInterface d) {
+                /* 自己接管「保存」：失败时不关窗，把原因留在弹窗里。 */
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(
+                        new android.view.View.OnClickListener() {
+                            @Override
+                            public void onClick(android.view.View v) {
+                                String key = e.getText().toString().trim();
+                                if (key.isEmpty()) {
+                                    errv.setVisibility(android.view.View.VISIBLE);
+                                    errv.setText("请先填写 Key。");
+                                    return;
+                                }
+                                JSONObject extra = new JSONObject();
+                                try {
+                                    extra.put("key", key);
+                                } catch (Exception ignored) {
+                                }
+                                JSONObject r = Native.req("saveCredential", extra);
+                                if (opt(r, "ok")) {
+                                    markGuide("api_key");
+                                    dlg.dismiss();
+                                    toast("凭证已写入系统安全存储");
+                                    refresh();
+                                } else {
+                                    String err = optStr(r, "err", "保存失败");
+                                    String why = SecureStore.lastError();
+                                    errv.setVisibility(android.view.View.VISIBLE);
+                                    errv.setText("保存失败：" + err
+                                            + (why == null || why.isEmpty() ? "" : "\n原因：" + why)
+                                            + "\n\n如果反复失败，请把这段文字连同手机型号反馈给开发者。");
+                                }
+                            }
+                        });
+            }
+        });
+        dlg.show();
     }
 
     private void showUsage() {
@@ -3449,7 +3583,7 @@ public class MainActivity extends Activity {
             pushed = Notifier.post(this, Notifier.ID_BALANCE, "余额偏低",
                     "账户可用余额 " + optStr(bal, "available", "?") + "，已低于设置里的提醒阈值");
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(queried ? "余额与用量（已向账户接口查询）" : "余额与用量")
                 .setMessage(text.toString() + (pushed ? "\n\n已发送系统通知。" : ""))
                 .setPositiveButton("好", null)
@@ -3487,7 +3621,7 @@ public class MainActivity extends Activity {
     /** 导出三步：格式 → 范围（技术设计 8.1）→ JSON 再问是否附带头像。 */
     private void chooseExport() {
         final String[] items = new String[]{"JSON（可再导入）", "Markdown（只读）", "纯文本（只读）"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("记录导出")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3501,7 +3635,7 @@ public class MainActivity extends Activity {
     private void chooseExportRange(final int fmt) {
         final String[] items = new String[]{"当前会话", "全部会话", "最近 7 天"};
         final String[] ranges = new String[]{"current", "all", "days7"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("导出范围")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3519,7 +3653,7 @@ public class MainActivity extends Activity {
 
     private void askExportAvatars(final String range) {
         final String[] items = new String[]{"不带头像（体积小）", "带头像（base64 内嵌）"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("是否附带头像")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3595,7 +3729,7 @@ public class MainActivity extends Activity {
 
     /** 应用私有目录外部读不到，导完统一给一个「分享」出口（走 FileProvider）。 */
     private void askShare(String title, final File file) {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(title)
                 .setMessage(file.getAbsolutePath())
                 .setPositiveButton("分享 / 发送", new android.content.DialogInterface.OnClickListener() {
@@ -3633,7 +3767,7 @@ public class MainActivity extends Activity {
     }
 
     private void doImport() {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("记录导入")
                 .setMessage("选一个 DSC 导出的 JSON 记录文件。先校验格式，再按冲突策略在一个事务里写入；失败整体回滚。")
                 .setPositiveButton("选文件", new android.content.DialogInterface.OnClickListener() {
@@ -3649,7 +3783,7 @@ public class MainActivity extends Activity {
     /** 选完文件后问冲突策略，再在工作线程里导入。 */
     private void askImportPolicy(final String path) {
         final String[] policies = new String[]{"按 id 去重", "覆盖同名", "保留双方"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("冲突策略")
                 .setItems(policies, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3717,7 +3851,7 @@ public class MainActivity extends Activity {
                         }
                         labels.add("＋ 安装插件（选 zip）");
                         labels.add("▶ 调用扩展点面板 ui.panel");
-                        new AlertDialog.Builder(MainActivity.this)
+                        new AlertDialog.Builder(dlgCtx())
                                 .setTitle("插件")
                                 .setMessage(optStr(r, "procNote", "插件在独立进程里运行"))
                                 .setItems(labels.toArray(new String[labels.size()]),
@@ -3801,7 +3935,7 @@ public class MainActivity extends Activity {
                         } else {
                             sb.append("\n没有插件声明该扩展点时 count 为 0，界面不显示空面板。");
                         }
-                        new AlertDialog.Builder(MainActivity.this)
+                        new AlertDialog.Builder(dlgCtx())
                                 .setTitle("扩展点面板")
                                 .setMessage(sb.toString())
                                 .setPositiveButton("好", null)
@@ -3815,7 +3949,7 @@ public class MainActivity extends Activity {
     /** 单个插件的启用 / 停用 / 卸载。 */
     private void pluginActions(final String id) {
         final String[] acts = new String[]{"启用", "停用", "卸载"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(id)
                 .setItems(acts, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -3882,7 +4016,7 @@ public class MainActivity extends Activity {
         Button check = new Button(this);
         check.setText("保存地址并检查更新");
         check.setAllCaps(false);
-        styleButton(check, cPrimary, Color.WHITE);
+        styleButton(check, cPrimary, textOn(cPrimary));
         box.addView(check);
 
         Button dl = new Button(this);
@@ -3897,7 +4031,7 @@ public class MainActivity extends Activity {
         styleButton(ins, cCard, cText);
         box.addView(ins);
 
-        final AlertDialog dlg = new AlertDialog.Builder(this)
+        final AlertDialog dlg = new AlertDialog.Builder(dlgCtx())
                 .setTitle("更新设置")
                 .setView(box)
                 .setNegativeButton("关闭", null)
@@ -3965,7 +4099,7 @@ public class MainActivity extends Activity {
                 } else {
                     msg = "清单无效：" + optStr(r, "err", optStr(r, "status", "未知原因"));
                 }
-                new AlertDialog.Builder(MainActivity.this)
+                new AlertDialog.Builder(dlgCtx())
                         .setTitle("检查结果")
                         .setMessage(msg)
                         .setPositiveButton("好", null)
@@ -4009,7 +4143,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (!opt(st, "hasBackup")) {
-            new AlertDialog.Builder(this)
+            new AlertDialog.Builder(dlgCtx())
                     .setTitle("需要先备份")
                     .setMessage("核心层要求更新前有可用的备份。现在做一次备份？")
                     .setPositiveButton("立即备份", new android.content.DialogInterface.OnClickListener() {
@@ -4041,7 +4175,7 @@ public class MainActivity extends Activity {
                         .append("\n    ").append(optStr(s, "goal", "")).append("\n");
             }
         }
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("新手指南（" + (guide == null ? 9 : guide.optInt("count", 9)) + " 步）")
                 .setMessage(sb.toString())
                 .setPositiveButton("关闭", null)
@@ -4059,7 +4193,7 @@ public class MainActivity extends Activity {
     /** 数据管理：备份 / 列表 / 恢复 / 清理。zip 打包解包是纯 C 实现，但仍放工作线程跑。 */
     private void showData() {
         final String[] items = new String[]{"立即备份", "查看备份列表", "从备份恢复", "清理旧备份（保留 5 份）"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("数据管理")
                 .setMessage("数据库：db/dsc.db\n备份目录：backups/\n导出目录：exports/\n\n备份包内含数据库、头像与插件清单，可整体恢复。")
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
@@ -4132,7 +4266,7 @@ public class MainActivity extends Activity {
                                     + " · " + optStr(it, "createdAt", "").replace("T", " ").replace("Z", "")
                                     + (it != null && it.optBoolean("readable", true) ? "" : "（无法读取）");
                         }
-                        new AlertDialog.Builder(MainActivity.this)
+                        new AlertDialog.Builder(dlgCtx())
                                 .setTitle("备份列表（点一项可恢复）")
                                 .setItems(labels, new android.content.DialogInterface.OnClickListener() {
                                     @Override
@@ -4149,7 +4283,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmRestore(final String zip) {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("从备份恢复")
                 .setMessage("恢复会关闭当前数据库连接、替换 db / avatars / plugins，然后重新初始化。\n当前未备份的改动会丢失，确定继续？")
                 .setPositiveButton("恢复", new android.content.DialogInterface.OnClickListener() {
@@ -4229,7 +4363,7 @@ public class MainActivity extends Activity {
         Button add = new Button(this);
         add.setText("新建会话");
         add.setAllCaps(false);
-        styleButton(add, cPrimary, Color.WHITE);
+        styleButton(add, cPrimary, textOn(cPrimary));
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -4295,7 +4429,7 @@ public class MainActivity extends Activity {
 
     private void threadMenu(final String id, final String title) {
         final String[] items = new String[]{"重命名会话", "删除会话"};
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle(title)
                 .setItems(items, new android.content.DialogInterface.OnClickListener() {
                     @Override
@@ -4316,7 +4450,7 @@ public class MainActivity extends Activity {
         final EditText e = new EditText(this);
         e.setText(current);
         e.setSelection(e.getText().length());
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(dlgCtx())
                 .setTitle("重命名会话")
                 .setView(e)
                 .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
