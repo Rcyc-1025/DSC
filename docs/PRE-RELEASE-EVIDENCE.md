@@ -568,12 +568,12 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
 
 - 触发原因：用户报「安卓端切换到问答模式后无法再次切换为聊天模式」（详见 §7.5 与 `docs/TDD-TRACE-0.1.0.md` 第 10 节）。
   同一轮确认三件事：问答模式保留底部导航（「聊天」格改「会话」）、一并修模式切换的持久化、打 0.1.5 发 Release 并保留旧版本。
-- 发布对象：提交 `__COMMIT__`（`fix(android): 修复问答模式切不回聊天模式的死锁，模式切换持久化，发布 0.1.5`），
-  标签 `v0.1.5`（附注标签，指向 `__COMMIT__`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.5>，
+- 发布对象：提交 `2b1e5ad`（`fix(android): 修复问答模式切不回聊天模式的死锁，模式切换持久化，发布 0.1.5`），
+  标签 `v0.1.5`（附注标签，指向 `2b1e5ad`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.5>，
   标题「DSC 0.1.5 - 安卓问答模式切换修复 + 模式持久化」，非草稿、非预发布、标记为 **Latest**；
   正文取自 `docs/RELEASE-NOTES-0.1.5.md`（按发布口径不含未实测清单）。
-- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.5-win-x64-portable.zip`（1710005）、`DSC-0.1.5-win-x64-setup.exe`（4186002）、
-  `DSC-0.1.5-win-arm64-portable.zip`（976124）、`DSC-0.1.5-android-arm64.apk`（913870）与各自 `.sha256`。
-- 回读校验：`gh release download v0.1.5` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（__READBACK__）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.5-win-x64-portable.zip`（1713998）、`DSC-0.1.5-win-x64-setup.exe`（4198303）、
+  `DSC-0.1.5-win-arm64-portable.zip`（980117）、`DSC-0.1.5-android-arm64.apk`（913870）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.5` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（**4/4 MATCH**：`14d20740…` / `87a14be5…` / `76347bec…` / `cb349923…`）。
 - `v0.1.0` ~ `v0.1.4` 的标签与 Release **都保留未动**（Release 列表里 0.1.5 / 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 六条并存）。
 - 升级提示：0.1.5 的 Android 证书与 0.1.2 ~ 0.1.4 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
