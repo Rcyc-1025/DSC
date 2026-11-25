@@ -470,3 +470,20 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
 - `v0.1.0`、`v0.1.1` 的标签与 Release **都保留未动**（Release 列表里 0.1.2 / 0.1.1 / 0.1.0 三条并存）。
 - 升级提示：0.1.2 的 Android 签名证书与 0.1.1 不同（旧 keystore 已随构建目录被清掉），**必须先卸载 0.1.1 再安装**；
   从 0.1.2 起密钥固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，后续版本可覆盖升级。
+
+### 13.3 v0.1.3 发布（2026-11-25）
+
+- 触发原因：0.1.2 能启动了，但界面显示「原生库 已加载」+「核心层调用失败：No implementation found for
+  java.lang.String com.dsc.app.Native.callNative(java.lang.String)」——0.1.1 改 Java 侧 native 方法名时没同步改
+  `dsc_jni.c` 的导出符号（详见 §7、§7.1 与 `docs/TDD-TRACE-0.1.0.md` 第 8 节）。
+- 发布对象：提交 `8c6639c`（`fix(android): 修正 JNI 导出符号名，修复核心层调用全部失败，发布 0.1.3`），
+  标签 `v0.1.3`（附注标签，指向 `8c6639c`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.3>，
+  标题「DSC 0.1.3 - 安卓核心层调用修复 + 真机验证通过」，非草稿、非预发布、标记为 **Latest**；
+  正文取自 `docs/RELEASE-NOTES-0.1.3.md`（按发布口径不含未实测清单）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.3-win-x64-portable.zip`（1697501）、`DSC-0.1.3-win-x64-setup.exe`（4152408）、
+  `DSC-0.1.3-win-arm64-portable.zip`（963945）、`DSC-0.1.3-android-arm64.apk`（909774）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.3` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
+- 发布过程小插曲：第一次 `gh release create` 被 GitHub 返回 `HTTP 504 Gateway Timeout`，Release 并未真正建立；
+  原样重跑同一条命令即成功（资产 8 个一次传完）。遇到 504 先 `gh release view` 确认是否已存在，再决定重跑还是 `gh release upload` 补件。
+- `v0.1.0`、`v0.1.1`、`v0.1.2` 的标签与 Release **都保留未动**（Release 列表里 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 四条并存）。
+- 升级提示：0.1.3 的 Android 证书与 0.1.2 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
