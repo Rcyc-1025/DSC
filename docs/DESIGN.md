@@ -1,6 +1,6 @@
 # DSC 技术设计（实现说明）
 
-> 本文件说明 "DSC" 0.1.4 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.5 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -284,6 +284,13 @@ dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）�
 - **夜间配色必须按对比度取前景色，不能写死白字**：主色 `#6194C9` 配白字只有 2.93:1（低于 4.5:1 的可读线），
   配深色字是 7.17:1。Android 侧 `relLum()` / `textOn()`、桌面侧 `color_lum()` / `text_on()` 都是按背景亮度二选一；
   新增配色改动时不要绕过它们直接写 `Color.WHITE` / `RGB(255,255,255)`。
+- **两种聊天模式的切换入口必须永远可达，且切换要落库（0.1.5 的实际故障）**：
+  改版式的底线是「任何一个模式都能回到另一个模式」。0.1.5 之前的死锁是问答模式把整条底部导航
+  `View.GONE` 掉，而设置页「模式」行是唯一切换入口——底栏一没就进不去设置，问答会话列表又没有设置入口。
+  因此：**主界面一律保留底栏**（问答模式三格为「我 / 设置 / 会话」，由路由状态 `DSC_ST_QA_TAB` 承载），
+  `dsc_router_set_tab()` 必须对两种模式都给次级栏留通路，`dsc_router_back()` 从 `QA_TAB` 退回会话列表；
+  `dsc_router_switch_mode()` 必须写 `ui.default_mode`，否则重启按旧值回滚（用户视角是「切了没生效」）。
+  `tools/verify_android.py` 有断言禁止 `nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)` 回潮。
 - **签名密钥必须放在仓库与构建目录之外**：keystore 固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
   `tools/build_android.py` 缺了才生成。密钥若跟着 `build_android\` 被清理脚本删掉，下一版就会换证书，
   用户无法覆盖升级（0.1.1 → 0.1.2 就发生了这件事，只能先卸载）。发布方的正式签名另有 `tools/sign_android.py`。

@@ -49,7 +49,7 @@ if ($Files.Count -eq 0) {
         (Join-Path $root 'build\DSC.exe'),
         (Join-Path $root 'build\dsc-cli.exe'),
         (Join-Path $root 'build\dsc_plugin_host.exe'),
-        (Join-Path $root 'dist\DSC-0.1.4-win-x64-setup.exe')
+        (Join-Path $root 'dist\DSC-0.1.5-win-x64-setup.exe')
     ) | Where-Object { Test-Path $_ }
 }
 if ($Files.Count -eq 0) {

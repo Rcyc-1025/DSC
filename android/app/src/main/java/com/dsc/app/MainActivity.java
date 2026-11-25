@@ -477,26 +477,42 @@ public class MainActivity extends Activity {
         }
         header.setVisibility(View.VISIBLE);
 
+        boolean qa = qaMode();
         int tab = st.optInt("tab", TAB_CHAT);
-        styleNav(navMe, tab == TAB_ME);
-        styleNav(navSettings, tab == TAB_SETTINGS);
-        styleNav(navChat, tab == TAB_CHAT);
-        nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE);
+        /* 问答模式没有「聊天」栏，底栏第三格是会话列表（0.1.5）。 */
+        navChat.setText(qa ? "会话" : "聊天");
+        int activeTab = (qa && !"QA_TAB".equals(rs)) ? TAB_CHAT : tab;
+        styleNav(navMe, activeTab == TAB_ME);
+        styleNav(navSettings, activeTab == TAB_SETTINGS);
+        styleNav(navChat, activeTab == TAB_CHAT);
+        /* 0.1.5：主界面一律保留底部导航。原先问答模式把整条底栏隐藏，设置页于是不可达，
+         * 而「模式」开关只在设置页，切进问答之后就再也切不回聊天模式。 */
+        nav.setVisibility(View.VISIBLE);
 
         content.removeAllViews();
-        if (qaMode()) {
-            headerAction.setText("列表");
+        if (qa) {
+            headerAction.setText("QA_TAB".equals(rs) ? "会话" : "列表");
             headerAction.setVisibility(View.VISIBLE);
-            String conv = st.optJSONObject("conv") == null ? "" : optStr(st.optJSONObject("conv"), "id", "");
-            if (conv.isEmpty()) {
+            if ("QA_TAB".equals(rs)) {
+                if (tab == TAB_SETTINGS) {
+                    titleView.setText("设置");
+                    /* 副标题别太长：右上角还有「会话」按钮，挤在一起会折行（0.1.5 真机截图发现）。 */
+                    subtitleView.setText("问答模式的设置" + demoTag());
+                    content.addView(settingsView());
+                } else {
+                    titleView.setText("我");
+                    subtitleView.setText("资料、人设与新手引导" + demoTag());
+                    content.addView(meView());
+                }
+            } else if ("QA_THREAD".equals(rs)) {
+                JSONObject convObj = st.optJSONObject("conv");
+                titleView.setText(convObj == null ? "对话" : optStr(convObj, "title", "对话"));
+                subtitleView.setText("问答模式 · 多会话" + demoTag());
+                content.addView(chatView());
+            } else {
                 titleView.setText("问答会话");
                 subtitleView.setText("多会话 · 可置顶 · 可搜索" + demoTag());
                 content.addView(threadListView());
-            } else {
-                JSONObject convObj = st.optJSONObject("conv");
-                titleView.setText(optStr(convObj, "title", "对话"));
-                subtitleView.setText("问答模式 · 多会话" + demoTag());
-                content.addView(chatView());
             }
         } else {
             headerAction.setText("AI 信息");
@@ -2437,12 +2453,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "DSC 0.1.4", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.5", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(dlgCtx())
                         .setTitle("关于 DSC")
-                        .setMessage("DSC 0.1.4\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setMessage("DSC 0.1.5\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")
@@ -4486,8 +4502,15 @@ public class MainActivity extends Activity {
 
     private void onHeaderAction() {
         if (qaMode()) {
+            /* 0.1.5：问答模式的头部动作统一回「问答会话」列表（设置/我 页上按钮文案是「会话」）。 */
             JSONObject r = Native.req("closeThread");
             if (!opt(r, "ok")) toast(optStr(r, "err", "无法返回列表"));
+            JSONObject extra = new JSONObject();
+            try {
+                extra.put("tab", TAB_CHAT);
+            } catch (Exception ignored) {
+            }
+            Native.req("setTab", extra);
             refresh();
             return;
         }

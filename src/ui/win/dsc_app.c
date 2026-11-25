@@ -1264,7 +1264,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "0.1.4"
+#define APP_VERSION    "0.1.5"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -2563,6 +2563,14 @@ static void paint(App *a, HDC dc, RECT client)
         int saved = SaveDC(dc);
         if (saved) IntersectClipRect(dc, content.left, content.top, content.right, content.bottom);
         switch (dsc_router_state(a->router)) {
+        case DSC_ST_QA_TAB:
+            /* 0.1.5：问答模式也保留侧栏，「我 / 设置」是它下面的次级栏。 */
+            switch (dsc_router_tab(a->router)) {
+            case DSC_TAB_ME:       paint_me(a, dc, content); break;
+            case DSC_TAB_SETTINGS: paint_settings(a, dc, content); break;
+            default:               paint_qa(a, dc, content); break;
+            }
+            break;
         case DSC_ST_QA_READY:
         case DSC_ST_QA_LIST:
         case DSC_ST_QA_THREAD:

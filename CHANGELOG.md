@@ -2,7 +2,87 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.4` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.5` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+
+## [0.1.5] - 2026-11-26（安卓问答模式切不回聊天修复 + 模式切换持久化）
+
+> 本节同时是 GitHub Release `v0.1.5` 的发布说明。
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 7 节 Android 校验、第 7.5 节真机验证、第 9 节安装回执、第 13.5 节发布结果）。
+
+### 修复（安卓切到问答模式后再也回不到聊天模式）
+
+- **第一个根因：问答模式把整条底部导航隐藏了**。`MainActivity` 里原本是
+  `nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)`，而切换模式的唯一入口是设置页的「模式」行——
+  底栏一消失就进不去设置，问答会话列表页又没有设置入口，于是「问答 → 聊天」这条路彻底断了（0.1.4 及更早）。
+  - 现在主界面一律保留底栏：问答模式下三格文案是「我 / 设置 / 会话」，点「会话」回到多会话列表。
+  - 问答模式的设置页是新状态 `QA_TAB`：标题「设置」、副标题「问答模式的设置」、右上按钮「会话」，
+    模式的切换仍在「模式」行，切回聊天后底栏变回「我 / 设置 / 聊天」。
+- **第二个根因：核心层不允许在问答模式下切栏**。`dsc_router_set_tab()` 原来对非聊天模式直接返回 `DSC_E_STATE`，
+  即使底栏显示出来也点不动。
+  - `src/core/router.c` 新增问答模式分支：`QA_READY / QA_LIST / QA_THREAD / QA_TAB` 都接受切栏，
+    切到「会话」回列表，切到「我 / 设置」进入 `QA_TAB`；`dsc_router_back()` 在栈空时从 `QA_TAB` 退回列表。
+  - `src/core/router.h` 新增状态 `DSC_ST_QA_TAB`；桌面端 `dsc_app.c` 同步渲染，两个平台行为一致。
+
+### 修复（模式切换重启后回滚）
+
+- `dsc_router_switch_mode()` 切完模式没有写 `ui.default_mode`（`DSC_SET_DEFAULT_MODE` 只有首次的模式选择会写），
+  而启动时 `dsc_router_credential_check()` 正是按这个设置分流——于是「切到问答 → 重启 → 又回到聊天」。
+- 现在切换成功即写库（`chat` / `qa`），重启后保持上次选中的模式。
+
+### 变更（版本与校验）
+
+- 版本号：`versionCode 9 → 10`、`versionName 0.1.4 → 0.1.5`（`AndroidManifest.xml` 与 `aapt2 link` 两处同改）；
+  Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.5。
+- `tests/unit/test_core.c`：删除「问答模式没有三栏」的旧断言，改为验证问答模式能进「我」「设置」、
+  能返回列表、点「会话」回列表；另加两条持久化断言（切到问答后 `default_mode == "qa"`，切回后 `== "chat"`）。
+- `src/cli/dsc_verify.c` 的 FR-13 新增 5 条断言（问答模式进设置、返回列表、切回聊天、库里的 `default_mode`），
+  断言合计 719 → 724 项。
+- `tools/verify_android.py` 新增断言：主源码必须出现 `QA_TAB`，且不许再出现隐藏底栏那一行（24 → 25 项）。
+- 签名证书与 0.1.2 / 0.1.3 / 0.1.4 相同（`55e55bc6…`），**从 0.1.4 可以直接覆盖升级**。
+- 许可证、功能面、数据模型、schema（v5）均无变化，0.1.4 的用户数据可直接沿用。
+
+### 真机验证（0.1.5，真我 GT8 Pro / RMX5200 / Android 17 / API 37）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 覆盖安装 0.1.5（adb install -r） | 成功，应用数据保留 |
+| 设置 → 模式 → 问答模式 | 底栏保留，文案变「我 / 设置 / 会话」，「会话」高亮，会话列表正常 |
+| 问答模式 → 设置（底栏第二格） | 打开设置页，副标题「问答模式的设置」，模式行显示「问答模式 · 多会话」，右上按钮「会话」 |
+| 问答模式 → 我（底栏第一格） | 「我」页正常，右上「会话」可回会话列表 |
+| 设置 → 模式 → 切回聊天模式 | 成功：模式行变「聊天模式 · 单会话」，底栏变回「我 / 设置 / 聊天」 |
+| 切到问答后 force-stop 并重启 | 仍是问答模式（持久化生效），再从设置页切回聊天正常 |
+
+截图归档在 `docs/screenshots/`（`android-0.1.5-qa-list.png`、`android-0.1.5-qa-settings.png`、`android-0.1.5-chat-back.png`）。
+
+### 复测（0.1.5 重建后全跑一遍）
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\test_core.exe` | 1024 通过 0 失败（0.1.4 的 1014 + 10 条新断言） |
+| `dsc-cli.exe verify . build\verify` | FR-01 ~ FR-36 全 PASS，724 断言 0 失败（0.1.4 的 719 + 5） |
+| `tools\shots.py` | 19 scene(s), 0 failed |
+| `tools\verify_android.py` | 25 项全部通过（新增问答底栏断言） |
+| `dsc-cli.exe bench` | 万条分页 6.17 ms/页（预算 300）、万条导出 25 ms（预算 2000）、常驻 11.9 MB（预算 240） |
+| `dsc-cli.exe perf JSON` | rss 9.06 MB、db 217088 B、wal 32768 B、storage 244 KB |
+| 安装包静默安装 | 落地 21 文件 + `install.log`（内容 `DSC Setup 0.1.5 / files=21`）；静默卸载后目录整体消失 |
+| 便携包 doctor | 五项通过，常驻内存 10.2 MB |
+| `tools\precommit_scan.py` | 0 问题 |
+
+### 产物（0.1.5）
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.5-win-x64-portable.zip` | 1713998 | `14d20740ffde81d2ff04cdd653321a1b4c30e3d39f291f1b5e16395e48f27f50` |
+| `DSC-0.1.5-win-x64-setup.exe` | 4198303 | `87a14be50a58f705371e3b6f644265c386d18ff365f6ac60860d78c50b57e285` |
+| `DSC-0.1.5-win-arm64-portable.zip` | 980117 | `76347bec417f720a3730d0b020be444bf93e2dd9776b094c69e22fb9a73fd966` |
+| `DSC-0.1.5-android-arm64.apk` | 913870 | `cb3499239bbba7af071db6f7b97e759c066a21fed1ac64bb731920cbfa0cc3cf` |
+
+每个包都附同名 `.sha256`。
+
+### 升级
+
+- Windows：解压便携包或覆盖安装 setup，用户数据（`%LOCALAPPDATA%\DSC`）不受影响。
+- Android：直接安装 0.1.5，覆盖 0.1.4 即可（签名未变）；从 0.1.1 及更早升级仍需先卸载。
 
 ## [0.1.4] - 2026-11-26（安卓 API Key 写入修复 + 夜间可读性）
 

@@ -1065,16 +1065,30 @@ static void test_router(dsc_db *db)
     CHECK_EQ_INT(dsc_router_switch_mode(r, DSC_MODE_QA), DSC_OK, "切到问答模式");
     CHECK_EQ_INT(dsc_router_is_switching(r), 1, "切换中置 switching 标志");
     CHECK_EQ_STR(dsc_route_state_name(dsc_router_state(r)), "QA_READY", "问答模式就绪");
+    /* 0.1.5：切换模式要写回 default_mode，否则重启按旧设置回滚。 */
+    CHECK_EQ_STR(dsc_setting_get(db, DSC_SET_DEFAULT_MODE, v, sizeof(v)) == DSC_OK ? v : "", "qa",
+                 "切换后写回 default_mode");
     CHECK_EQ_INT(dsc_router_switch_mode(r, DSC_MODE_CHAT), DSC_E_BUSY, "切换中重复请求被丢弃");
     CHECK_EQ_INT(dsc_router_finish_switch(r), DSC_OK, "动画结束清标志");
     CHECK_EQ_INT(dsc_router_is_switching(r), 0, "switching 已清");
     CHECK_EQ_INT(dsc_router_switch_mode(r, DSC_MODE_QA), DSC_E_STATE, "同模式切换被拒绝");
-    CHECK_EQ_INT(dsc_router_set_tab(r, DSC_TAB_ME), DSC_E_STATE, "问答模式没有三栏");
+    /* 0.1.5：问答模式保留底栏，否则设置页不可达、永远切不回聊天模式。 */
+    CHECK_EQ_INT(dsc_router_set_tab(r, DSC_TAB_ME), DSC_OK, "问答模式也能进「我」");
+    CHECK_EQ_STR(dsc_route_state_name(dsc_router_state(r)), "QA_TAB", "问答模式次级栏");
+    CHECK_EQ_INT(dsc_router_tab(r), DSC_TAB_ME, "当前栏为「我」");
+    CHECK_EQ_INT(dsc_router_set_tab(r, DSC_TAB_SETTINGS), DSC_OK, "问答模式能进设置页");
+    CHECK_EQ_INT(dsc_router_tab(r), DSC_TAB_SETTINGS, "当前栏为「设置」");
+    CHECK_EQ_INT(dsc_router_back(r), DSC_BACK_POPPED_SUBPAGE, "次级栏返回会话列表");
+    CHECK_EQ_STR(dsc_route_state_name(dsc_router_state(r)), "QA_READY", "返回后问答就绪");
+    CHECK_EQ_INT(dsc_router_set_tab(r, DSC_TAB_CHAT), DSC_OK, "点「会话」回会话列表");
+    CHECK_EQ_STR(dsc_route_state_name(dsc_router_state(r)), "QA_READY", "会话列表状态");
     CHECK_EQ_INT(dsc_router_push(r, DSC_ST_CHAT_TAB), DSC_OK, "问答模式压入任意子页");
     CHECK_EQ_INT(dsc_router_switch_mode(r, DSC_MODE_CHAT), DSC_OK, "切回聊天模式");
     CHECK_EQ_INT(dsc_router_stack_depth(r), 0, "切换模式清空子页栈");
     CHECK_EQ_INT(dsc_router_finish_switch(r), DSC_OK, "再次清标志");
     CHECK_EQ_STR(dsc_route_state_name(dsc_router_state(r)), "CHAT_READY", "切回后聊天就绪");
+    CHECK_EQ_STR(dsc_setting_get(db, DSC_SET_DEFAULT_MODE, v, sizeof(v)) == DSC_OK ? v : "", "chat",
+                 "切回聊天后 default_mode 同步为 chat");
 
     /* 问答会话选择。 */
     CHECK_EQ_INT(dsc_router_switch_mode(r, DSC_MODE_QA), DSC_OK, "再切到问答模式");

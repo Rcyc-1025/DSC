@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节；0.1.4 起 versionCode 9 / 0.1.4、25 项，见第 9 节） |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节；0.1.4 起 versionCode 9 / 0.1.4、24 项，见第 9 节；0.1.5 起 versionCode 10 / 0.1.5、25 项，见第 10 节） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.4 起 versionCode 9 / 0.1.4，16KB 页对齐 + --no-undefined，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 0.1.4 起 24 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致、SecureStore.init 注入断言）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.5 起 versionCode 10 / 0.1.5，16KB 页对齐 + --no-undefined，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.5 起 25 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致、SecureStore.init 注入、问答模式保留底栏断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
@@ -298,3 +298,80 @@ java.security.InvalidAlgorithmParameterException: Caller-provided IV not permitt
   `shots.py` 19 场景 0 失败；`verify_android` 24 项全 PASS；`precommit_scan` 0 问题；
 - 证书 SHA-256 `55e55bc6…`（与 0.1.2 / 0.1.3 相同，可覆盖升级）。
 
+
+## 10. 0.1.5 补记：问答模式切不回聊天模式的死锁与模式持久化（非需求变更）
+
+0.1.5 不新增需求条目，只修两处实现缺陷。FR-01 ~ FR-36 的口径完全不变，本文第 1 ~ 5 节的映射关系仍有效。
+
+### 10.1 现象与死锁链
+
+反馈原文：「安卓端切换到问答模式后无法再次切换为聊天模式」。
+
+拆开是一条闭合的死锁链，任何一环断开都能解开，但三环同时存在：
+
+1. **切换入口只有一个**：切换聊天 / 问答模式的唯一控件是设置页的「模式」行（`MainActivity.switchMode()` 走核心层
+   `dsc_router_switch_mode()`）。首启的「选择默认模式」页只在没有默认模式时出现，之后不再提供入口。
+2. **问答模式把底栏整个藏了**：`MainActivity.render()` 原为
+   `nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE);` —— 进入问答模式后底部三格消失，于是到不了设置页。
+3. **问答会话列表没有设置入口**：`threadListView()` 只有「新建会话」与会话行，没有设置/齿轮类控件，
+   右上角按钮是「列表」（回会话列表），不是设置。列表 ↔ 会话页之间来回走，永远出不去。
+
+结果：进问答模式 = 一次性单向门，只能卸载重装或清数据。
+
+### 10.2 第二层缺陷：路由拒绝切栏
+
+即使把底栏恢复，也还点不动。`src/core/router.c` 的 `dsc_router_set_tab()` 原实现只认聊天模式的状态白名单，
+对 `DSC_MODE_QA` 直接返回 `DSC_E_STATE`；问答模式下的「我 / 设置」根本没有对应的路由状态，
+UI 也就没有可渲染的分支。这一层是纯架构缺口，与 UI 无关：路由状态机里就没有「问答模式下的次级栏」这个状态。
+
+### 10.3 第三层缺陷：模式切换不落库
+
+`dsc_router_switch_mode()` 只改内存里的 `r->mode`，不写设置项 `ui.default_mode`
+（`DSC_SET_DEFAULT_MODE`，见 `src/core/store_setting.h`）。真正写库的只有首启页的 `dsc_router_mode_select()`。
+因此：在设置页切到问答模式 → 重启 → `dsc_router_credential_check()` 按库里旧的 `default_mode` 分流 → 回到聊天模式。
+用户视角是「切了但没生效」。这条是独立缺陷，与死锁无关。
+
+### 10.4 修复点
+
+| 位置 | 改法 |
+| --- | --- |
+| `src/core/router.h` | `dsc_route_state` 新增 `DSC_ST_QA_TAB`：问答模式的「我 / 设置」次级栏状态 |
+| `src/core/router.c` `dsc_router_set_tab()` | 新增 `r->mode == DSC_MODE_QA` 分支：状态白名单 `QA_READY/QA_LIST/QA_THREAD/QA_TAB`，切到「我 / 设置」时置 `DSC_ST_QA_TAB`、切到「会话」时回 `QA_READY`，并清空栈与角标 |
+| `src/core/router.c` `dsc_router_switch_mode()` | 成功切换后写 `dsc_setting_set(r->db, DSC_SET_DEFAULT_MODE, target == DSC_MODE_QA ? "qa" : "chat")` |
+| `src/core/router.c` `dsc_router_back()` | 栈空且当前是 `QA_TAB` 时退回会话列表（`DSC_BACK_POPPED_SUBPAGE`），不再一路退出应用 |
+| `MainActivity.render()` | 主界面一律 `View.VISIBLE`；问答模式底栏三格文案为「我 / 设置 / 会话」；按 `routerState` 渲染 `QA_TAB`（设置页 / 我页）、`QA_THREAD`（会话页）、其余（列表） |
+| `MainActivity.onHeaderAction()` | 问答模式下先 `closeThread` 再发 `setTab(TAB_CHAT)`，右上按钮在 `QA_TAB` 时显示「会话」 |
+| `src/ui/win/dsc_app.c` | render 的 switch 新增 `case DSC_ST_QA_TAB:`（桌面端同一路由状态也要能渲染，否则 Windows 侧渲染到未知状态） |
+
+问答模式设置页的副标题写「问答模式的设置」即可。初版写成「问答模式的设置 · 切换模式在「模式」行」，
+在 1440x3136 真机上与右上「会话」按钮挤压折行，已缩短——提醒文案不该以牺牲排版为代价。
+
+### 10.5 测试补齐（10 + 5 + 1 条断言）
+
+- `tests/unit/test_core.c`：删除「问答模式没有三栏」的旧断言（那正是缺陷本身），改为验证 qa 模式可进「我」「设置」
+  （state `QA_TAB`、tab 正确）、返回回 `QA_READY`、点「会话」回列表；新增两条持久化断言（切 qa 后 `default_mode == "qa"`、
+  切回后 `== "chat"`）。单元测试 1014 → **1024 通过 0 失败**。
+- `src/cli/dsc_verify.c` FR-13 段：新增 5 条断言（问答模式 `set_tab(SETTINGS) == DSC_OK && state == QA_TAB`、
+  `back() == DSC_BACK_POPPED_SUBPAGE && state == QA_READY`、从设置页切回 chat == `DSC_OK`、读库断言 `default_mode == "chat"`）。
+  `verify` 断言 719 → **724 项全 PASS 0 失败**。
+- `tools/verify_android.py`：新增第 25 项——主源码必须含 `QA_TAB` 且不能再出现
+  `nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)`。24 → **25 项全 PASS**。
+
+> 断言计数以脚本实跑为准。0.1.3 的说明文档曾把 23 项误记为 24 项，见 §9.4 的更正说明。
+
+### 10.6 真机复验与版本
+
+真机（真我 GT8 Pro / `RMX5200` / Android 17 / API 37，1440x3136）逐条走通，记录见
+`docs/PRE-RELEASE-EVIDENCE.md` §7.5，摘要：
+
+- 设置 → 模式 → 问答模式：标题「问答会话」，**底栏三格仍在**（我 / 设置 / 会话），「会话」高亮；
+- 点「设置」→ 问答模式设置页（`QA_TAB`），模式行「问答模式 · 多会话」，右上「会话」；
+- 点底栏「我」→ 「我」页正常；点右上「会话」→ 回会话列表；
+- 设置 → 模式 → 聊天模式：成功切回，底栏变「我 / 设置 / 聊天」；
+- `am force-stop` + `am start` → 仍是问答模式（`ui.default_mode` 已落库）；
+- `adb logcat -b crash -d` 空。
+
+版本：`0.1.5` / `versionCode 10`（`AndroidManifest.xml`、`Diagnostics.java`、关于页、`dsc_app.c`、`dsc_cli.c`、
+`dsc_setup.c`、`build_android.py`、`make_installer.py`、`package_win.py`、`verify_android.py`、`sign_release.ps1` 全同步）。
+回归：`test_core` 1024 通过 0 失败；`verify` FR-01~FR-36 全 PASS、724 断言 0 失败；`shots.py` 19 场景 0 失败；
+`verify_android` 25 项全 PASS；`precommit_scan` 0 问题；证书 SHA-256 `55e55bc6…`（与 0.1.2 / 0.1.3 / 0.1.4 相同，可覆盖升级）。

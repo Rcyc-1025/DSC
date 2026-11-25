@@ -10,6 +10,8 @@
  *   CHAT_READY <-> QA_READY      （mode_switch）
  *   CHAT_READY -> CHAT_TAB(我|设置|聊天)
  *   QA_READY   -> QA_THREAD_LIST | QA_THREAD
+ *   QA_READY   -> QA_TAB(我|设置)   （0.1.5：问答模式也保留底栏，否则进不去设置页
+ *                                    就再也切不回聊天模式；tab=聊天表示回到会话列表）
  *   任意状态   -> OVERLAY(AI_INFO|UPDATE_DIALOG|GUIDE|CONFIRM)（不销毁底层状态）
  *
  * 约束：同一时刻只有一个模式活动；mode_switch 期间置 switching 标志，重复请求直接丢弃；
@@ -36,7 +38,8 @@ typedef enum dsc_route_state {
     DSC_ST_QA_THREAD,
     DSC_ST_CREDENTIAL_CHECK,   /* 首次启动第一步：检查凭证是否就绪 */
     DSC_ST_CREDENTIAL_SETUP,   /* 凭证未就绪：必须先配置 API Key */
-    DSC_ST_MODE_SELECT         /* 凭证就绪：选择默认模式 */
+    DSC_ST_MODE_SELECT,        /* 凭证就绪：选择默认模式 */
+    DSC_ST_QA_TAB              /* 问答模式下的「我 / 设置」次级栏（底栏保留） */
 } dsc_route_state;
 
 typedef enum dsc_tab {

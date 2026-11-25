@@ -124,14 +124,20 @@ def main():
                     main_src = fh.read()
             check('SecureStore.init(this)' in main_src,
                   'MainActivity 启动时给 SecureStore 注入 Application Context')
+            # 0.1.5 起的硬门：问答模式必须保留底部导航。原先 render() 在问答模式下把整条底栏
+            # 隐藏（nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)），而「模式」开关只在
+            # 设置页，于是切进问答就再也进不去设置页、永远切不回聊天模式。
+            check('QA_TAB' in main_src and
+                  'nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)' not in main_src,
+                  '问答模式保留底部导航，设置页可达（可切回聊天模式）')
             os.remove(so_tmp)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.4'" in badging, '版本名 0.1.4')
-    check("versionCode='9'" in badging, 'versionCode 9')
+    check("versionName='0.1.5'" in badging, '版本名 0.1.5')
+    check("versionCode='10'" in badging, 'versionCode 10')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')

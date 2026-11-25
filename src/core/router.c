@@ -57,6 +57,7 @@ const char *dsc_route_state_name(dsc_route_state s)
     case DSC_ST_CREDENTIAL_CHECK: return "CREDENTIAL_CHECK";
     case DSC_ST_CREDENTIAL_SETUP: return "CREDENTIAL_SETUP";
     case DSC_ST_MODE_SELECT:      return "MODE_SELECT";
+    case DSC_ST_QA_TAB:           return "QA_TAB";
     default:                  return "UNKNOWN";
     }
 }
@@ -189,7 +190,7 @@ int dsc_router_switch_mode(dsc_router *r, dsc_mode target)
     if (target != DSC_MODE_CHAT && target != DSC_MODE_QA) return DSC_E_INVAL;
     if ((r->state != DSC_ST_CHAT_READY && r->state != DSC_ST_CHAT_TAB &&
          r->state != DSC_ST_QA_READY && r->state != DSC_ST_QA_LIST &&
-         r->state != DSC_ST_QA_THREAD)) {
+         r->state != DSC_ST_QA_THREAD && r->state != DSC_ST_QA_TAB)) {
         return DSC_E_STATE;
     }
     if (r->mode == target) return DSC_E_STATE;         /* 已经在目标模式 */
@@ -197,6 +198,9 @@ int dsc_router_switch_mode(dsc_router *r, dsc_mode target)
     r->mode = target;
     r->stack_n = 0;        /* 切换模式清空子页栈，但保留各栏状态 */
     r->overlay_n = 0;
+    /* 0.1.5：模式切换要记住，否则重启按旧的 default_mode 回滚（只有首启选择会写库）。 */
+    dsc_setting_set(r->db, DSC_SET_DEFAULT_MODE,
+                    target == DSC_MODE_QA ? "qa" : "chat");
     r->state = (target == DSC_MODE_CHAT) ? DSC_ST_CHAT_READY : DSC_ST_QA_READY;
     return DSC_OK;
 }
@@ -212,7 +216,20 @@ int dsc_router_set_tab(dsc_router *r, dsc_tab tab)
 {
     if (!r) return DSC_E_INVAL;
     if ((int)tab < 0 || (int)tab >= DSC_TAB_COUNT) return DSC_E_INVAL;
-    if (r->mode != DSC_MODE_CHAT) return DSC_E_STATE;
+    if (r->mode == DSC_MODE_QA) {
+        /* 0.1.5：问答模式也保留底栏。原先这里直接返回 DSC_E_STATE，界面又把底栏整个隐藏，
+         * 结果切进问答后进不去设置页，「模式」开关不可达，永远切不回聊天模式。
+         * 现在「我 / 设置」进问答模式的次级栏（QA_TAB），「会话」回到会话列表。 */
+        if (r->state != DSC_ST_QA_READY && r->state != DSC_ST_QA_LIST &&
+            r->state != DSC_ST_QA_THREAD && r->state != DSC_ST_QA_TAB) {
+            return DSC_E_STATE;
+        }
+        r->tab = tab;
+        r->stack_n = 0;   /* 底栏同级，不入栈 */
+        r->badges[tab] = 0;
+        r->state = (tab == DSC_TAB_CHAT) ? DSC_ST_QA_READY : DSC_ST_QA_TAB;
+        return DSC_OK;
+    }
     if (r->state != DSC_ST_CHAT_READY && r->state != DSC_ST_CHAT_TAB) return DSC_E_STATE;
     r->tab = tab;
     r->state = DSC_ST_CHAT_TAB;
@@ -287,6 +304,12 @@ dsc_back_action dsc_router_back(dsc_router *r)
     }
     if (r->stack_n > 0) {
         r->state = r->stack[--r->stack_n];
+        return DSC_BACK_POPPED_SUBPAGE;
+    }
+    /* 0.1.5：问答模式的「我 / 设置」是次级栏，返回退回问答会话列表。 */
+    if (r->state == DSC_ST_QA_TAB) {
+        r->tab = DSC_TAB_CHAT;
+        r->state = DSC_ST_QA_READY;
         return DSC_BACK_POPPED_SUBPAGE;
     }
     return DSC_BACK_EXIT_CONFIRM;

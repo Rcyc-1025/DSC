@@ -881,6 +881,25 @@ static void fr13(V *v, const char *wd)
     check(v, dsc_router_is_switching(r) == 0, "切换结束后 switching 标志已清除");
     rc = dsc_router_switch_mode(r, DSC_MODE_CHAT);
     check(v, rc == DSC_E_STATE, "切到当前模式属于空操作并被拒（rc=%d）", rc);
+    /* 0.1.5：问答模式下底栏必须还在，否则设置页不可达、永远切不回聊天模式。 */
+    rc = dsc_router_switch_mode(r, DSC_MODE_QA);
+    check(v, rc == DSC_OK, "切到问答模式以验证底栏（rc=%d）", rc);
+    dsc_router_finish_switch(r);
+    rc = dsc_router_set_tab(r, DSC_TAB_SETTINGS);
+    check(v, rc == DSC_OK && dsc_router_state(r) == DSC_ST_QA_TAB,
+          "问答模式下能进设置页（底栏保留，rc=%d）", rc);
+    rc = (int)dsc_router_back(r);
+    check(v, rc == DSC_BACK_POPPED_SUBPAGE && dsc_router_state(r) == DSC_ST_QA_READY,
+          "问答次级栏返回会话列表");
+    rc = dsc_router_switch_mode(r, DSC_MODE_CHAT);
+    check(v, rc == DSC_OK, "从设置页切回聊天模式（rc=%d）", rc);
+    dsc_router_finish_switch(r);
+    {
+        char m[8];
+        m[0] = 0;
+        dsc_setting_get(db, DSC_SET_DEFAULT_MODE, m, sizeof(m));
+        check(v, strcmp(m, "chat") == 0, "切换后的模式已写回默认模式（%s）", m);
+    }
     dsc_router_destroy(r);
     dsc_db_close(db);
     fr_end(v);

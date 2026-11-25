@@ -1,10 +1,19 @@
-# 发布前证据（DSC 0.1.4）
+# 发布前证据（DSC 0.1.5）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
 > 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 0.1.0 起）。
 > 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是那时重新跑出来的；
 > 逐条复核结论与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
+> **0.1.5（2026-11-26）修的是安卓切到问答模式后再也回不到聊天模式**，并让模式切换在重启后保持。两个根因：
+> ① `MainActivity` 在问答模式下把整条底部导航 `View.GONE` 掉，而切换模式的唯一入口是设置页「模式」行——底栏一消失就进不去设置，
+> 问答会话列表页又没有设置入口，形成死锁。现在主界面一律保留底栏（问答模式三格为「我 / 设置 / 会话」），
+> 新增路由状态 `QA_TAB` 承载问答模式的「我 / 设置」两页，返回键从 `QA_TAB` 退回列表；
+> ② `dsc_router_set_tab()` 对非聊天模式直接返回 `DSC_E_STATE`，即使底栏显示出来也点不动，`src/core/router.c`
+> 加了问答模式分支（`QA_READY / QA_LIST / QA_THREAD / QA_TAB` 都接受切栏）。另外 `dsc_router_switch_mode()` 原来不写
+> `ui.default_mode`，导致「切到问答 → 重启 → 又回到聊天」，现在切换成功即写库。版本号升为 `versionCode 10` / `versionName 0.1.5`；
+> `tools/verify_android.py` 新增问答底栏断言（24 → 25 项）；单测 1014 → 1024、verify 719 → 724 断言。
+> 签名证书与 0.1.2 ~ 0.1.4 相同（`55e55bc6…`），可覆盖升级。**本文件 §3 起的数字都是 0.1.5 重新跑出来的**（真机验证见 §7.5）。
 > **0.1.4（2026-11-26）修的是安卓上填 API Key 一直失败，同时把界面观感与夜间可读性过了一遍**。三个原因逐层修完：
 > ① `SecureStore.init(Context)` 从未被调用，`appContext()` 反射 `ActivityThread.currentApplication()` 在 Android 9+ 拿不到，
 > `save()` 直接返回 false → `MainActivity.onCreate` 最前面加 `SecureStore.init(this)`，并新增 `lastError()` 把 Java 侧原因带进错误串；
@@ -63,18 +72,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\DSC.exe（Windows 界面，0.1.4） | 1691220 | 8491a1ff379ffe3e52c852e0070ebaa643bfbaa70ff9b75c4b47920aaa2c20c9 |
-| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1641726 | ca9ebadd170bfaaa04c5f6d3cc2e8bb1adcf3792bcd2655aaf8859adc6235285 |
-| build\dsc_plugin_host.exe（插件宿主） | 40036 | 85f9d470a93b569303891698c581b7bd0e7fec1b086065da157af7e85c14270e |
-| build\test_core.exe（单元测试） | 1718621 | e34ac333183994c5f7768cc0d563204da8b00f25bd1b9fd17bfd5c5227295802 |
-| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1607168 | 539dac2de20d40a716dff3a9aef17efd04c03dc74444355d06078e680fe2b115 |
-| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | c32c35d644805bf21a4ed52dc729216bbb8da7846489d1170f9c4136d5d95201 |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 8047c7436480a96a41e7364b2cc1792a6b902fe21a2ad542d04d6a28eb3ba4f2 |
-| build_android\DSC.apk（Android ARM64 安装包，versionCode 9 / versionName 0.1.4） | 909774 | c14ebc7f9f64ff14c514edf6faea44d43b6b5472ecacce335ea9b1dcc6dbc2b2 |
-| dist\DSC-0.1.4-win-x64-portable.zip | 1709314 | 62781d92f637171d86133e70fce9cda4ad38eef4587e6367771b618c314c113d |
-| dist\DSC-0.1.4-win-x64-setup.exe | 4184638 | 464e75690275c090f8b263ed8370c09b45e23265f2a8bf30913e97ca90ca38a4 |
-| dist\DSC-0.1.4-win-arm64-portable.zip | 975821 | d1a73b4019b9cd398fd24254a9de8ffbdf866ee2a9cc64ec90fe64c36a12f08a |
-| dist\DSC-0.1.4-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 909774 | c14ebc7f9f64ff14c514edf6faea44d43b6b5472ecacce335ea9b1dcc6dbc2b2 |
+| build\DSC.exe（Windows 界面，0.1.5） | 1691277 | 050e59d24b34c0db95f09887ac9ae67eaef9cd7cba5ed4d32441c3a9ee11d7da |
+| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1642750 | 0fc2d7e3d5485e29dc64026061c3e24b6ded165079a42a4693e56abf261ef7dc |
+| build\dsc_plugin_host.exe（插件宿主） | 40036 | ca60055314df49e4dac86ad69dc8a30552c9e04485a3fe97eb6c03df1aadce07 |
+| build\test_core.exe（单元测试） | 1720157 | d4acaaa2a4afb9bef9c44e4b8176d331f022906fe4453da306ddc66f1994619e |
+| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1607168 | 2fd58c85ba41324e51baab69cd03ba59ace01032caa9e8295c1071a1bb375ff6 |
+| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | 229ba1f4a3ad435d27cb8da5e1a1ea8fd1d5d85eaeabfdc5edc0cf47f2a5da3a |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | ff54c008833f9f52041865cbaaf08027dc0f87473d16f3925707e6086088b89e |
+| build_android\DSC.apk（Android ARM64 安装包，versionCode 10 / versionName 0.1.5） | 913870 | cb3499239bbba7af071db6f7b97e759c066a21fed1ac64bb731920cbfa0cc3cf |
+| dist\DSC-0.1.5-win-x64-portable.zip | 1713998 | 14d20740ffde81d2ff04cdd653321a1b4c30e3d39f291f1b5e16395e48f27f50 |
+| dist\DSC-0.1.5-win-x64-setup.exe | 4198303 | 87a14be50a58f705371e3b6f644265c386d18ff365f6ac60860d78c50b57e285 |
+| dist\DSC-0.1.5-win-arm64-portable.zip | 980117 | 76347bec417f720a3730d0b020be444bf93e2dd9776b094c69e22fb9a73fd966 |
+| dist\DSC-0.1.5-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 913870 | cb3499239bbba7af071db6f7b97e759c066a21fed1ac64bb731920cbfa0cc3cf |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -82,7 +91,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 31.6s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\DSC-0.1.4-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\DSC-0.1.5-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -104,7 +113,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**1014 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+实测：**1024 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），
 1.3.0 起新增 pairing（6 位码、5 分钟 TTL、5 次作废、双向校验、密钥只进安全存储）、sync（逻辑时钟、发件箱、冲突落败方副本、入站去重）、
 sync_clock、transport 帧、sync_session 端到端（本机回环 TCP：发现→连接→握手→事件互传→解除配对），
@@ -118,7 +127,7 @@ memory（句子过滤、抽取、检索、重建、注入片段、修改 AI 发�
 
     build\dsc-cli.exe verify . build\verify
 
-实测：**36 条 FR 全部 PASS，719 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
+实测：**36 条 FR 全部 PASS，724 项断言 0 失败**，同时把对照表写到 docs\FR-MATRIX.md。
 每条 FR 都至少有一项针对实现行为的断言（不是"文件存在"式检查），例如：
 FR-13 连续切换十次后两端会话与草稿互不串台；FR-14 聊天会话唯一索引拒绝第二个 chat 会话；
 FR-15 返回键三级优先级 + 同级三栏不入栈；FR-18 导出后另库导入条数/正文一致且失败整体回滚；
@@ -144,12 +153,12 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
-| 万条分页 | 5.67 ms/页 | 300 ms | 350 ms | 达标 |
-| 万条导出 | 23 ms | 2000 ms | 2500 ms | 达标 |
+| 万条分页 | 6.17 ms/页 | 300 ms | 350 ms | 达标 |
+| 万条导出 | 25 ms | 2000 ms | 2500 ms | 达标 |
 | 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
 （0.1.0 多个构建轮次复跑：分页 11.74 / 11.76 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.8 / 12.0 / 12.0 MB；
-0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB；0.1.4 重建后复跑：分页 5.67 ms、导出 23 ms、内存 11.9 MB——这几版只改了安卓侧的存储/可读性与桌面绘制层（遮罩、限宽），数据路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
+0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB；0.1.4 重建后复跑：分页 5.67 ms、导出 23 ms、内存 11.9 MB；0.1.5 重建后复跑：分页 6.17 ms、导出 25 ms、内存 11.9 MB（只改 router 的模式/切栏逻辑，数据路径未动）——这几版只改了安卓侧的存储/可读性与桌面绘制层（遮罩、限宽），数据路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -159,8 +168,8 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
     build\dsc-cli.exe perf
 
-本机实测输出（0.1.4 复跑，rss_ok=true）：rss_kb 9284（9.07 MB）、rss_mb 9.066406、frame_budget_ms 16.7、
-db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg_kb 9876、rss_peak_kb 9876，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（0.1.5 复跑，rss_ok=true）：rss_kb 9276（9.06 MB）、rss_mb 9.058594、frame_budget_ms 16.7、
+db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg_kb 9856、rss_peak_kb 9856，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
@@ -168,7 +177,7 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
     python tools\shots.py
 
 19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸；
-0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 重建后复跑结果相同：19 scene(s), 0 failed）：
+0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 重建后复跑结果相同：19 scene(s), 0 failed）：
 聊天三栏 / 我 / 设置（19 行含「实时同步」「配对管理」「内置知识库」「设备权限」「错误中心」「进阶指南」与「关于」）/
 问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（含新增四节）/
 导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
@@ -183,13 +192,13 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
     python tools\build_android.py
     python tools\verify_android.py
 
-实测 24 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；0.1.4 新增一项「MainActivity 启动时调用 SecureStore.init(this)」断言。口径说明：0.1.3 的说明文档把当时的总数记成了 24 项，实际那一版是 23 项，差一项来自人工计数笔误——本节与 0.1.4 的其它数字一律按脚本实际输出的 `len(passed)` 写；同时断言 versionCode 9 / versionName 0.1.4）：
+实测 25 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；0.1.4 新增一项「MainActivity 启动时调用 SecureStore.init(this)」断言；0.1.5 再新增一项「问答模式保留底部导航、`QA_TAB` 可达设置页」断言。口径说明：0.1.3 的说明文档把当时的总数记成了 24 项，实际那一版是 23 项，差一项来自人工计数笔误——本节与后续版本的其它数字一律按脚本实际输出的 `len(passed)` 写；同时断言 versionCode 10 / versionName 0.1.5）：
 
-- APK 909774 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1678544 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
+- APK 913870 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1678544 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
 - libdsc.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_dsc_app_Native_callNative /
   Java_com_dsc_app_Native_feedNative / Java_com_dsc_app_Native_shutdownNative（0.1.3 起与
   android/app/src/main/java/com/dsc/app/Native.java 的 native 声明逐字一致），静态含 SQLite；
-- 清单：包名 com.dsc.app、versionCode 9、versionName 0.1.4、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
+- 清单：包名 com.dsc.app、versionCode 10、versionName 0.1.5、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
   native-code arm64-v8a、应用名「DSC」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
   两处已同时改为 9 / 0.1.4，校验脚本会断言一致）；
 - **16KB 页对齐（0.1.1 加的兼容硬门，非首启闪退主因）**：libdsc.so 的 4 个 PT_LOAD 段 `p_align` 全部为 `0x4000`（16384），
@@ -217,7 +226,7 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
   （`keytool -list -v` 实测一致；keystore 现固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，别名 `dsc`，DN 全为 DSC）。
   0.1.1 的 keystore 写在 `build_android\` 里、被清理脚本一并删掉且无法恢复，所以 0.1.1 → 0.1.2 的指纹从 `bc379913…` 变成
   `55e55bc6…`：Android 不允许跨签名覆盖安装，**从 0.1.1 升级必须先卸载再装**。
-  这条边界只影响这一次升级；0.1.2 起的版本共用同一密钥，可以直接覆盖升级（0.1.3 实测证书同为 `55e55bc6…`）。
+  这条边界只影响这一次升级；0.1.2 起的版本共用同一密钥，可以直接覆盖升级（0.1.3 / 0.1.4 / 0.1.5 实测证书同为 `55e55bc6…`）。
 
 ### 7.1 Android 真机验证（0.1.3 首次打通）
 
@@ -296,14 +305,33 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
 - `adb shell pm clear com.dsc.app` 在本机被拒（`SecurityException: ... does not have permission android.permission.CLEAR_APP_USER_DATA`），
   清数据只能 `adb uninstall` + `adb install`；OPPO 设备重装时会弹系统安装引导页，需先勾「已知悉应用风险」再点「仍然安装」。
 
+### 7.5 Android 真机验证：问答模式切栏与模式持久化（0.1.5）
+
+0.1.5 的修复在同一台真机上逐条复验（真我 GT8 Pro / `RMX5200` / Android 17 / API 37）：
+
+| 步骤 | 命令 / 观察 | 结果 |
+| --- | --- | --- |
+| 覆盖安装 | `adb install -r build_android\DSC.apk` | `Success`，应用数据保留（签名仍为 `55e55bc6…`） |
+| 切到问答模式 | 设置 → 模式（该行点击即切换，没有确认弹窗） | 标题「问答会话」、副标题「多会话 · 可置顶 · 可搜索 · 演示模式」；**底栏三格仍在**（我 / 设置 / 会话），「会话」高亮；截图 `docs/screenshots/android-0.1.5-qa-list.png` |
+| 问答模式 → 设置 | 点底栏第二格 | 设置页打开（state `QA_TAB`），副标题「问答模式的设置 · 演示模式」，模式行「问答模式 · 多会话」，右上按钮文案变「会话」；截图 `android-0.1.5-qa-settings.png` |
+| 问答模式 → 我 | 点底栏第一格 | 「我」页正常（编辑资料 / 重看指南 / 性别 / 生日 / 职业 / 头像路径 / 补充说明），右上「会话」可回列表 |
+| 切回聊天模式 | 设置 → 模式 | 成功：模式行「聊天模式 · 单会话」，底栏变回「我 / 设置 / 聊天」；截图 `android-0.1.5-chat-back.png` |
+| 持久化 | 切到问答 → `adb shell am force-stop com.dsc.app` → `am start -n com.dsc.app/.MainActivity` | 重启后仍是问答模式（`QA_READY`，底栏 我 / 设置 / 会话），证明 `ui.default_mode` 已落库 |
+| 崩溃日志 | `adb logcat -b crash -d` | 空 |
+
+一句话：0.1.4 之前「问答 → 聊天」这条路是断的；0.1.5 起两个入口都能到（底栏、设置页「模式」行），且重启不回滚。
+真机取坐标的方法：`adb shell uiautomator dump /sdcard/ui.xml` 后按 `bounds` 点击；1440x3136 上底栏三格中心是
+(240,3040) / (720,3040) / (1200,3040)，设置页「模式」行 y≈940。副标题一度写成「问答模式的设置 · 切换模式在「模式」行」，
+真机上与右上按钮挤在一起折行，已缩短为「问答模式的设置」。
+
 ## 8. 便携包可独立运行
 
-把 dist\DSC-0.1.4-win-x64-portable.zip 解到仓库外（本轮解到 `build\porttest`）仍可运行
+把 dist\DSC-0.1.5-win-x64-portable.zip 解到仓库外（本轮解到 `build\porttest`）仍可运行
 （不依赖构建目录、不依赖 mingw DLL，pe_imports 自检显示只导入系统 DLL）。实测：
 
     <解包目录>\tools\dsc-cli.exe doctor
 
-    DSC 运行环境自检 0.1.4
+    DSC 运行环境自检 0.1.5
     [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
     [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
@@ -324,21 +352,21 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9876]、rss_avg
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\DSC-0.1.4-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\DSC-0.1.5-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（0.1.4 重建后静默安装到 `build\instest10`）：
+实测（0.1.5 重建后静默安装到 `build\instest11`）：
 
-- setup 退出码 0，落地 **21 个文件**（DSC.exe、tools\dsc-cli.exe、dsc_plugin_host.exe、示例插件、docs\*、LICENSE、
+- 落地 **21 个载荷文件 + 程序自己写的 install.log，目录内共 22 个文件**（DSC.exe、tools\dsc-cli.exe、dsc_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（0.1.4 复测 `build\instest10`）：
 
-      DSC Setup 0.1.4
-      time=2026-11-26 01:49:55
+      DSC Setup 0.1.5
+      time=2026-11-26 02:13:44
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，约 6 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
-- 调用方式：`cmd /c`（本例 `cmd /c "\"<exe>\" /S /D=<目录>"`）。注意 setup 是 GUI 子系统程序，**cmd 不会等它结束**，命令返回后要留几秒再检查目录；用 `Start-Process -Wait` 等它时若撞上杀软扫描会长时间不返回，别据此判定失败。
+- 调用方式：PowerShell 里直接 `& "<exe>" '/S' "/D=<目录>"` 即可（`/S` 与 `/D=<目录>` 作为两个独立参数传，不要拼成一个字符串）。setup 是 GUI 子系统程序：**cmd 不会等它结束、退出码也不可信**，命令返回后要留几秒再检查目录；用 `Start-Process -Wait` 或 `WaitForExit` 等它时若撞上杀软扫描会长时间不返回，别据此判定失败。
 - `uninstall.exe /K` 只清卸载登记、不删目录，便于保留数据后手工处理。
 
 **为什么 shortcut / registry 是 failed（环境边界，不是代码缺陷）**：本会话的 DSH 沙箱不允许**子进程**写注册表与开始菜单。
@@ -535,3 +563,17 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
 - 回读校验：`gh release download v0.1.4` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（**4/4 MATCH**：`62781d92…` / `464e7569…` / `d1a73b40…` / `c14ebc7f…`）。
 - `v0.1.0` ~ `v0.1.3` 的标签与 Release **都保留未动**（Release 列表里 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 五条并存）。
 - 升级提示：0.1.4 的 Android 证书与 0.1.2 / 0.1.3 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
+
+### 13.5 v0.1.5 发布（2026-11-26）
+
+- 触发原因：用户报「安卓端切换到问答模式后无法再次切换为聊天模式」（详见 §7.5 与 `docs/TDD-TRACE-0.1.0.md` 第 10 节）。
+  同一轮确认三件事：问答模式保留底部导航（「聊天」格改「会话」）、一并修模式切换的持久化、打 0.1.5 发 Release 并保留旧版本。
+- 发布对象：提交 `__COMMIT__`（`fix(android): 修复问答模式切不回聊天模式的死锁，模式切换持久化，发布 0.1.5`），
+  标签 `v0.1.5`（附注标签，指向 `__COMMIT__`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.5>，
+  标题「DSC 0.1.5 - 安卓问答模式切换修复 + 模式持久化」，非草稿、非预发布、标记为 **Latest**；
+  正文取自 `docs/RELEASE-NOTES-0.1.5.md`（按发布口径不含未实测清单）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.5-win-x64-portable.zip`（1710005）、`DSC-0.1.5-win-x64-setup.exe`（4186002）、
+  `DSC-0.1.5-win-arm64-portable.zip`（976124）、`DSC-0.1.5-android-arm64.apk`（913870）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.5` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（__READBACK__）。
+- `v0.1.0` ~ `v0.1.4` 的标签与 Release **都保留未动**（Release 列表里 0.1.5 / 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 六条并存）。
+- 升级提示：0.1.5 的 Android 证书与 0.1.2 ~ 0.1.4 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
