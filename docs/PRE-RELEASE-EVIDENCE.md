@@ -411,3 +411,17 @@ Android 侧这六项与桌面一样只到「编译 + 产物结构校验」，未
 - 回读校验：`gh release download v0.1.1` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
 - `v0.1.0` 的标签与 Release **保留未动**（仍可在 Release 列表里取到 0.1.0 的四个包），0.1.1 只是新增，不是覆盖。
 - 收尾：`dist` 只留 0.1.1 的 8 个文件（0.1.0 的本地副本已删，线上仍在 0.1.0 Release 里）；`build/`、`build_android/` 由 `tools/clean.py` 清掉。
+
+### 13.2 v0.1.2 发布（2026-11-25）
+
+- 触发原因：0.1.1 在真机上仍是秒退，但错误已可见——`cannot locate symbol dsc_plugin_proc_free`，
+  定位为 Android 构建漏编 Windows 侧的插件子进程实现（详见 §7 与 `docs/TDD-TRACE-0.1.0.md` 第 7 节）。
+- 发布对象：提交 `d2357ea`（`fix(android): 补齐 Android 缺失的插件子进程符号，修复首启仍闪退，发布 0.1.2`），
+  标签 `v0.1.2`（附注标签，指向 `d2357ea`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.2>，
+  标题「DSC 0.1.2 - 安卓原生库符号缺失修复」，非草稿、非预发布、标记为 **Latest**；正文取自 `docs/RELEASE-NOTES-0.1.2.md`。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.2-win-x64-portable.zip`（1693321）、`DSC-0.1.2-win-x64-setup.exe`（4140149）、
+  `DSC-0.1.2-win-arm64-portable.zip`（959766）、`DSC-0.1.2-android-arm64.apk`（909774）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.2` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（4/4 OK）。
+- `v0.1.0`、`v0.1.1` 的标签与 Release **都保留未动**（Release 列表里 0.1.2 / 0.1.1 / 0.1.0 三条并存）。
+- 升级提示：0.1.2 的 Android 签名证书与 0.1.1 不同（旧 keystore 已随构建目录被清掉），**必须先卸载 0.1.1 再安装**；
+  从 0.1.2 起密钥固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，后续版本可覆盖升级。
