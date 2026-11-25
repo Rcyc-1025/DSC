@@ -1,6 +1,6 @@
 # DSC 技术设计（实现说明）
 
-> 本文件说明 "DSC" 0.1.2 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.3 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -259,15 +259,20 @@ dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）�
   两者都只通过 JNI/直接调用的核心 API 取数据，保证数据格式与行为一致；
 - 数据目录：Windows 默认 %LOCALAPPDATA%\DSC，可用 DSC_DATA_DIR 覆盖（便携模式）；Android 在应用私有目录。
 - **Android 原生库必须 16KB 页对齐**：`tools/build_android.py` 链接 `libdsc.so` 时带
-  `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`。Android 15/16 的 16KB 页内核机型只加载 `p_align ≥ 0x4000`
-  的库，4KB 对齐的库会让 `System.loadLibrary` 抛 `UnsatisfiedLinkError`、应用一启动就退（0.1.0 的实际故障）。
+  `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`。Android 15 起的新机默认 16KB 页内核，只加载 `p_align ≥ 0x4000`
+  的库，4KB 对齐的库会让 `System.loadLibrary` 抛 `UnsatisfiedLinkError`、应用一启动就退。
   16KB 对齐的库在 4KB 内核上同样可加载，属于向前兼容；`tools/verify_android.py` 有断言守着这条约束。
+  （口径更正：0.1.3 真机实测 `getconf PAGE_SIZE` = 4096，0.1.0 的闪退主因是缺符号而不是页对齐；这条现在是前瞻要求。）
 - **安卓侧崩溃必须可见**：`Native` 捕获库加载失败并返回错误对象；`MainActivity.onCreate` 整段兜异常，失败时整屏显示
   原因与设备信息；`Diagnostics` 把未捕获异常写 `filesDir/crash.log`，并在下次启动弹窗提示（用户未必能提供 logcat）。
 - **共享库不许留未定义符号**：Android 的 `libdsc.so` 用 `-shared` 链接，缺实现**不会**报错（Windows 的 MSVC 行为不同，容易漏），
   但 Android 的 `dlopen` 会严格解析每个符号，缺一个就整库加载失败、应用秒退。所以链接必须带 `-Wl,--no-undefined`，
   平台专属函数（如插件子进程的 `dsc_plugin_proc_*`）要在 `src/platform/android/` 里有对应实现——
   这是 0.1.1 → 0.1.2 的实际故障，`tools/verify_android.py` 有符号完整性断言守着。
+- **JNI 导出符号名由 Java 侧声明决定**：符号名是 `Java_<包名>_<类名>_<方法名>`，不由 C 函数名决定，也没有任何编译期检查。
+  改 `Native.java` 里的 `native` 方法名，必须同步改 `android/app/src/main/cpp/dsc_jni.c` 的导出，否则编译、链接、`dlopen`
+  全部通过，只有运行时第一次调用才抛 `No implementation found for ...`（0.1.2 → 0.1.3 的实际故障）。
+  `tools/verify_android.py` 会解析 Java 侧每个 `native` 声明，逐一要求 `.dynsym` 里有对应符号。
 - **签名密钥必须放在仓库与构建目录之外**：keystore 固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
   `tools/build_android.py` 缺了才生成。密钥若跟着 `build_android\` 被清理脚本删掉，下一版就会换证书，
   用户无法覆盖升级（0.1.1 → 0.1.2 就发生了这件事，只能先卸载）。发布方的正式签名另有 `tools/sign_android.py`。

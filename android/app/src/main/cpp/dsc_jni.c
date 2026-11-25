@@ -3740,8 +3740,13 @@ static jstring utf8_to_jstr(JNIEnv *env, const char *s)
     return ret;
 }
 
+/* 三个 JNI 入口的符号名必须与 Native.java 里 private static native 的声明逐字一致。
+ * 0.1.1 为了给 call/feed/shutdown 套 try/catch 把 Java 侧的 native 方法改名成
+ * callNative/feedNative/shutdownNative，却漏改这里的符号名，结果 dlopen 与符号解析都通过、
+ * 一点进界面就报 “No implementation found for ... Native.callNative”，全部调用失败。
+ * tools/verify_android.py 现在会解析 Native.java 的声明并逐个核对导出符号。 */
 JNIEXPORT jstring JNICALL
-Java_com_dsc_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
+Java_com_dsc_app_Native_callNative(JNIEnv *env, jclass cls, jstring jreq)
 {
     char *req;
     sb out;
@@ -3763,7 +3768,7 @@ Java_com_dsc_app_Native_call(JNIEnv *env, jclass cls, jstring jreq)
  * 用 byte[] 而不是 String，避免在网络分块处切断多字节字符。
  * 句柄只用于日志与错配排查：C 侧同一时刻只允许一条活动流（sendBegin 会拒绝并发）。 */
 JNIEXPORT jstring JNICALL
-Java_com_dsc_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray chunk)
+Java_com_dsc_app_Native_feedNative(JNIEnv *env, jclass cls, jint handle_no, jbyteArray chunk)
 {
     sb out;
     jstring ret;
@@ -3794,7 +3799,7 @@ Java_com_dsc_app_Native_feed(JNIEnv *env, jclass cls, jint handle_no, jbyteArray
 }
 
 JNIEXPORT void JNICALL
-Java_com_dsc_app_Native_shutdown(JNIEnv *env, jclass cls)
+Java_com_dsc_app_Native_shutdownNative(JNIEnv *env, jclass cls)
 {
     (void)env; (void)cls;
     gen_lock();

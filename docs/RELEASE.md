@@ -34,7 +34,7 @@
 
 3. **基准**：`dsc-cli.exe bench` 与 `dsc-cli.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入 + 残留旧名 `aic_`/`Sai`）。退出码即问题数，必须为 0。
-5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.2 实测为 `git tag -a v0.1.2 -m "DSC 0.1.2"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
+5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.3 实测为 `git tag -a v0.1.3 -m "DSC 0.1.3"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
    之后若只改文档（不动代码、不改产物），在推 Release 前允许把标签前移到最新提交一次；Release 发布之后一律不再移动，
    后续修正走新的 PATCH 版本（见「回滚」一节）。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
@@ -53,9 +53,9 @@
 9. **变更记录**：在 `CHANGELOG.md` 顶部新建 `## [<版本>] - <日期>` 段落（0.1.0 首发时是把 `[未发布]` 改名，此后每版新建一段）。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
     未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文。发布说明同时存档到
-    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，0.1.2 为 `docs/RELEASE-NOTES-0.1.2.md`），
+    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，0.1.3 为 `docs/RELEASE-NOTES-0.1.3.md`），
     `--notes-file` 指的就是这份文件。
-    **实测记录**：0.1.0、0.1.1、0.1.2（都是 2026-11-25）用这套命令发布，各自 8 个资产（4 个产物 + 4 个 `.sha256`）
+    **实测记录**：0.1.0、0.1.1、0.1.2、0.1.3（都是 2026-11-25）用这套命令发布，各自 8 个资产（4 个产物 + 4 个 `.sha256`）
     全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
 11. **发布到 GitHub**（0.1.0 起的固定步骤，`pwsh` 里直接用数组传参）：
 
@@ -97,19 +97,29 @@
 | Windows 便携包 | `DSC-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `DSC-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\DSC` |
 | Windows ARM64 便携包 | `DSC-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.2` / `versionCode 7`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.3` / `versionCode 8`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
 
 Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` 决定，`aapt2 link --version-code` 不覆盖它；
-两处必须同时改（0.1.2 为 `versionCode="7"` / `versionName="0.1.2"`），`tools\verify_android.py` 会断言两者一致。
+两处必须同时改（0.1.3 为 `versionCode="8"` / `versionName="0.1.3"`），`tools\verify_android.py` 会断言两者一致。
 **16KB 页对齐是硬要求**：`tools\build_android.py` 的链接命令必须带 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`，
-否则 `libdsc.so` 的 `PT_LOAD` 段只有 4KB 对齐，在 16KB 页内核的 Android 15/16 新机上 `dlopen` 失败、应用一启动就退出
-（0.1.0 的闪退就是这个原因）。`tools/verify_android.py` 有一条断言读 ELF 程序头，要求最小 `p_align` ≥ 0x4000。
+否则 `libdsc.so` 的 `PT_LOAD` 段只有 4KB 对齐，在 16KB 页内核的 Android 15/16 新机上 `dlopen` 失败、应用一启动就退出。
+`tools/verify_android.py` 有一条断言读 ELF 程序头，要求最小 `p_align` ≥ 0x4000。
+注意口径：0.1.3 真机实测（真我 GT8 Pro）`getconf PAGE_SIZE` = 4096，说明 0.1.0 的闪退主因不是页对齐而是缺符号（见下一段），
+这条硬门现在的定位是「Android 15 起新机默认 16KB 页」的前瞻要求，不是历史故障的根因。
 
 **共享库不许留未定义符号（0.1.2 的教训）**：Android 的 `libdsc.so` 用 `-shared` 链接，缺实现不会报错，
 `dlopen` 却会严格解析——0.1.1 就因为在 Android 构建里漏了 `src/platform/win/plugin_proc_win.c` 提供的
 `dsc_plugin_proc_call` / `dsc_plugin_proc_free`，装上去一点就退。链接必须带 `-Wl,--no-undefined`；
 平台专属函数要在 `src/platform/<平台>/` 里有实现；`tools/verify_android.py` 有两条断言守着（未定义符号只能来自系统库、
 三个插件子进程入口必须以已定义形态存在）。
+
+**Java 的 native 声明必须与 JNI 导出符号逐字一致（0.1.3 的教训）**：JNI 符号名 = `Java_` + 包名 + `_` + 类名 + `_` + 方法名。
+0.1.1 把 `Native.java` 的 native 方法改名成 `callNative` / `feedNative` / `shutdownNative`，却没同步改 `dsc_jni.c` 的导出，
+结果编译、链接、`dlopen` 全部通过，运行时绑定才失败：
+`No implementation found for java.lang.String com.dsc.app.Native.callNative(java.lang.String)`——库明明加载成功，每次调用都挂。
+`tools/verify_android.py` 现在有一条断言：解析 `Native.java` 里每个 `native` 声明的方法名，逐个要求 `.dynsym` 里有对应的
+`Java_com_dsc_app_Native_<名字>`。**能连真机时先真机验证再发版**：这两次闪退（缺符号、符号名不一致）都是构建期与静态校验全绿、
+只有装到设备上才暴露的，`adb install` + `am start` + 截图十分钟就能覆盖。
 
 **Android 签名密钥必须仓库外持久化**：keystore 固定为 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
 `tools/build_android.py` 不存在时才生成。切勿把它放回 `build_android\`——清理脚本会删掉它，下一版就会换证书，
@@ -128,6 +138,7 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/dsc.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-25（对应版本 v0.1.2；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
-数组传参，第 12 步「收尾清理」；Android 产物必须 16KB 页对齐、共享库必须 `--no-undefined`、签名密钥仓库外持久化；
+最后更新：2026-11-25（对应版本 v0.1.3；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
+数组传参，第 12 步「收尾清理」；Android 产物必须 16KB 页对齐、共享库必须 `--no-undefined`、JNI 导出符号必须与 Java 声明一致、
+签名密钥仓库外持久化；能连真机时先真机验证；
 发布说明不包含未实测清单）。

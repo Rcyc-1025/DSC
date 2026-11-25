@@ -45,7 +45,7 @@ def main():
         check(so[4] == 2, 'libdsc.so 是 64 位 ELF')
         machine = struct.unpack('<H', so[18:20])[0]
         check(machine == 183, 'libdsc.so 目标架构是 AArch64（e_machine=183，实际 %d）' % machine)
-        check(b'Java_com_dsc_app_Native_call' in so, 'libdsc.so 导出 JNI 入口 Java_com_dsc_app_Native_call')
+        check(b'Java_com_dsc_app_Native_' in so, 'libdsc.so 导出 JNI 入口（Java_com_dsc_app_Native_*）')
         check(b'sqlite3_open_v2' in so, 'libdsc.so 静态包含 SQLite（sqlite3_open_v2）')
         # 0.1.1 起的关键项：PT_LOAD 的 p_align 必须 >= 16KB，否则 16KB 页内核的新机会 dlopen 失败。
         phoff = struct.unpack('<Q', so[0x20:0x28])[0]
@@ -96,14 +96,27 @@ def main():
             check(not missing,
                   '插件子进程符号在 libdsc.so 里有实现（缺：%s）'
                   % (', '.join(missing) if missing else '无'))
+            # 0.1.3 起的硬门：Native.java 里每一个 native 声明，都必须有对应的 JNI 导出符号。
+            # JNI 的符号名由 Java 类名与方法名拼成（Java_<包>_<类>_<方法>），Java 侧改个方法名而
+            # C 侧没跟上，编译、链接、dlopen、符号解析全都过得去，运行时才报
+            # “No implementation found for ... Native.callNative”，全部调用失败（0.1.1/0.1.2 就是这样）。
+            native_java = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'dsc', 'app', 'Native.java')
+            declared = []
+            if os.path.isfile(native_java):
+                with open(native_java, 'r', encoding='utf-8', errors='replace') as fh:
+                    declared = re.findall(r'native\s+[A-Za-z_][\w.]*\s+(\w+)\s*\(', fh.read())
+            missing_jni = [n for n in declared if ('Java_com_dsc_app_Native_' + n) not in defined]
+            check(bool(declared) and not missing_jni,
+                  'Native.java 的 %d 个 native 声明在 libdsc.so 里都有对应导出（缺：%s）'
+                  % (len(declared), ', '.join(missing_jni) if missing_jni else '无'))
             os.remove(so_tmp)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.2'" in badging, '版本名 0.1.2')
-    check("versionCode='7'" in badging, 'versionCode 7')
+    check("versionName='0.1.3'" in badging, '版本名 0.1.3')
+    check("versionCode='8'" in badging, 'versionCode 8')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')

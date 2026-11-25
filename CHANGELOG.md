@@ -2,8 +2,71 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 与 0.1.1 的 Release 分别保留在 `v0.1.0`、`v0.1.1`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 / 0.1.1 / 0.1.2 的 Release 分别保留在 `v0.1.0`、`v0.1.1`、`v0.1.2`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
 
+## [0.1.3] - 2026-11-25（安卓 JNI 入口名称修复 + 首次真机验证）
+
+> 本节同时是 GitHub Release `v0.1.3` 的发布说明。Windows 侧没有功能改动，只是版本号随动；
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 7 节 Android 校验、第 7.1 节真机验证）。
+
+### 修复
+
+- **Android 第二个真机故障：核心层每个调用都失败**。0.1.2 把符号补齐后库能加载了，界面随即显示：
+  `核心层调用失败：java.lang.UnsatisfiedLinkError: No implementation found for java.lang.String com.dsc.app.Native.callNative(java.lang.String) (tried Java_com_dsc_app_Native_callNative and ...)`。
+- 根因：0.1.1 为了让「原生库加载失败」在界面上可见，把 `Native.java` 的 native 方法改名成
+  `callNative` / `feedNative` / `shutdownNative`，但 `android/app/src/main/cpp/dsc_jni.c` 里的导出符号
+  仍是 `Java_com_dsc_app_Native_call` / `_feed` / `_shutdown`。JNI 的符号名由「包名 + 类名 + 方法名」拼成，
+  Java 侧改名而 C 侧没跟上时，编译、链接、`dlopen`、符号解析全都通过，只有运行时绑定才发现找不到实现——
+  库明明加载成功，每次 `call` / `feed` / `shutdown` 却全部失败。
+  - `dsc_jni.c` 三个导出符号改为 `Java_com_dsc_app_Native_callNative` / `_feedNative` / `_shutdownNative`，
+    与 `Native.java` 逐字一致；文件里写清了这个耦合关系与踩坑经过。
+  - `tools/verify_android.py` 新增第 24 项断言：解析 `Native.java` 里所有 `native` 声明的方法名，
+    逐个要求 `libdsc.so` 的 `.dynsym` 里存在 `Java_com_dsc_app_Native_<方法名>`。以后这类改名漏改，发布前就失败（22 → 24 项）。
+
+### 新增能力（本轮打通真机闭环）
+
+- **安卓首次真机实测通过**：用 `adb` 连上真我 GT8 Pro（`RMX5200` / Android 17 / API 37），覆盖
+  安装 → 首启页（配置 API Key）→ 演示模式 → 授予「时间」能力 → 聊天主界面 → 设置页 全流程；
+  界面渲染正常、核心层 `init` 成功（模型名 / 人设名 / 配色 / 插件数与指南进度都正确回填）、无崩溃日志。
+  截图归档在 `docs/screenshots/`（`android-0.1.3-first-run.png`、`android-0.1.3-chat.png`、`android-0.1.3-settings.png`）。
+- **更正一条此前的推断**：这台设备实测 `getconf PAGE_SIZE` = 4096，并不是 16KB 页内核，
+  所以 0.1.1 做的 16KB 段对齐**不是**首启闪退的主因（主因是 0.1.2 修的未定义符号）。
+  16KB 对齐仍保留为前瞻性硬门（Android 15 起新机默认 16KB 页），verify 继续断言。
+
+### 变更
+
+- 版本号：`versionCode 7 → 8`、`versionName 0.1.2 → 0.1.3`（`AndroidManifest.xml` 与 `aapt2 link` 两处同改）；
+  Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.3。
+- 签名证书与 0.1.2 相同（`55e55bc6…`），**从 0.1.2 可直接覆盖升级，不需要卸载**。
+- 许可证、功能面、数据模型、schema 均无变化（仍是 Apache-2.0 / schema v5），0.1.2 的用户数据可直接沿用。
+
+### 复测（0.1.3 重建后全跑一遍）
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\test_core.exe` | 1014 通过 0 失败 |
+| `dsc-cli.exe verify . build\verify` | FR-01 ~ FR-36 全 PASS，719 断言 0 失败 |
+| `tools\shots.py` | 19 scene(s), 0 failed |
+| `tools\verify_android.py` | 24 项全部通过（含 JNI 声明与导出符号一致） |
+| `dsc-cli.exe bench` | 万条分页 5.64 ms/页（预算 300）、万条导出 23 ms（预算 2000）、常驻 12.0 MB（预算 240） |
+| `dsc-cli.exe perf JSON` | rss 9.07 MB、db 217088 B、wal 32768 B、storage 244 KB |
+| 安装包静默安装 | rc=0，落地 21 文件，`install.log` = `DSC Setup 0.1.3` |
+| 便携包 doctor | 五项通过，常驻内存 10.2 MB |
+| `tools\precommit_scan.py` | 0 问题 |
+
+### 产物（0.1.3）
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.3-win-x64-portable.zip` | 1697501 | `26f3f68eebd12f35f61a9936985c8d224bcf157d9498888e67c6a85a5e69116f` |
+| `DSC-0.1.3-win-x64-setup.exe` | 4152408 | `b71ac0c5aeedefaa995c0403e89b66cc17ab66f500e0f39be9baf298550e2096` |
+| `DSC-0.1.3-win-arm64-portable.zip` | 963945 | `b6cfe46d5b08e755e88345ebb9b64f476a528dab095f32e0fceed10bc10145e0` |
+| `DSC-0.1.3-android-arm64.apk` | 909774 | `21ce00f3c379e665258befc241511093e6e2480feb8e01fd490e0160ff57c341` |
+
+### 升级
+
+- Windows：解压便携包或覆盖安装 setup，用户数据（`%LOCALAPPDATA%\DSC`）不受影响。
+- Android：直接安装 0.1.3，覆盖 0.1.2 即可（签名未变）；从 0.1.1 及更早升级仍需先卸载。
 ## [0.1.2] - 2026-11-25（安卓原生库符号缺失修复）
 
 > 本节同时是 GitHub Release `v0.1.2` 的发布说明。Windows 侧没有功能改动，只是版本号随动；

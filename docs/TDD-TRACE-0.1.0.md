@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节） |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.2 起 versionCode 7 / 0.1.2，16KB 页对齐 + --no-undefined，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 0.1.2 起 22 项全部 PASS（含 PT_LOAD 页对齐与符号完整性断言）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.3 起 versionCode 8 / 0.1.3，16KB 页对齐 + --no-undefined，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.3 起 24 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
@@ -203,3 +203,36 @@ D:\Code\python312\python.exe tools\verify_android.py  # 0.1.2 起 22 项全部 P
 6. **验收**：`verify_android.py` 22/22 PASS、`test_core` 1014 通过、`verify` 36 条 FR 719 断言全 PASS、
    `shots.py` 19 场景 0 失败；APK `versionCode 7` / `versionName 0.1.2`，证书 SHA-256 `55e55bc6…`。
    真机效果仍需用户实测确认。
+
+## 8. 0.1.3 补记：JNI 符号名与 Java 声明不一致的修复依据（非需求变更）
+
+0.1.3 同样不动任何 FR 条目。修的是 0.1.2 把库加载问题解决之后才暴露出来的第三层问题：库加载成功了，核心层调用全挂。
+
+1. **现象**：装 0.1.2 后真机（真我 GT8 Pro / Android 17 / API 37）不再秒退，界面能出来，但诊断区显示
+   「原生库 已加载」+「核心层调用失败：`java.lang.UnsatisfiedLinkError: No implementation found for
+   java.lang.String com.dsc.app.Native.callNative(java.lang.String)`（tried `Java_com_dsc_app_Native_callNative`
+   和 `Java_com_dsc_app_Native_callNative__Ljava_lang_String_2`）」。
+2. **根因**：JNI 的符号名不是由 C 代码里的函数名决定，而是由 **Java 侧的包名 + 类名 + 方法名**拼成
+   （`Java_<包名下划线化>_<类名>_<方法名>`）。0.1.1 为了把「原生库加载失败」显示到屏幕上，把
+   `android/app/src/main/java/com/dsc/app/Native.java` 里的 native 方法从 `call` / `feed` / `shutdown`
+   改名成 `callNative` / `feedNative` / `shutdownNative`，但 `android/app/src/main/cpp/dsc_jni.c` 的导出仍是
+   `Java_com_dsc_app_Native_call` / `_feed` / `_shutdown`。改名只改了一半：编译、链接、`dlopen`、符号解析全部通过
+   （导出符号确实存在，只是名字对不上 Java 要的那个），**只有运行时第一次调用才失败**，且每次调用都失败——
+   所以表现为界面能开、一点功能就报核心层调用失败。
+3. **为什么静态校验没抓住**：`verify_android.py` 原来只检查「未定义符号」与「插件子进程符号已定义」，
+   这两条都满足；JNI 导出符号名是否与 Java 声明匹配，此前没有任何断言，也没有任何编译期检查能覆盖
+   （字节码里的 native 声明与 so 里的导出之间没有链接关系）。
+4. **修复口径**：`dsc_jni.c` 的三个导出一律改成 `Java_com_dsc_app_Native_callNative` / `_feedNative` /
+   `_shutdownNative`，并在源码里注释写明「改 Java 侧 native 方法名必须同步改这里」；
+   `tools/verify_android.py` 新增第 24 项断言：解析 `Native.java` 里所有 `native` 声明的方法名，
+   逐个要求 `.dynsym` 里存在 `Java_com_dsc_app_Native_<方法名>`，缺一个就 FAIL。
+5. **顺带的真机验证（0.1.3 首次打通）**：连上 `adb`（设备 RMX5200 / Android 17 / API 37）后实测——
+   `getconf PAGE_SIZE` = **4096**（说明 0.1.0 的闪退主因不是 16KB 页对齐，16KB 硬门改定位为前瞻要求）；
+   `adb install -r` 成功、`am start` 后 `topResumedActivity = com.dsc.app/.MainActivity`、crash buffer 为空；
+   界面流程走通：首启页（API Key / 演示模式）→「授予时间能力」→ 聊天主界面（单会话 · 默认陪伴人设 ·
+   DeepSeek V4.1 Flash · 演示模式）→ 设置页（模型/人设/配色/插件 0 个 0 启用/指南 0/9 均正确回填）。
+   截图存于 `docs/screenshots/android-0.1.3-first-run.png`、`-chat.png`、`-settings.png`。
+   仍未覆盖：真实 Key 的网络对话、消息发送与长文输入（`adb shell input text` 被输入法拦截）、插件安装运行、
+   备份/导入导出、更新下载安装、蓝牙同步。
+6. **验收**：`verify_android.py` 24/24 PASS、`test_core` 1014 通过 0 失败、`verify` 36 条 FR 719 断言 0 失败、
+   `shots.py` 19 场景 0 失败；APK `versionCode 8` / `versionName 0.1.3`，证书 SHA-256 `55e55bc6…`（与 0.1.2 相同，可覆盖升级）。

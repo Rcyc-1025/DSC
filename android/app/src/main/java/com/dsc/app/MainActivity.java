@@ -2396,12 +2396,12 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "DSC 0.1.2", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.3", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("关于 DSC")
-                        .setMessage("DSC 0.1.2\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setMessage("DSC 0.1.3\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")

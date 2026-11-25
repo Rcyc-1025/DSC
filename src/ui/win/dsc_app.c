@@ -1263,7 +1263,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "0.1.2"
+#define APP_VERSION    "0.1.3"
 #define MSG_CAP        512
 #define ROW_H          52
 

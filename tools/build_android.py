@@ -106,7 +106,7 @@ def main():
     manifest = os.path.join(APP, 'AndroidManifest.xml')
     run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
          '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '7', '--version-name', '0.1.2',
+         '--target-sdk-version', '34', '--version-code', '8', '--version-name', '0.1.3',
          '--auto-add-overlay', flat_zip])
 
     # 5. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so
