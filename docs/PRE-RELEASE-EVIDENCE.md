@@ -526,12 +526,12 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
 
 - 触发原因：用户报「填写 API key 时出现这个问题」，附真机截图 toast「写入系统安全存储失败（AndroidKeyStore 拒绝）」；
   同一轮还要求检查全部界面与窗口的美观、布局与背景色对文字可读性的影响（详见 §7.4 与 `docs/TDD-TRACE-0.1.0.md` 第 9 节）。
-- 发布对象：提交 `__COMMIT__`（`fix(android): 修复 API Key 写入失败（Context 与 IV 两个根因），改进夜间可读性，发布 0.1.4`），
-  标签 `v0.1.4`（附注标签，指向 `__COMMIT__`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.4>，
+- 发布对象：提交 `080fe47`（`fix(android): 修复 API Key 写入失败（Context 与 IV 两个根因），改进夜间可读性，发布 0.1.4`），
+  标签 `v0.1.4`（附注标签，指向 `080fe47`），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.4>，
   标题「DSC 0.1.4 - 安卓 API Key 修复 + 夜间可读性」，非草稿、非预发布、标记为 **Latest**；
   正文取自 `docs/RELEASE-NOTES-0.1.4.md`（按发布口径不含未实测清单）。
 - 资产 8 个，状态全部 `uploaded`：`DSC-0.1.4-win-x64-portable.zip`（1709314）、`DSC-0.1.4-win-x64-setup.exe`（4184638）、
   `DSC-0.1.4-win-arm64-portable.zip`（975821）、`DSC-0.1.4-android-arm64.apk`（909774）与各自 `.sha256`。
-- 回读校验：`gh release download v0.1.4` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（__READBACK__）。
+- 回读校验：`gh release download v0.1.4` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（**4/4 MATCH**：`62781d92…` / `464e7569…` / `d1a73b40…` / `c14ebc7f…`）。
 - `v0.1.0` ~ `v0.1.3` 的标签与 Release **都保留未动**（Release 列表里 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 五条并存）。
 - 升级提示：0.1.4 的 Android 证书与 0.1.2 / 0.1.3 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
