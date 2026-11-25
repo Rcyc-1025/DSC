@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节补记） |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.1 起 versionCode 6 / 0.1.1，16KB 页对齐，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 0.1.1 起 20 项全部 PASS（含 PT_LOAD 页对齐断言）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.2 起 versionCode 7 / 0.1.2，16KB 页对齐 + --no-undefined，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.2 起 22 项全部 PASS（含 PT_LOAD 页对齐与符号完整性断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
@@ -180,3 +180,26 @@ D:\Code\python312\python.exe tools\verify_android.py  # 0.1.1 起 20 项全部 P
    兜异常并把设备信息整屏显示、可复制；新增 `Diagnostics` 写 `filesDir/crash.log` 并在下次启动弹窗提示。
 4. **验收**：`verify_android.py` 20/20 PASS、`test_core` 1014 通过、`verify` 36 条 FR 719 断言全 PASS、
    `shots.py` 19 场景 0 失败；APK `versionCode 6` / `versionName 0.1.1`。真机效果仍需用户实测确认。
+## 7. 0.1.2 补记：安卓原生库符号缺失的修复依据（非需求变更）
+
+0.1.2 同样不动任何 FR 条目，修的是 0.1.1 把页对齐修好之后才暴露出来的第二层致命问题。
+
+1. **现象**：装 0.1.1 后真机（真我 GT8 Pro / ColorOS 17 / **Android 17 / API 37**）屏幕上的可见错误是
+   `java.lang.UnsatisfiedLinkError: dlopen failed: cannot locate symbol dsc_plugin_proc_free referenced by
+   .../lib/arm64/libdsc.so`——注意是**找不到符号**，不再是页对齐。
+2. **根因**：`src/core/plugin.c` 无条件调用 `dsc_plugin_proc_call` / `dsc_plugin_proc_free`，这两个函数只有
+   `src/platform/win/plugin_proc_win.c` 提供实现；Android 构建清单（`tools/build_android.py` 的 `srcs`）只收
+   `src/core/*.c` + `src/platform/android/*.c` + `sqlite3.c` + `dsc_jni.c` + `credential_android.c`，从不包含 `src/platform/win/`。
+   共享库（`-shared`）链接时不要求符号齐全，于是编译、链接、打包全部通过；只有 Android 的 `dlopen` 严格解析才失败，
+   缺一个符号就整库加载不起来，`System.loadLibrary` 抛出，界面出现前进程已退出。
+3. **为什么 Android 本来就不该有这条路径**：Android 的插件执行一直是 Java 侧面进程（`PluginHostService` →
+   `PluginWorker` → `PluginEngine`，`dsc_jni.c` 的 `pluginCallPoint` 只做汇总回灌）。核心层这两个函数在 Android 上是死代码，
+   死代码缺实现仍然会让整个库加载失败——这是共享库链接语义与 Android 加载语义的差异，不是需求缺口。
+4. **修复口径**：新增 `src/platform/android/plugin_proc_android.c`（`available` 返回 0；`call` 填明确错误并返回
+   `DSC_E_UNSUPPORTED`，不假装成功；`free` 正常释放）；链接加 `-Wl,--no-undefined`，把「漏编平台实现」从运行时故障前移到
+   链接期失败；`tools/verify_android.py` 增加两条断言（未定义符号只能由系统库提供、三个插件子进程入口必须以已定义形态存在）。
+5. **附带的工程修正**：keystore 从 `build_android\` 移到 `%LOCALAPPDATA%\DSC\signing\`——0.1.1 的密钥被清理脚本删掉、
+   无法恢复，导致 0.1.2 必须换证书，用户只能卸载重装（Android 不允许跨签名覆盖安装）。
+6. **验收**：`verify_android.py` 22/22 PASS、`test_core` 1014 通过、`verify` 36 条 FR 719 断言全 PASS、
+   `shots.py` 19 场景 0 失败；APK `versionCode 7` / `versionName 0.1.2`，证书 SHA-256 `55e55bc6…`。
+   真机效果仍需用户实测确认。

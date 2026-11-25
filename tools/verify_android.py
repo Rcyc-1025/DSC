@@ -7,13 +7,14 @@
  4) apksigner verify 通过（自签名同样需要可验证）。
 退出码 = 失败项数。"""
 
-import os, sys, struct, subprocess, zipfile
+import os, sys, re, struct, subprocess, zipfile
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.path.expandvars(r'%LOCALAPPDATA%\Android\Sdk')
 BT = os.path.join(SDK, 'build-tools', '37.0.0')
+NDKBIN = r'D:\Code\android-ndk\android-ndk-r27c\toolchains\llvm\prebuilt\windows-x86_64\bin'
 APK = os.path.join(ROOT, 'build_android', 'DSC.apk')
 
 fails = []
@@ -61,13 +62,48 @@ def main():
         min_align = min(aligns) if aligns else 0
         check(min_align >= 0x4000,
               'libdsc.so 的 PT_LOAD 段按 16KB 页对齐（最小 p_align=0x%x，需 >=0x4000）' % min_align)
+        # 0.1.2 起的硬门：libdsc.so 的未定义符号必须全部由系统库提供。
+        # Android 的 dlopen 会逐个解析符号，缺一个就整个 .so 加载失败（0.1.1 在真机上
+        # 就是漏了 dsc_plugin_proc_call/free 才退的），而共享库链接时允许留未定义符号，
+        # 只有构建期 -Wl,--no-undefined 和这道清单能挡住。
+        so_tmp = os.path.join(ROOT, 'build_android', '_verify_libdsc.so')
+        with open(so_tmp, 'wb') as fh:
+            fh.write(so)
+        readelf = os.path.join(NDKBIN, 'llvm-readelf.exe')
+        if not os.path.isfile(readelf):
+            print('SKIP 未找到 NDK 的 llvm-readelf，跳过未定义符号检查')
+        else:
+            p2 = subprocess.run([readelf, '--dyn-syms', so_tmp],
+                                capture_output=True, text=True, encoding='utf-8', errors='replace')
+            und, defined = [], set()
+            for line in (p2.stdout or '').splitlines():
+                parts = line.split()
+                if len(parts) < 8 or not parts[0].endswith(':'):
+                    continue
+                name = parts[7]
+                if parts[6] == 'UND':
+                    und.append(name)
+                else:
+                    defined.add(name)
+            # 系统库提供的符号带 @LIBC/@LIBC_N 版本后缀；liblog 的日志函数没有后缀。
+            allowed = set(['__android_log_print'])
+            bad = [n for n in und if '@' not in n and n not in allowed]
+            check(not bad,
+                  'libdsc.so 的未定义符号全部由系统库提供（共 %d 个，非常规 %d 个%s）'
+                  % (len(und), len(bad), ('' if not bad else '：' + ', '.join(bad[:6]))))
+            missing = [s for s in ('dsc_plugin_proc_call', 'dsc_plugin_proc_free',
+                                   'dsc_plugin_proc_available') if s not in defined]
+            check(not missing,
+                  '插件子进程符号在 libdsc.so 里有实现（缺：%s）'
+                  % (', '.join(missing) if missing else '无'))
+            os.remove(so_tmp)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.1'" in badging, '版本名 0.1.1')
-    check("versionCode='6'" in badging, 'versionCode 6')
+    check("versionName='0.1.2'" in badging, '版本名 0.1.2')
+    check("versionCode='7'" in badging, 'versionCode 7')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')

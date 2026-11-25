@@ -15,6 +15,10 @@ BT = os.path.join(SDK, 'build-tools', '37.0.0')
 PLATFORM = os.path.join(SDK, 'platforms', 'android-35', 'android.jar')
 JDK = r'D:\Code\JDK\jdk-21.0.12.1\bin'
 OUT = os.path.join(ROOT, 'build_android')
+# 签名密钥放在仓库外：clean.py 会清掉 build_android/，早先把 keystore 放在其中的做法
+# 导致每次打包都重新生成证书，新版本装不上（Android 不允许跨签名覆盖安装，见 0.1.2 说明）。
+# 这个密钥必须长期保留并自行备份：换了它，已安装的版本就只能卸载重装。
+KEYSTORE = os.path.join(os.path.expandvars(r'%LOCALAPPDATA%'), 'DSC', 'signing', 'dsc-release.keystore')
 APP = os.path.join(ROOT, 'android', 'app', 'src', 'main')
 
 CLANG = os.path.join(NDKBIN, 'clang.exe')
@@ -71,8 +75,12 @@ def main():
     # 0.1.1：16KB 页对齐。Android 15/16 起不少新机（含 16KB 内核的旗舰）只接受
     # p_align >= 0x4000 的 .so，4KB 对齐的库会 dlopen 失败 -> UnsatisfiedLinkError -> 一点就退。
     # 16KB 对齐的库在 4KB 内核上同样可用，是官方推荐的双兼容做法。
+    # --no-undefined：Android 的 dlopen 会逐个解析符号，缺一个就整个 .so 加载失败
+    # （0.1.1 真机上插件符号缺失导致的 UnsatisfiedLinkError 就是这么来的）。
+    # 加这个开关后，同样的漏编在链接期直接失败，不会溜进安装包。
     run([CLANG, TARGET, '-shared', '-o', so] + objs +
-        ['-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384', '-lm', '-llog'])
+        ['-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384',
+         '-Wl,--no-undefined', '-lm', '-llog'])
     print('libdsc.so', os.path.getsize(so), 'bytes')
 
     # 2. javac
@@ -98,7 +106,7 @@ def main():
     manifest = os.path.join(APP, 'AndroidManifest.xml')
     run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
          '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '6', '--version-name', '0.1.1',
+         '--target-sdk-version', '34', '--version-code', '7', '--version-name', '0.1.2',
          '--auto-add-overlay', flat_zip])
 
     # 5. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so
@@ -112,12 +120,15 @@ def main():
     run([os.path.join(BT, 'zipalign.exe'), '-f', '-p', '4', base_apk, aligned])
 
     # 7. 自签名证书
-    ks = os.path.join(OUT, 'dsc.keystore')
+    ks = KEYSTORE
+    os.makedirs(os.path.dirname(ks), exist_ok=True)
     if not os.path.exists(ks):
         run([os.path.join(JDK, 'keytool.exe'), '-genkeypair', '-keystore', ks,
              '-alias', 'dsc', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
              '-storepass', 'dsc123', '-keypass', 'dsc123',
              '-dname', 'CN=DSC, OU=Dev, O=DSC, L=Local, ST=Local, C=CN'])
+        print('新签名密钥已生成：%s' % ks)
+    print('签名密钥：%s（仓库外，自行备份；换掉它会导致已安装版本无法覆盖升级）' % ks)
 
     # 8. apksigner 签名
     signed = os.path.join(OUT, 'DSC.apk')

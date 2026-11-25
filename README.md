@@ -42,12 +42,14 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `DSC-0.1.1-win-x64-portable.zip` | Windows x64 便携包，解压双击 `DSC.exe` |
-| `DSC-0.1.1-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `DSC-0.1.1-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `DSC-0.1.1-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起；16KB 页对齐） |
+| `DSC-0.1.2-win-x64-portable.zip` | Windows x64 便携包，解压双击 `DSC.exe` |
+| `DSC-0.1.2-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `DSC-0.1.2-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `DSC-0.1.2-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起；16KB 页对齐） |
 
 每个包都附同名 `.sha256`。
+
+Android 从 0.1.1 升级到 0.1.2 **需要先卸载旧版**（签名证书更换，Android 不允许跨签名覆盖安装）。
 
 ## 构建
 
@@ -71,10 +73,10 @@ python tools\build_android.py     # 产出 build_android\DSC.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\DSC-0.1.1-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\DSC-0.1.2-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\DSC-0.1.1-win-arm64-portable.zip
-python tools\make_installer.py       # dist\DSC-0.1.1-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\DSC-0.1.2-win-arm64-portable.zip
+python tools\make_installer.py       # dist\DSC-0.1.2-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `DSC.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。

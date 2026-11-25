@@ -2,7 +2,71 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 的 Release 保留在 `v0.1.0`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线（0.1.0 与 0.1.1 的 Release 分别保留在 `v0.1.0`、`v0.1.1`）（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+
+## [0.1.2] - 2026-11-25（安卓原生库符号缺失修复）
+
+> 本节同时是 GitHub Release `v0.1.2` 的发布说明。Windows 侧没有功能改动，只是版本号随动；
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 7 节 Android 校验）。
+
+### 修复
+
+- **Android 一点就退的真实根因：`libdsc.so` 有未解析符号**。0.1.1 把 16KB 页对齐修好后，真机（真我 GT8 Pro /
+  ColorOS 17 / Android 17 / API 37）把原因显示了出来：
+  `java.lang.UnsatisfiedLinkError: dlopen failed: cannot locate symbol "dsc_plugin_proc_free" referenced by .../libdsc.so`。
+  根因是 `src/core/plugin.c` 无条件调用 `dsc_plugin_proc_call` / `dsc_plugin_proc_free`，而这两个函数只有 Windows 实现
+  （`src/platform/win/plugin_proc_win.c`），Android 构建从来没有编过它们。共享库允许留下未定义符号，编译和链接都不报错，
+  直到 Android 的 `dlopen` 逐个解析符号才失败——缺一个就整个库加载不起来，`System.loadLibrary` 抛出后进程直接退出。
+  - 新增 `src/platform/android/plugin_proc_android.c`：`dsc_plugin_proc_available` 返回 0（与 `plugin_proc.h` 的口径一致），
+    `dsc_plugin_proc_call` 明确返回 `DSC_E_UNSUPPORTED` 并写清「Android 上插件由 Java 侧独立进程执行」，
+    `dsc_plugin_proc_free` 正常释放。Android 的插件调用实际走 `PluginHostService` → `PluginWorker` → `PluginEngine`，
+    结果回灌 `pluginCallPoint`，界面路径本来就不经过这里；给出真实实现是为了链接完整，同时不假装成功。
+  - `tools/build_android.py` 的链接命令加 `-Wl,--no-undefined`：同类漏编以后在链接期直接失败，溜不进安装包。
+  - `tools/verify_android.py` 新增两项断言（校验项 20 → 22）：未定义符号只允许由系统库提供（形如 `xxx@LIBC` 与 liblog 的
+    `__android_log_print`）；`dsc_plugin_proc_call` / `_free` / `_available` 必须以已定义形态出现在 `.dynsym` 里。
+
+### 变更
+
+- **Android 签名密钥改为长期保留**：过去 `tools/build_android.py` 把 keystore 生成在 `build_android/` 里，而 `tools/clean.py`
+  会清掉该目录，于是每个版本都重新生成证书；不同签名的 APK 无法覆盖安装。现在密钥固定在仓库外
+  `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，构建、清理、重新克隆都不会动它。
+- **0.1.2 的签名指纹与 0.1.1 不同**：0.1.1 的密钥已随构建目录被清掉、无法恢复（`55e55bc6…` ≠ 0.1.1 的 `bc3799…`）。
+  所以从 0.1.1 升级到 0.1.2 **必须先卸载 0.1.1 再安装**，Android 不允许跨签名覆盖安装；卸载会清掉应用数据。
+  从 0.1.2 起的后续版本签名稳定，可以正常覆盖升级。
+- 版本号：`versionCode 6 → 7`、`versionName 0.1.1 → 0.1.2`（`AndroidManifest.xml` 与 `aapt2 link` 两处同改）；
+  Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.2。
+- 许可证、功能、数据模型、schema 均无变化（仍是 Apache-2.0 / schema v5），0.1.1 之前的用户数据格式可直接沿用。
+
+### 复测（0.1.2 重建后全跑一遍）
+
+- `test_core`：**1014 通过 0 失败**；`dsc-cli.exe verify`：**FR-01 ~ FR-36 全 PASS，719 项断言 0 失败**；
+  `python tools\shots.py`：**19 个场景 0 失败**；`python tools\verify_android.py`：**22 项全 PASS**；
+  `python tools\precommit_scan.py`：0 问题。
+- `dsc-cli.exe bench`：万条分页 5.69 ms/页（预算 300 ms）、万条导出 23 ms（预算 2000 ms）、常驻内存 12.0 MB（预算 240 MB）；
+  `dsc-cli.exe perf`：rss 9280 KB（9.06 MB）、`rss_ok=true`、帧预算 16.7 ms、`db_bytes` 217088、`wal_bytes` 32768。
+- 安装包：`DSC-0.1.2-win-x64-setup.exe /S /D=build\instest12` 退出码 0、落地 21 个文件，
+  `install.log` 记录 `DSC Setup 0.1.2 / time=2026-11-25 13:10:53 / files=21 shortcut=failed registry=failed`；
+  静默卸载退出码 0、目录整体消失。
+- Android APK：`libdsc.so` 1678544 字节、`p_align=0x4000`、未定义符号 115 个全部由系统库提供；
+  签名证书 SHA-256 `55e55bc65e60186bacda5b48d29fcc941ad69c019f0abb94a4fbb99392f6e0ac`。
+- 签名与校验状态：Windows 产物**未做代码签名**（首次运行会有 SmartScreen 提示）；Android APK 用**调试证书**签名，
+  只适合自测与内部分发，不适合上架；完整性一律以同一行的 SHA-256 为准。
+
+### 产物（`dist`，各自旁挂 `.sha256`）
+
+| 产物 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.2-win-x64-portable.zip` | 1693321 | `678938f1fa818a4ef7fb643dc9984edc6c8a17bc225dd7968dd79bf778dea87c` |
+| `DSC-0.1.2-win-x64-setup.exe` | 4140149 | `ee1066e1979a4fbceab6cb1bd9e1347c5df201bc583a7b54e7ee85629e8f91b3` |
+| `DSC-0.1.2-win-arm64-portable.zip` | 959766 | `3fa56bca1cf6b3bec193e03915ad4f2473a92fab1d93cba69a3e6d3d9d7cdb29` |
+| `DSC-0.1.2-android-arm64.apk` | 909774 | `53383fd403e690dbdd33a0ed7479b756707215d27fb71a303726575d0edb3e9c` |
+
+### 升级方式
+
+- Windows：解压新的便携包覆盖旧目录，或直接跑新的安装包覆盖安装；数据库与设置沿用，不需要手工迁移。
+- Android：**先卸载 0.1.1（或更早版本）再安装 0.1.2**——签名证书换了，直接覆盖会提示「应用未安装」。
+  卸载会清掉应用数据；如果 0.1.1 里已有想保留的会话，只能等新版本装上后手工重来（0.1.1 无法启动，取不出备份）。
+- 从 0.1.2 起签名密钥固定，之后的版本可以直接覆盖升级。
 
 ## [0.1.1] - 2026-11-25（安卓首启闪退修复）
 

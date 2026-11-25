@@ -17,7 +17,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MINGW = r"D:\Code\msys2ucrt\ucrt64\bin"
 MARKER = b"AICSETUP-PAYLOAD-V1"
-VERSION = sys.argv[1] if len(sys.argv) > 1 else "0.1.1"
+VERSION = sys.argv[1] if len(sys.argv) > 1 else "0.1.2"
 
 GCC = os.path.join(MINGW, "gcc.exe")
 CFLAGS = ["-std=c11", "-O2", "-Wall", "-Wextra", "-municode", "-DUNICODE", "-D_UNICODE", "-mwindows"]
