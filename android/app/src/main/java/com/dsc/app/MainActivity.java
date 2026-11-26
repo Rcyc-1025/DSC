@@ -600,7 +600,7 @@ public class MainActivity extends Activity {
 
     private String personaName() {
         JSONObject p = st.optJSONObject("persona");
-        return p == null ? "默认人设" : optStr(p, "name", "默认人设");
+        return p == null ? "小鲸鱼" : optStr(p, "name", "小鲸鱼");
     }
 
     private String modelName() {

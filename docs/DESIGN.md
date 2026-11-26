@@ -117,6 +117,25 @@ DSC_LLM_E_AUTH「尚未配置 API Key」，不伪造成功；只有显式 `--dem
 生成中可停止（stop 置标志 → 传输层返回取消 → 已落库的用户消息保留），可重新生成（取最后一条助手消息置
 superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上下文）。
 
+### 5.1 人设与内置默认人设
+
+人设是 `persona` 表里的一行（`name` / `description` / `base_prompt` / `current_version`），提示词组装时整段拼在基础指令之后、
+用户资料变量之前；修改人设会写新版本行，旧版本可回退。
+
+全新安装（persona 表为空）时由 `dsc_persona_ensure_default()` 写入种子人设「小鲸鱼」，
+**正文的唯一源是仓库里的 `resources/persona/dsc_default_persona.txt`**，编译期由 `tools/gen_persona.py` 生成
+`src/core/persona_default.c`（声明在 `src/core/persona_default.h`，导出 `const char DSC_PERSONA_DEFAULT_PROMPT[]`），
+与内置知识库 `knowledge_data.c` 同一套做法：生成物不要手改，改文案改 txt 再重跑生成器。
+
+约定如下：
+
+- 生成脚本校验 txt 存在、UTF-8 合法、不含 CR、去掉空白后至少 800 字、五个用户变量占位齐全，任一不满足即失败；
+  `python tools/gen_persona.py --check` 只比对不写，用于确认生成物与 txt 同步；
+- 五个占位 `{user_name}` `{user_gender}` `{user_birthday}` `{user_occupation}` `{user_extra_note}` 由 `prompt.c` 替换，未填写替换为空串；
+- 种子人设只在表为空时写入，**升级不迁移、不覆盖已有用户改过的人设**；
+- 人设正文是数据不是代码，不参与打包：txt 不进便携包与 APK，编译期内嵌进二进制，仓库里保留 txt 只为可追溯与可再生成；
+- 文案风格沿用「一对一聊天」：不要群聊专属的潜水/唤醒、引用判断、群文化自适应等规则。
+
 ## 6. 主题与动效（FR-17 / FR-21）
 
 主题令牌 10 项（页面底、卡片底、正文、次要文字、分割线、主色、强调色、成功/警告/危险），日光与夜间两套，

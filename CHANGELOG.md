@@ -4,6 +4,33 @@
 
 > 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.5` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
 
+## [未发布]
+
+> 本节尚未发版：版本号仍是 0.1.5，没有新标签、没有新 Release、`dist/` 不重新打包。
+
+### 变更（内置默认人设换成「小鲸鱼」一对一聊天版）
+
+- 全新安装写入的默认人设从原来的四行模板改成约 4500 字的完整人设，名字是「小鲸鱼」：
+  自我认知、说话方式（去 AI 味）、一对一聊天节奏、DeepSeek 人格与梗、AI 味黑名单、
+  12 组回复示例、形象说明、用户资料变量说明八节。原卡里的群聊专属部分（潜水/唤醒、引用与回复判断、
+  群文化自适应、群聊热闹时保持节奏、`web_search` 与 qq-chat 预设提及、把对方叫「用户」的彩蛋）全部删除或改写为一对一场景。
+- 人设正文的**唯一来源**是 `resources/persona/dsc_default_persona.txt`；`src/core/persona_default.c` 由
+  `tools/gen_persona.py` 生成（内置知识库同一套做法，生成物不要手改）。改文案只改 txt，再跑：
+  `python tools\gen_persona.py`（加 `--check` 只比对不写，适合 CI 用）。
+- 五个用户变量占位原样保留：`{user_name}` `{user_gender}` `{user_birthday}` `{user_occupation}` `{user_extra_note}`，
+  未填写的仍替换为空串（`src/core/prompt.c`）。
+- 界面上的回退名统一成「小鲸鱼」：Windows 设置页人设副标题、演示回复预览、Android 人设名。
+- **老用户不受影响**：`dsc_persona_ensure_default()` 只在 persona 表为空时写入种子人设，
+  已有库里改过或没改过的人设都保持原样，不做迁移、不覆盖。
+- 生成脚本的校验：txt 必须存在、UTF-8 合法、不出现 CR、去掉空白后不少于 800 字、五个占位齐全，否则生成失败。
+
+### 校验
+
+- `build\test_core.exe`：**1027 通过 0 失败**（新增 3 条：种子人设名为「小鲸鱼」、正文长度大于 3000、五个占位齐全）。
+- `build\dsc-cli.exe verify . build\verify`：FR-01 ~ FR-36 全 PASS，断言合计 **724 项 0 失败**。
+- `python tools\shots.py`：19 场景 0 失败。
+- `python tools\precommit_scan.py`：0 问题。
+
 ## [0.1.5] - 2026-11-26（安卓问答模式切不回聊天修复 + 模式切换持久化）
 
 > 本节同时是 GitHub Release `v0.1.5` 的发布说明。

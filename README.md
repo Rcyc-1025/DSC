@@ -3,7 +3,7 @@
 **DSC = DeepSeek Chat。** 一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
 
 - 双模式：**问答模式**（多会话，参照 DeepSeek 网页版）与**聊天模式**（单会话，QQ 风格三栏）
-- 陪伴人设与提示词版本管理、用户资料变量替换，插件可按扩展点注入提示词片段
+- 陪伴人设与提示词版本管理、用户资料变量替换，插件可按扩展点注入提示词片段；内置默认人设「小鲸鱼」（全新安装写入，文案源在 `resources/persona/dsc_default_persona.txt`）
 - 会话记录 JSON 导出/导入（带校验和与三种冲突策略），Markdown 与纯文本导出
 - 原生动态库插件（Windows DLL / Android .so，纯 C ABI），插件跑独立子进程，崩溃不影响主程序
 - 真实网络直连：WinHTTP（Windows）/ HttpURLConnection（Android），流式逐段渲染，生成中可停止、可重新生成

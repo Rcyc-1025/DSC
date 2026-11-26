@@ -37,7 +37,8 @@ int dsc_persona_create(dsc_db *db, const char *name, const char *description,
 int dsc_persona_update(dsc_db *db, const char *id, const char *name, const char *description,
                        const char *base_prompt, dsc_persona *out);
 int dsc_persona_get(dsc_db *db, const char *id, dsc_persona *out);
-/* 默认人设：最早创建的一条；不存在则创建内置默认人设。 */
+/* 默认人设：最早创建的一条；不存在则创建内置默认人设（名字「小鲸鱼」，
+ * 正文见 resources/persona/dsc_default_persona.txt）。 */
 int dsc_persona_ensure_default(dsc_db *db, dsc_persona *out);
 int dsc_persona_list(dsc_db *db, dsc_persona **out, size_t *out_n);
 int dsc_persona_versions(dsc_db *db, const char *persona_id, dsc_prompt_version **out, size_t *out_n);

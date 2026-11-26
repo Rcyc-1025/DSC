@@ -1,14 +1,15 @@
 /* store_persona.c */
 #include "store_persona.h"
 
+#include "persona_default.h"
+
 #include <stdio.h>
 #include <string.h>
 
-#define PERSONA_DEFAULT_PROMPT \
-    "你是一个有耐心的陪伴型 AI 助手，说话自然、简短、有温度。\n" \
-    "优先回应对方的情绪，其次才是信息；不确定的事不要编造。\n" \
-    "用户信息：姓名 {user_name}，性别 {user_gender}，生日 {user_birthday}，" \
-    "职业 {user_occupation}，补充说明 {user_extra_note}。未填写的变量为空。"
+/* 内置默认人设正文不写在这里：它是一篇四千多字的中文长文，放在
+ * resources/persona/dsc_default_persona.txt，由 tools/gen_persona.py 生成为
+ * persona_default.c 里的 DSC_PERSONA_DEFAULT_PROMPT（改文案改 txt，别改生成物）。
+ * 它只在库里一条人设都没有时写入，已有用户的旧人设不会被覆盖。 */
 
 #define PERSONA_COLS "id, name, description, base_prompt, current_version, created_at, updated_at"
 
@@ -77,7 +78,7 @@ int dsc_persona_create(dsc_db *db, const char *name, const char *description,
     dsc_uuid4(p.id);
     dsc_strlcpy_utf8(p.name, sizeof(p.name), name);
     if (description) dsc_strlcpy_utf8(p.description, sizeof(p.description), description);
-    p.base_prompt = dsc_strdup(base_prompt && *base_prompt ? base_prompt : PERSONA_DEFAULT_PROMPT);
+    p.base_prompt = dsc_strdup(base_prompt && *base_prompt ? base_prompt : DSC_PERSONA_DEFAULT_PROMPT);
     p.current_version = 1;
     dsc_now_iso8601(p.created_at);
     dsc_strlcpy_utf8(p.updated_at, sizeof(p.updated_at), p.created_at);
@@ -172,8 +173,8 @@ int dsc_persona_ensure_default(dsc_db *db, dsc_persona *out)
     }
     dsc_stmt_finalize(st);
     if (rc != DSC_DONE) return rc;
-    return dsc_persona_create(db, "默认陪伴人设", "内置默认人设，可在设置里改写。",
-                              PERSONA_DEFAULT_PROMPT, out);
+    return dsc_persona_create(db, "小鲸鱼", "内置默认人设，可在设置里改写。",
+                              DSC_PERSONA_DEFAULT_PROMPT, out);
 }
 
 int dsc_persona_list(dsc_db *db, dsc_persona **out, size_t *out_n)

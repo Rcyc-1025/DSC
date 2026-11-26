@@ -826,7 +826,7 @@ static void demo_reply_preview(App *a, char *out, size_t cap)
     snprintf(out, cap,
              "我在的，%s。这是离线演示回复：本轮只提供模型接入的配置项与协议层，不发起真实网络请求。"
              "配置 API Key 并接入真实传输后，这里就会显示模型的流式输出。",
-             a->persona_name[0] ? a->persona_name : "陪伴助手");
+             a->persona_name[0] ? a->persona_name : "小鲸鱼");
 }
 
 /* 离线演示传输：按 SSE 协议切片喂给解析器，不碰网络（产品裁决：不发真实 HTTP）。 */
@@ -1849,7 +1849,7 @@ static void paint_chat(App *a, HDC dc, RECT content)
     draw_text(dc, a->font_title, t, title, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     snprintf(subline, sizeof(subline), "人设：%s · 模型：%s",
-             a->persona_name[0] ? a->persona_name : "默认陪伴人设",
+             a->persona_name[0] ? a->persona_name : "小鲸鱼",
              dsc_llm_model_or_default(
                  dsc_setting_get_str(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_FLASH, NULL, 0)
                      ? dsc_setting_get_str(a->db, DSC_SET_MODEL_DEFAULT, DSC_MODEL_FLASH, NULL, 0)

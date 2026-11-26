@@ -5,7 +5,7 @@
 中文说明见 [README.md](README.md).
 
 - Two modes: **Q&A mode** (multiple threads, list/search/pin/rename/delete) and **Chat mode** (a single companion thread, QQ-style three-tab layout: Me / Settings / Chat)
-- Companionship persona with prompt versioning, user-profile variables injected into prompts, and plugin-provided prompt fragments
+- Companionship persona with prompt versioning, user-profile variables injected into prompts, and plugin-provided prompt fragments; the built-in default persona is "小鲸鱼" (xiao jing yu, the DeepSeek whale), seeded on a fresh install from `resources/persona/dsc_default_persona.txt`
 - Conversation export/import as JSON with checksum and three conflict policies, plus Markdown and plain-text export
 - Plugins as native shared libraries (Windows DLL / Android `.so`, plain C ABI) that run in a separate process, so a crash cannot take the app down
 - Real network access: WinHTTP on Windows, HttpURLConnection on Android; responses stream token by token, and generation can be stopped or regenerated

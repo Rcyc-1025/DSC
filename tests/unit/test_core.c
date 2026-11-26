@@ -223,6 +223,17 @@ static void test_persona(dsc_db *db)
     dsc_persona p;
     CHECK_EQ_INT(dsc_persona_ensure_default(db, &p), DSC_OK, "首次取人设自动创建默认人设");
     CHECK_EQ_INT(p.current_version, 1, "默认人设版本为 1");
+    /* 0.1.5 起内置默认人设换成「小鲸鱼」一对一长文（源文本 resources/persona/
+     * dsc_default_persona.txt，由 tools/gen_persona.py 生成）。这里断言名字与变量占位，
+     * 防止生成物被清空或漏掉占位后没人发现。 */
+    CHECK_EQ_STR(p.name, "小鲸鱼", "内置默认人设名字为「小鲸鱼」");
+    CHECK(strlen(p.base_prompt) > 3000, "内置默认人设是长文而非旧的四行模板");
+    CHECK(strstr(p.base_prompt, "{user_name}") != NULL &&
+              strstr(p.base_prompt, "{user_gender}") != NULL &&
+              strstr(p.base_prompt, "{user_birthday}") != NULL &&
+              strstr(p.base_prompt, "{user_occupation}") != NULL &&
+              strstr(p.base_prompt, "{user_extra_note}") != NULL,
+          "内置默认人设保留五个用户变量占位");
     char id[40];
     dsc_strlcpy_utf8(id, sizeof(id), p.id);
 
