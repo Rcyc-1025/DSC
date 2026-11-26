@@ -1,6 +1,6 @@
 # DSC 技术设计（实现说明）
 
-> 本文件说明 "DSC" 0.1.5 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
+> 本文件说明 "DSC" 0.1.6 的落地结构：模块划分、关键接口、数据模型、状态机、跨平台策略与已知限制。
 > 需求来源为《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36），逐条对应关系见 [FR-MATRIX.md](FR-MATRIX.md)，
 > 本轮补齐的差距与口径差异见 [TDD-TRACE-0.1.0.md](TDD-TRACE-0.1.0.md)。
 
@@ -142,7 +142,8 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 界面所有颜色都通过 dsc_theme_color(token) 取，禁止硬编码色值。对比度用 WCAG 相对亮度公式实算：
 正文 ≥4.5:1（页面底与卡片底都查）、白字主色按钮 ≥3:1，由 dsc_theme_audit 断言。
 
-主色为深蓝色阶（FR-33）：日间主色 `0x103F7A`、强调色 `0x1F5FA8`；夜间主色 `0x6194C9`、强调色 `0x4E86D6`。
+主色为深蓝色阶（FR-33）：日间主色 `0x103F7A`、强调色 `0x1E6FA8`；夜间主色 `0x6194C9`、强调色 `0x63A8DE`。
+强调色 0.1.6 起对齐图标底色那一档蓝（日间 H≈204，夜间提亮到鲸鱼浅蓝），主色未动；色相与对比度断言（FR-33）仍全部通过。
 两套主色色相都在 211~213 度，差 ≤5 度——日光与夜间只改明度不改色相。实算对比度：日间正文/页面 15.06:1、
 正文/卡片 16.19:1、次要文字 5.62:1、主色底白字 10.43:1；夜间 15.90:1 / 14.32:1 / 7.35:1 / 3.19:1。
 
@@ -150,6 +151,31 @@ superseded=1 后重跑，旧回复仍留在库与导出里，但不再进入上�
 子页进入 200、浮层 160、消息入场 140、Toast 120；只动 transform/opacity，单帧预算 16.7ms；
 系统"减少动态效果"或用户关闭动效时 dsc_motion_reduced() 全部归零，直接切到终态。
 
+### 6.1 品牌视觉（图标与插图，0.1.6 起）
+
+图标与界面插图统一为一只蓝紫渐变的圆胖鲸鱼，素材取自 **Microsoft Fluent Emoji（MIT License）**：
+原图与许可全文在 `resources/brand/src/` 与 `resources/brand/LICENSE-Fluent-Emoji.md`，
+合成脚本 `tools/gen_brand.py` 只用 Python 标准库（自写 PNG 解码/编码、ICO 封装、面积平均缩放、圆角与圆形蒙版），
+`python tools\gen_brand.py` 一条命令重生成下列全部产物（`--check` 只比对不写盘）：
+
+| 产物 | 路径 | 用途 |
+| --- | --- | --- |
+| 多尺寸 PNG | `resources/brand/icon-{512,256,128,64,48,32,24,16}.png` | 文档、README、商店素材 |
+| Windows 图标 | `resources/brand/dsc.ico`（7 尺寸 PNG 载荷） | 程序图标，由 `windres` 编进 exe |
+| 插图源 | `resources/brand/whale.png` / `whale-spout.png` | 来自同一套 emoji 的两种鲸鱼 |
+| Windows 资源 | `resources/brand/dsc.rc`（`1 ICON`、`101/102 RCDATA`） | `build.ps1` 的 `Build-Resource` 编成 `build\obj\brand_res.o` 并链进 `DSC.exe`；`tools/make_installer.py` 同样编 `build/installer/brand_res.o` 给 setup / uninstall |
+| Android 图标 | `android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png`（48/72/96/144/192）与 `ic_launcher_round.png`（圆形蒙版） | 清单 `android:icon` / `android:roundIcon` |
+| Android 自适应 | `mipmap-anydpi-v26/ic_launcher.xml` + `drawable-nodpi/ic_launcher_foreground.png` + `drawable/ic_launcher_background.xml`（线性渐变 `#2A7FBA → #0B355F`） | Android 8.0+ 自适应图标 |
+| Android 插图 | `drawable-nodpi/whale.png` | 首启配置 Key 页 104dp、聊天空状态 88dp、关于弹窗图标 |
+
+底色固定为 `#2A7FBA → #0B355F` 的竖向渐变（与主色同一色阶），圆角比例 0.225、鲸鱼占画布 0.78 并上移 3%；
+圆形图标用 4x4 超采样圆形蒙版，自适应图标前景缩到 0.56 落在 72dp 安全区内。
+**改图片资产后必须重新打包**：PNG 是编译期内嵌进 exe / APK 的，`package_win.py` 与 `build_android.py` 都不读 `resources/`。
+
+Windows 端绘制走 `src/platform/win/brand_win.c`：动态加载 `gdiplus.dll` 与 `shlwapi.dll`，用
+`FindResourceW` / `LoadResource` 取 RCDATA → `SHCreateMemStream` → `GdipLoadImageFromStream` → `GdipDrawImageRectI` 等比缩放居中，
+接口是 `src/core/brand.h` 的 `dsc_brand_draw_rc(void *hdc, int resid, int x, int y, int w, int h)`（101 = 鲸鱼、102 = 喷水鲸鱼）。
+窗口图标在 `WinMain` 里用 `LoadImageW(hinst, MAKEINTRESOURCEW(1), IMAGE_ICON, ...)` 赋给 `wc.hIcon` / `wc.hIconSm`。
 ## 7. 插件隔离（FR-05）
 
 插件是原生动态库（Windows DLL / Android .so），宿主通过独立进程 dsc_plugin_host.exe 调用：
@@ -310,6 +336,11 @@ dsc-cli.exe bench 实测（本机，1 会话 10000 条消息，50 条一页）�
   `dsc_router_set_tab()` 必须对两种模式都给次级栏留通路，`dsc_router_back()` 从 `QA_TAB` 退回会话列表；
   `dsc_router_switch_mode()` 必须写 `ui.default_mode`，否则重启按旧值回滚（用户视角是「切了没生效」）。
   `tools/verify_android.py` 有断言禁止 `nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)` 回潮。
+- **内容容器若是 `FrameLayout`，长页面必须自己套 `ScrollView`（0.1.6 的实际故障）**：
+  Android 侧 `buildSkeleton()` 的中间区域是 `FrameLayout`，它**不滚动**；`settingsView()` 早期直接把自己塞进去，
+  设置页超过一屏后底部各项被裁掉——真机上表现为「怎么滑都不动」，其中「关于」在最底下，于是连版本号都看不到。
+  现在 `settingsView()` / `meView()` 统一经 `wrapScroll()` 用 `ScrollView`（`setFillViewport(true)` + `WRAP_CONTENT`）包裹。
+  新增页面时先确认容器是否滚动；短页面套 `ScrollView` 没有副作用，别靠「这页应该不会超屏」来赌。
 - **签名密钥必须放在仓库与构建目录之外**：keystore 固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
   `tools/build_android.py` 缺了才生成。密钥若跟着 `build_android\` 被清理脚本删掉，下一版就会换证书，
   用户无法覆盖升级（0.1.1 → 0.1.2 就发生了这件事，只能先卸载）。发布方的正式签名另有 `tools/sign_android.py`。

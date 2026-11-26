@@ -34,7 +34,7 @@
 
 3. **基准**：`dsc-cli.exe bench` 与 `dsc-cli.exe perf` 的数字写进 `docs/PRE-RELEASE-EVIDENCE.md`；任一指标超出 `src/core/perf.c` 的预算或比上一版劣化 >10% 即阻断发布。
 4. **提交前扫描**：`python tools\precommit_scan.py`（敏感字符串 + 许可证头 + 大文件 + 二进制混入 + 残留旧名 `aic_`/`Sai`）。退出码即问题数，必须为 0。
-5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.5 实测为 `git tag -a v0.1.5 -m "DSC 0.1.5"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
+5. **打标签**：`git tag -a v<版本> -m "DSC <版本>"`（0.1.6 实测为 `git tag -a v0.1.6 -m "DSC 0.1.6"`），标签必须与 `CHANGELOG.md` 的版本段落一一对应。标签推送后即冻结：
    之后若只改文档（不动代码、不改产物），在推 Release 前允许把标签前移到最新提交一次；Release 发布之后一律不再移动，
    后续修正走新的 PATCH 版本（见「回滚」一节）。
 6. **构建产物**（在干净工作区上重跑，不用开发目录里的旧产物）：
@@ -53,9 +53,9 @@
 9. **变更记录**：在 `CHANGELOG.md` 顶部新建 `## [<版本>] - <日期>` 段落（0.1.0 首发时是把 `[未发布]` 改名，此后每版新建一段）。
 10. **发布说明**：发布说明 = 该版本 CHANGELOG 段落 + 产物表与 SHA-256 + 校验方法 + 签名状态说明；
     未实测清单只保留在 `docs/PRE-RELEASE-EVIDENCE.md`，不写进 Release 正文。发布说明同时存档到
-    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，最新版为 `docs/RELEASE-NOTES-0.1.5.md`），
+    `docs/RELEASE-NOTES-<版本>.md`（0.1.0 为 `docs/RELEASE-NOTES-0.1.0.md`，最新版为 `docs/RELEASE-NOTES-0.1.6.md`），
     `--notes-file` 指的就是这份文件。
-    **实测记录**：0.1.0 ~ 0.1.5 用这套命令发布（0.1.0 ~ 0.1.3 是 2026-11-25、0.1.4 与 0.1.5 是 2026-11-26），各自 8 个资产（4 个产物 + 4 个 `.sha256`）
+    **实测记录**：0.1.0 ~ 0.1.6 用这套命令发布（0.1.0 ~ 0.1.3 是 2026-11-25、0.1.4 / 0.1.5 / 0.1.6 是 2026-11-26），各自 8 个资产（4 个产物 + 4 个 `.sha256`）
     全部 `uploaded`，重新下载四个包逐一核对 SHA-256 与 `dist` 内一致。
 11. **发布到 GitHub**（0.1.0 起的固定步骤，`pwsh` 里直接用数组传参）：
 
@@ -97,10 +97,10 @@
 | Windows 便携包 | `DSC-<版本>-win-x64-portable.zip` | x64 | 解压即用，含 CLI、示例插件、文档、`install.ps1` |
 | Windows 安装包 | `DSC-<版本>-win-x64-setup.exe` | x64 | 自解压式安装程序，默认装到 `%LOCALAPPDATA%\Programs\DSC` |
 | Windows ARM64 便携包 | `DSC-<版本>-win-arm64-portable.zip` | ARM64 | 交叉编译产物，含移植后的插件宿主与示例插件；不含 CLI 验收器（仅 x64 版） |
-| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.5` / `versionCode 10`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
+| Android 安装包 | `DSC-<版本>-android-arm64.apk`（构建产物为 `build_android\DSC.apk`） | arm64-v8a | `minSdk 24`、`targetSdk 34`，当前 `versionName 0.1.6` / `versionCode 11`；链接必须带 `-Wl,-z,max-page-size=16384`（16KB 页对齐）与 `-Wl,--no-undefined`；开发包用仓库自签证书，发布包必须用 `tools\sign_android.py` 以发布方证书重签 |
 
 Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` 决定，`aapt2 link --version-code` 不覆盖它；
-两处必须同时改（0.1.5 为 `versionCode="10"` / `versionName="0.1.5"`），`tools\verify_android.py` 会断言两者一致。
+两处必须同时改（0.1.6 为 `versionCode="11"` / `versionName="0.1.6"`），`tools\verify_android.py` 会断言两者一致。
 **16KB 页对齐是硬要求**：`tools\build_android.py` 的链接命令必须带 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384`，
 否则 `libdsc.so` 的 `PT_LOAD` 段只有 4KB 对齐，在 16KB 页内核的 Android 15/16 新机上 `dlopen` 失败、应用一启动就退出。
 `tools/verify_android.py` 有一条断言读 ELF 程序头，要求最小 `p_align` ≥ 0x4000。
@@ -131,6 +131,18 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 失败原因要能从 Java 侧带回界面（`SecureStore.lastError()` → `credential_android.c` 的 `append_reason()`），
   否则用户只看到「（AndroidKeyStore 拒绝）」，排查时全靠猜。
 
+**改图标 / 图片资源后必须重新打包（0.1.6 的流程要求）**：图标与插图是**编译期内嵌**的，不是运行时读文件。
+- Windows：`resources/brand/dsc.rc` 由 `windres` 编成 `build\obj\brand_res.o`（`build.ps1` 的 `Build-Resource`，按时间戳增量）并链进 `DSC.exe`；
+  安装程序与卸载程序的资源由 `tools\make_installer.py` 的 `build_res()` 单独编到 `build\installer\brand_res.o`。**只改 PNG 不重跑链接**，程序里还是旧图。
+- Android：`aapt2 compile + link` 必须在 `javac` **之前**跑（`tools\build_android.py` 的「1.5」步，link 带 `--java` 生成 `R`），
+  否则 Java 里一引用 `R.drawable.*` 就编译失败。
+- 全部素材可复现：`python tools\gen_brand.py`（纯标准库）从 `resources/brand/src/` 的原图生成多尺寸 PNG / ICO / Android mipmap，
+  来源与许可见 `resources/brand/LICENSE-Fluent-Emoji.md`（Microsoft Fluent Emoji，MIT）。
+
+**Android 的内容容器不滚动，页面必须自己套 ScrollView（0.1.6 的教训）**：`MainActivity.buildSkeleton()` 的中间区域是 `FrameLayout`，
+本身不滚动。0.1.6 之前 `settingsView()` 直接把自己塞进去，设置页超过一屏后底部各项被裁掉，真机上表现为「怎么滑都不动」，
+连底部的「关于」都点不到。页面一律经 `wrapScroll()` 包一层 `ScrollView`；短页面套 `ScrollView` 没有副作用。
+排查这类问题先 `adb shell uiautomator dump` 看目标控件是否进了视图树——不在树里就是被裁掉了，而不是滚出了屏幕。
 **Android 签名密钥必须仓库外持久化**：keystore 固定为 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，
 `tools/build_android.py` 不存在时才生成。切勿把它放回 `build_android\`——清理脚本会删掉它，下一版就会换证书，
 用户无法覆盖升级（0.1.1 → 0.1.2 就是这样，只能先卸载）。密钥要单独备份，丢了只能换证书、让用户重装。
@@ -148,7 +160,7 @@ Android 产物的 `versionCode` 由 `android/app/src/main/AndroidManifest.xml` �
 - 数据层回滚：`backups/` 下每次迁移前的完整副本，文件名含迁移前后版本号；恢复时关闭程序、替换 `db/dsc.db` 即可。
 - 标签回滚：不删除、不移动标签；如需撤回版本，发布新的 PATCH 版本并在 CHANGELOG 中说明。
 
-最后更新：2026-11-26（对应版本 v0.1.5；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
+最后更新：2026-11-26（对应版本 v0.1.6；产品命名为 DSC，许可证 Apache-2.0；第 11 步「发布到 GitHub」改成 `$files`
 数组传参，第 12 步「收尾清理」；Android 产物必须 16KB 页对齐、共享库必须 `--no-undefined`、JNI 导出符号必须与 Java 声明一致、
 签名密钥仓库外持久化；能连真机时先真机验证；
 发布说明不包含未实测清单）。

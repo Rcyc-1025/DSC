@@ -21,7 +21,7 @@
 #include "plugin_proc.h"
 #include "dsc_verify.h"
 
-#define DSC_CLI_VERSION "0.1.5"
+#define DSC_CLI_VERSION "0.1.6"
 
 static void usage(FILE *out)
 {

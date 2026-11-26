@@ -1,5 +1,7 @@
 # DSC
 
+<img src="docs/screenshots/brand-icon-512.png" width="112" alt="DSC 图标：深蓝底上的蓝紫渐变鲸鱼">
+
 **DSC = DeepSeek Chat。** 一个**纯 C 实现**的本地陪伴对话客户端：Windows 桌面（Win32 + GDI）+ Android，用户自带 DeepSeek API Key，不经过任何第三方服务器。
 
 - 双模式：**问答模式**（多会话，参照 DeepSeek 网页版）与**聊天模式**（单会话，QQ 风格三栏）
@@ -42,14 +44,14 @@
 
 | 文件 | 平台 |
 | --- | --- |
-| `DSC-0.1.5-win-x64-portable.zip` | Windows x64 便携包，解压双击 `DSC.exe` |
-| `DSC-0.1.5-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
-| `DSC-0.1.5-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
-| `DSC-0.1.5-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起；16KB 页对齐） |
+| `DSC-0.1.6-win-x64-portable.zip` | Windows x64 便携包，解压双击 `DSC.exe` |
+| `DSC-0.1.6-win-x64-setup.exe` | Windows x64 安装程序（支持 `/S` 静默安装） |
+| `DSC-0.1.6-win-arm64-portable.zip` | Windows ARM64 便携包（交叉编译） |
+| `DSC-0.1.6-android-arm64.apk` | Android 安装包（arm64-v8a，Android 7.0 起；16KB 页对齐） |
 
 每个包都附同名 `.sha256`。
 
-Android 从 0.1.2 起的版本（含 0.1.5）共用同一签名证书，**可以直接覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载旧版。
+Android 从 0.1.2 起的版本（含 0.1.6）共用同一签名证书，**可以直接覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载旧版。
 
 ## 构建
 
@@ -73,10 +75,10 @@ python tools\build_android.py     # 产出 build_android\DSC.apk（arm64-v8a，v
 ## Windows 打包
 
 ~~~powershell
-python tools\package_win.py          # dist\DSC-0.1.5-win-x64-portable.zip + .sha256
+python tools\package_win.py          # dist\DSC-0.1.6-win-x64-portable.zip + .sha256
 python tools\build_arm64.py          # 交叉编译 ARM64 产物到 build\arm64\
-python tools\package_win.py --arm64  # dist\DSC-0.1.5-win-arm64-portable.zip
-python tools\make_installer.py       # dist\DSC-0.1.5-win-x64-setup.exe + .sha256
+python tools\package_win.py --arm64  # dist\DSC-0.1.6-win-arm64-portable.zip
+python tools\make_installer.py       # dist\DSC-0.1.6-win-x64-setup.exe + .sha256
 ~~~
 
 便携包内含 `DSC.exe`、命令行工具、示例插件、文档与 `install.ps1`（创建开始菜单快捷方式，不需要管理员权限）。
@@ -111,3 +113,5 @@ python tools\make_installer.py       # dist\DSC-0.1.5-win-x64-setup.exe + .sha25
 ## 许可
 
 本项目使用 [Apache License 2.0](LICENSE)（SPDX：`Apache-2.0`）：可自由使用、修改、商用与再分发，须保留版权与许可声明、标注修改，并附带许可证全文；同时授予专利许可。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+图标与界面插图取自 [Microsoft Fluent Emoji](https://github.com/microsoft/fluentui-emoji)（MIT License，见 [resources/brand/LICENSE-Fluent-Emoji.md](resources/brand/LICENSE-Fluent-Emoji.md)），由 `tools\gen_brand.py` 合成为应用图标与插图；素材本身仍按其 MIT 许可分发。

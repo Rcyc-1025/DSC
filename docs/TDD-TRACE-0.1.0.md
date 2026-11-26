@@ -20,7 +20,7 @@
 | 单元测试 | 810 项 | **1014 项通过，0 失败** |
 | 数据库 schema | v4 | **v5**（新增 error_record / memory_entry / memory_token / capability_grant） |
 | 桌面端 | 14 张截图场景 | 19 张（新增知识库列表/详情、错误中心、设备权限、聊天错误条） |
-| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节；0.1.4 起 versionCode 9 / 0.1.4、24 项，见第 9 节；0.1.5 起 versionCode 10 / 0.1.5、25 项，见第 10 节） |
+| Android | versionCode 4 / 1.3.0 | **versionCode 5 / 0.1.0**，`tools/verify_android.py` 19 项全部 PASS（0.1.1 起 versionCode 6 / 0.1.1、20 项，见本文第 6 节；0.1.2 起 versionCode 7 / 0.1.2、22 项，见第 7 节；0.1.3 起 versionCode 8 / 0.1.3、24 项，见第 8 节；0.1.4 起 versionCode 9 / 0.1.4、24 项，见第 9 节；0.1.5 起 versionCode 10 / 0.1.5、25 项，见第 10 节；0.1.6 起 versionCode 11 / 0.1.6、28 项，见第 11 节） |
 
 本轮实际缺口的六处（复核后确认「文档有、代码无」），已全部补齐：
 
@@ -158,8 +158,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target test  # 
 D:\Code\python312\python.exe tools\shots.py   # 20 个场景 → build\shots\*.png
 
 # Android
-D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.5 起 versionCode 10 / 0.1.5，16KB 页对齐 + --no-undefined，v2+v3 自签）
-D:\Code\python312\python.exe tools\verify_android.py  # 0.1.5 起 25 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致、SecureStore.init 注入、问答模式保留底栏断言）
+D:\Code\python312\python.exe tools\build_android.py   # build_android\DSC.apk（0.1.6 起 versionCode 11 / 0.1.6，16KB 页对齐 + --no-undefined，v2+v3 自签）
+D:\Code\python312\python.exe tools\verify_android.py  # 0.1.6 起 28 项全部 PASS（含 PT_LOAD 页对齐、符号完整性、JNI 声明与导出一致、SecureStore.init 注入、问答模式保留底栏、图标与插图资源断言）
 ~~~
 
 > `dsc-cli.exe verify` 必须在仓库根目录运行：相对路径 `./docs/FR-MATRIX.md` 就是按工作目录解析的。
@@ -375,3 +375,72 @@ UI 也就没有可渲染的分支。这一层是纯架构缺口，与 UI 无关�
 `dsc_setup.c`、`build_android.py`、`make_installer.py`、`package_win.py`、`verify_android.py`、`sign_release.ps1` 全同步）。
 回归：`test_core` 1024 通过 0 失败；`verify` FR-01~FR-36 全 PASS、724 断言 0 失败；`shots.py` 19 场景 0 失败；
 `verify_android` 25 项全 PASS；`precommit_scan` 0 问题；证书 SHA-256 `55e55bc6…`（与 0.1.2 / 0.1.3 / 0.1.4 相同，可覆盖升级）。
+
+## 11. 0.1.6 补记：品牌图标、界面插图与设置页滚动（非需求变更）
+
+> 本节记录 0.1.6 的工程改动与一处在真机上发现的布局缺陷。**FR 条目没有增删**，
+> 变更只涉及视觉资产、绘制层与 Android 的内容容器，验收口径仍是 FR-01 ~ FR-36。
+
+### 11.1 应用图标与品牌视觉
+
+0.1.5 及之前两端都是「没有自定义图标」的状态：Windows 的 `WNDCLASSEXW` 没赋 `hIcon`，任务栏与 Alt-Tab 用的是系统默认图标；
+Android 的 `AndroidManifest.xml` 没有 `android:icon`，`res/` 下只有 `values/strings.xml`。0.1.6 补齐：
+
+| 端 | 做法 |
+| --- | --- |
+| Windows | 新增 `resources/brand/dsc.rc`（`1 ICON "dsc.ico"` + `101/102 RCDATA` 两张 PNG）；`build.ps1` 新增 `Build-Resource`，按 rc/ico/png 时间戳增量调 `windres` 编 `build\obj\brand_res.o`，链进 `gui` 与 `guidiag`；`WinMain` 用资源 ID 1 赋 `wc.hIcon` / `wc.hIconSm`；`tools/make_installer.py` 同样编 `build/installer/brand_res.o`，让 setup / uninstall 也带图标 |
+| Android | `res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}` 下五档 `ic_launcher.png` / `ic_launcher_round.png`；`mipmap-anydpi-v26` 自适应图标（前景 `drawable-nodpi/ic_launcher_foreground.png`，背景 `drawable/ic_launcher_background.xml` 渐变）；清单补 `android:icon` / `android:roundIcon` |
+| 素材 | Microsoft Fluent Emoji 的 3D 鲸鱼（MIT，`resources/brand/LICENSE-Fluent-Emoji.md`）；合成脚本 `tools/gen_brand.py` 纯标准库自写 PNG 编解码 + ICO 封装 + 面积平均缩放 + 圆角/圆形蒙版 |
+
+派生要求：`tools/build_android.py` 的 `aapt2 compile + link` 必须**提到 `javac` 之前**（新增「1.5」步，link 带 `--java gen_dir`），
+否则 Java 侧引用 `R.drawable.*` 会编译失败（`错误: 找不到符号 R`）；`javac` 的 `-cp` 也要带上这个生成目录。
+
+### 11.2 界面插图
+
+同一套鲸鱼图用于三处：Windows 首次配置 API Key 页（标题上方 96px 居中）、关于弹窗（标题右上角 40px）；
+Android 首启配置 Key 页（104dp）、聊天空状态（88dp）、关于弹窗图标。
+Windows 侧新增 `src/core/brand.h` + `src/platform/win/brand_win.c`，动态加载 `gdiplus.dll` / `shlwapi.dll`，
+从 RCDATA 取 PNG 流交给 `GdipLoadImageFromStream` 解码后等比缩放绘制（不链 ole32 / shlwapi，全部 `GetProcAddress`）。
+
+### 11.3 配色只动强调色
+
+日间强调色 `0x1F5FA8 → 0x1E6FA8`、夜间 `0x4E86D6 → 0x63A8DE`（对齐图标底色那一档蓝），**主色、卡片底、次要文字、分割线一律未动**：
+`tests/unit/test_core.c` 里有若干硬编码对比度断言（如 `dsc_theme_contrast_ok(0x9EACC4, 0x141D2E, 450)`），动底色要连带重算，收益很小。
+FR-33 的三条断言（日/夜主色色相 200~235、日夜差 ≤6 度、两套 `dsc_theme_audit` 各 0）全部照常通过。
+
+### 11.4 安卓设置页滑不到底：`FrameLayout` 内容容器不滚动
+
+**现象**：真机上设置页怎么滑都不动，只能看到「实时同步」为止；「配对管理 / 进阶指南 / 内置知识库 / 设备权限 / 错误中心 / 数据管理 / 减少动态效果 / 关于」全部不可达，
+即**关于页根本打不开**（版本号都看不到）。
+
+**定位**：`adb shell uiautomator dump` 里最后一条 text 是「实时同步 `[48,2824][1236,2856]`」，之后直接到底栏——
+说明那些行没有进入视图树，不是「滚上去了看不见」。根因在 `MainActivity.buildSkeleton()`：中间区域是 `content = new FrameLayout(this)`，
+`FrameLayout` 自身不滚动，而 `settingsView()` / `meView()` 返回的是裸 `LinearLayout`。
+
+**修复**：新增 `private View wrapScroll(View inner)`（`ScrollView` + `setFillViewport(true)` + `addView(inner, new ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT))`），
+`render()` 的四处调用点改为 `content.addView(wrapScroll(settingsView()))` / `wrapScroll(meView())`。短页面套 `ScrollView` 无副作用。
+
+### 11.5 校验补齐与回归
+
+| 项 | 0.1.5 | 0.1.6 |
+| --- | --- | --- |
+| `test_core` 用例 | 1024 | **1027 通过、0 失败** |
+| `verify` 断言 | 724 | **724 通过、0 失败**（FR-01~FR-36 全 PASS，未增删断言） |
+| `tools/shots.py` 场景 | 19 | **20**（新增关于弹窗场景 `07_about`，含右上角鲸鱼插图） |
+| `tools/verify_android.py` 断言 | 25 | **28**（新增：清单声明 `android:icon`/`roundIcon`、五档密度 `ic_launcher.png` 齐全、`drawable-nodpi/whale.png` 在包里且主源码调用 `whaleImage(`） |
+| 版本 | versionCode 10 / 0.1.5 | versionCode 11 / 0.1.6 |
+
+### 11.6 真机复验
+
+真机（真我 GT8 Pro / `RMX5200` / Android 17 / API 37，1440x3136）逐条走通，记录见 `docs/PRE-RELEASE-EVIDENCE.md` §7.6，摘要：
+
+- 覆盖安装 `adb install -r` 成功，签名仍 `55e55bc6…`（可覆盖升级）；桌面图标为深蓝底鲸鱼，不再是系统默认图标；
+- 卸载重装清数据后首启页：顶部 104dp 鲸鱼居中，标题 / 说明 / 输入框 / 「保存并继续」/ 自检行 / 「演示模式」/ 底部说明全部完整可见；
+- 聊天空状态：88dp 鲸鱼 + 文案居中；
+- 设置页连续两次 `adb shell input swipe` 后所有行可达，点「关于」弹窗标题带鲸鱼图标、正文「DSC 0.1.6」；
+- 「我」页一屏内，套 `ScrollView` 后无副作用；`adb logcat -b crash -d` 空。
+
+版本：`0.1.6` / `versionCode 11`（`AndroidManifest.xml`、`Diagnostics.java`、关于页、`dsc_app.c`、`dsc_cli.c`、`dsc_setup.c`、
+`build_android.py`、`make_installer.py`、`package_win.py`、`clean.py`、`verify_android.py`、`sign_release.ps1` 全同步）。
+回归：`test_core` 1027 通过 0 失败；`verify` FR-01~FR-36 全 PASS、724 断言 0 失败；`shots.py` 20 场景 0 失败；
+`verify_android` 28 项全 PASS；`precommit_scan` 0 问题；bench 万条分页 11.93 ms/页、导出 46 ms、常驻 11.9 MB。

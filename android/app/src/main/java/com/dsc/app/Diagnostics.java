@@ -61,7 +61,7 @@ public final class Diagnostics {
     }
 
     public static String deviceInfo() {
-        return "DSC 0.1.5 / Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
+        return "DSC 0.1.6 / Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
              + " / " + Build.BRAND + " " + Build.MODEL
              + " / abi " + (Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?")
              + " / 原生库 " + (Native.loadError == null ? "已加载" : ("加载失败：" + Native.loadError));

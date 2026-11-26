@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 0.1.6：图标底色（与 resources/brand 的深蓝渐变一致） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:type="linear" android:angle="270" android:startColor="#FF2A7FBA" android:endColor="#FF0B355F" />
+</shape>

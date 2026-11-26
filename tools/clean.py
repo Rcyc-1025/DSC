@@ -23,7 +23,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 与 build.ps1 / AndroidManifest.xml 保持一致：只按这个版本号保留 dist 产物
-CURRENT_VERSION = "0.1.5"
+CURRENT_VERSION = "0.1.6"
 
 BUILD_DIRS = ["build", "build_android"]
 ROOT_JUNK_PATTERNS = [r"^dsc_test_", r"^core\.\d+$"]

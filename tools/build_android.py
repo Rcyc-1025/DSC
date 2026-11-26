@@ -83,10 +83,27 @@ def main():
          '-Wl,--no-undefined', '-lm', '-llog'])
     print('libdsc.so', os.path.getsize(so), 'bytes')
 
+    # 1.5 aapt2 compile + link（必须在 javac 之前：0.1.6 起 Java 侧引用 R.drawable.whale，
+    #     R.java 由 aapt2 link --java 生成，先 link 一次资源再编译 Java，最后才往包里塞 dex）
+    res_dir = os.path.join(APP, 'res')
+    flat_zip = os.path.join(OUT, 'res', 'res.zip')
+    run([os.path.join(BT, 'aapt2.exe'), 'compile', '--dir', res_dir, '-o', flat_zip])
+    base_apk = os.path.join(OUT, 'base.apk')
+    manifest = os.path.join(APP, 'AndroidManifest.xml')
+    gen_dir = os.path.join(OUT, 'gen')
+    if os.path.isdir(gen_dir):
+        shutil.rmtree(gen_dir)
+    os.makedirs(gen_dir)
+    run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
+         '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
+         '--target-sdk-version', '34', '--version-code', '11', '--version-name', '0.1.6',
+         '--java', gen_dir, '--auto-add-overlay', flat_zip])
+
     # 2. javac
     java_srcs = glob.glob(os.path.join(APP, 'java', 'com', 'dsc', 'app', '*.java'))
     run([os.path.join(JDK, 'javac.exe'), '-source', '8', '-target', '8', '-encoding', 'UTF-8',
-         '-nowarn', '-cp', PLATFORM, '-d', os.path.join(OUT, 'classes')] + java_srcs)
+         '-nowarn', '-cp', PLATFORM + os.pathsep + gen_dir,
+         '-d', os.path.join(OUT, 'classes')] + java_srcs)
 
     # 3. d8 -> classes.dex
     #    类文件逐个当参数传给 d8 会撞上 Windows 命令行长度上限（内部类一多就 "The command line is too long."），
@@ -98,24 +115,13 @@ def main():
     run([os.path.join(BT, 'd8.bat'), '--min-api', '24', '--lib', PLATFORM,
          '--output', os.path.join(OUT, 'dex'), classes_jar])
 
-    # 4. aapt2 compile + link
-    res_dir = os.path.join(APP, 'res')
-    flat_zip = os.path.join(OUT, 'res', 'res.zip')
-    run([os.path.join(BT, 'aapt2.exe'), 'compile', '--dir', res_dir, '-o', flat_zip])
-    base_apk = os.path.join(OUT, 'base.apk')
-    manifest = os.path.join(APP, 'AndroidManifest.xml')
-    run([os.path.join(BT, 'aapt2.exe'), 'link', '-o', base_apk,
-         '-I', PLATFORM, '--manifest', manifest, '--min-sdk-version', '24',
-         '--target-sdk-version', '34', '--version-code', '10', '--version-name', '0.1.5',
-         '--auto-add-overlay', flat_zip])
-
-    # 5. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so
+    # 4. 塞入 classes.dex 与 lib/arm64-v8a/libdsc.so（base.apk 已在 1.5 步按资源打过）
     import zipfile
     with zipfile.ZipFile(base_apk, 'a', zipfile.ZIP_DEFLATED) as z:
         z.write(os.path.join(OUT, 'dex', 'classes.dex'), 'classes.dex')
         z.write(so, 'lib/arm64-v8a/libdsc.so')
 
-    # 6. zipalign
+    # 5. zipalign
     aligned = os.path.join(OUT, 'aligned.apk')
     run([os.path.join(BT, 'zipalign.exe'), '-f', '-p', '4', base_apk, aligned])
 

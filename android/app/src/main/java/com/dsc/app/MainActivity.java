@@ -73,7 +73,7 @@ public class MainActivity extends Activity {
     private int cDivider = 0xFFE5E6EB;
     /* 默认值与核心层深蓝色阶保持一致（FR-33）；readTheme() 会再用令牌覆盖一次。 */
     private int cPrimary = 0xFF103F7A;
-    private int cAccent = 0xFF1F5FA8;
+    private int cAccent = 0xFF1E6FA8;
     private int cDanger = 0xFFB3261E;
 
     private EditText input;
@@ -293,6 +293,29 @@ public class MainActivity extends Activity {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
+    /** 品牌插图：drawable-nodpi/whale.png（Fluent Emoji 鲸鱼，MIT）。 */
+    private ImageView whaleImage(int sizeDp) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(R.drawable.whale);
+        iv.setAdjustViewBounds(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp));
+        lp.gravity = Gravity.CENTER_HORIZONTAL;
+        iv.setLayoutParams(lp);
+        iv.setContentDescription("DSC");
+        return iv;
+    }
+
+    /* 0.1.6：设置页与「我」页的行数超过一屏，而 content 是 FrameLayout 不会滚动，
+     * 底部「配对管理 / 数据管理 / 关于」在真机上被裁掉、点不到（0.1.6 真机复验发现）。
+     * 这里统一给不带滚动容器的页面套一层 ScrollView。 */
+    private View wrapScroll(View inner) {
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.addView(inner, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        return sv;
+    }
+
     private void buildSkeleton() {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -498,11 +521,11 @@ public class MainActivity extends Activity {
                     titleView.setText("设置");
                     /* 副标题别太长：右上角还有「会话」按钮，挤在一起会折行（0.1.5 真机截图发现）。 */
                     subtitleView.setText("问答模式的设置" + demoTag());
-                    content.addView(settingsView());
+                    content.addView(wrapScroll(settingsView()));
                 } else {
                     titleView.setText("我");
                     subtitleView.setText("资料、人设与新手引导" + demoTag());
-                    content.addView(meView());
+                    content.addView(wrapScroll(meView()));
                 }
             } else if ("QA_THREAD".equals(rs)) {
                 JSONObject convObj = st.optJSONObject("conv");
@@ -520,11 +543,11 @@ public class MainActivity extends Activity {
             if (tab == TAB_ME) {
                 titleView.setText("我");
                 subtitleView.setText("资料、人设与新手引导" + demoTag());
-                content.addView(meView());
+                content.addView(wrapScroll(meView()));
             } else if (tab == TAB_SETTINGS) {
                 titleView.setText("设置");
                 subtitleView.setText("提示词、配色、模型、数据与插件" + demoTag());
-                content.addView(settingsView());
+                content.addView(wrapScroll(settingsView()));
             } else {
                 JSONObject conv = st.optJSONObject("conv");
                 titleView.setText("聊天");
@@ -688,12 +711,20 @@ public class MainActivity extends Activity {
             anchorMsgId = null;
         }
         if (shownCount == 0) {
+            /* 0.1.6：空状态用品牌鲸鱼占位（同一张 Fluent Emoji 素材，MIT）。 */
+            LinearLayout emptyBox = new LinearLayout(this);
+            emptyBox.setOrientation(LinearLayout.VERTICAL);
+            emptyBox.setGravity(Gravity.CENTER_HORIZONTAL);
+            emptyBox.setPadding(dp(4), dp(28), dp(4), dp(4));
+            emptyBox.addView(whaleImage(88));
             TextView empty = new TextView(this);
             empty.setText("还没有消息。说点什么开始吧。");
             empty.setTextColor(cSub);
             empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            empty.setPadding(dp(4), dp(20), dp(4), dp(4));
-            list.addView(empty);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(4), dp(10), dp(4), dp(4));
+            emptyBox.addView(empty);
+            list.addView(emptyBox);
         }
 
         /* 生成中：放一个占位气泡，增量文本直接追加到它上面，不重建整个列表（避免闪）。 */
@@ -2453,12 +2484,13 @@ public class MainActivity extends Activity {
                 toggleMotion();
             }
         }));
-        col.addView(kvRow("关于", "DSC 0.1.5", new View.OnClickListener() {
+        col.addView(kvRow("关于", "DSC 0.1.6", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 new AlertDialog.Builder(dlgCtx())
                         .setTitle("关于 DSC")
-                        .setMessage("DSC 0.1.5\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
+                        .setIcon(R.drawable.whale)
+                        .setMessage("DSC 0.1.6\n核心层纯 C 实现，Windows 与 Android 共用；用户自带 API Key，不经第三方服务器。\n"
                                 + "本版新增：内置知识库与来源引用（FR-31/32）、深蓝主色调（FR-33）、"
                                 + "错误中心与报错隔离（FR-34）、设备能力与逐项授权（FR-35）、"
                                 + "AI 发言修改与记忆同步（FR-36）。")
@@ -2511,6 +2543,9 @@ public class MainActivity extends Activity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(24), dp(28), dp(24), dp(24));
+
+        /* 0.1.6：首启页放品牌插图（Fluent Emoji 鲸鱼，MIT；出处见 resources/brand/LICENSE-Fluent-Emoji.md）。 */
+        col.addView(whaleImage(104));
 
         TextView h = new TextView(this);
         h.setText("首次使用：配置 API Key");

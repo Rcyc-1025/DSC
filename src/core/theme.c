@@ -16,7 +16,7 @@ static const dsc_theme g_day = {
         0x5B6880, /* TEXT_SECONDARY */
         0xD9E2EF, /* DIVIDER */
         0x103F7A, /* PRIMARY：深蓝 */
-        0x1F5FA8, /* ACCENT：同色相稍亮，用于强调与链接 */
+        0x1E6FA8, /* ACCENT：取图标底色那一档蓝（H≈204），用于强调与链接 */
         0x1C7A4A, /* SUCCESS */
         0x9A6100, /* WARNING */
         0xB3261E  /* DANGER */
@@ -32,7 +32,7 @@ static const dsc_theme g_night = {
         0x9EACC4, /* TEXT_SECONDARY */
         0x26334A, /* DIVIDER */
         0x6194C9, /* PRIMARY：同色相提亮 */
-        0x4E86D6, /* ACCENT */
+        0x63A8DE, /* ACCENT：夜间提亮到鲸鱼浅蓝 */
         0x4CC38A, /* SUCCESS */
         0xE0A33A, /* WARNING */
         0xF07068  /* DANGER */

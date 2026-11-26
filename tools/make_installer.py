@@ -17,11 +17,28 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MINGW = r"D:\Code\msys2ucrt\ucrt64\bin"
 MARKER = b"AICSETUP-PAYLOAD-V1"
-VERSION = sys.argv[1] if len(sys.argv) > 1 else "0.1.5"
+VERSION = sys.argv[1] if len(sys.argv) > 1 else "0.1.6"
 
 GCC = os.path.join(MINGW, "gcc.exe")
+WINDRES = os.path.join(MINGW, "windres.exe")
 CFLAGS = ["-std=c11", "-O2", "-Wall", "-Wextra", "-municode", "-DUNICODE", "-D_UNICODE", "-mwindows"]
 LIBS = ["-lole32", "-luuid", "-lshell32", "-lshlwapi", "-luser32", "-lgdi32", "-static-libgcc"]
+
+
+def build_res():
+    """把 resources/brand/dsc.rc 编成 .o，让安装/卸载程序也带 DSC 图标。"""
+    out = os.path.join(ROOT, "build", "installer", "brand_res.o")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    rc = os.path.join(ROOT, "resources", "brand", "dsc.rc")
+    env = dict(os.environ)
+    env["PATH"] = MINGW + ";" + env.get("PATH", "")
+    cmd = [WINDRES, "-i", rc, "-o", out, "--input-format=rc", "--output-format=coff"]
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    if r.returncode != 0:
+        print("windres 失败：")
+        print(r.stderr)
+        raise SystemExit(1)
+    return out
 
 
 def build(name, src):
@@ -29,7 +46,7 @@ def build(name, src):
     os.makedirs(os.path.dirname(out), exist_ok=True)
     env = dict(os.environ)
     env["PATH"] = MINGW + ";" + env.get("PATH", "")
-    cmd = [GCC] + CFLAGS + [src, "-o", out] + LIBS
+    cmd = [GCC] + CFLAGS + [src, build_res(), "-o", out] + LIBS
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     if r.returncode != 0:
         print("编译失败：" + name)

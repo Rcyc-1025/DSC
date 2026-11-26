@@ -21,11 +21,12 @@ $Cflags = @('-std=c11', '-O2', '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wn
 $SqliteFlags = @('-std=c11', '-O2', '-w', '-DSQLITE_THREADSAFE=1', '-DSQLITE_OMIT_LOAD_EXTENSION', '-DSQLITE_DQS=0', '-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1')
 
 function Invoke-Gcc {
-    param([string[]]$Arguments, [string]$What)
+    param([string[]]$Arguments, [string]$What, [string]$Tool = '')
+    $exe = if ($Tool) { $Tool } else { $Gcc }
     if (-not $Arguments -or $Arguments.Count -eq 0) { Write-Host ('[FAIL] empty argument list for ' + $What); exit 1 }
     $errFile = Join-Path $Root 'build\last_error.txt'
     $outFile = Join-Path $Root 'build\last_out.txt'
-    $p = Start-Process -FilePath $Gcc -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardError $errFile -RedirectStandardOutput $outFile
+    $p = Start-Process -FilePath $exe -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardError $errFile -RedirectStandardOutput $outFile
     if ($p.ExitCode -ne 0) {
         Write-Host ('[FAIL] ' + $What)
         Get-Content $errFile -Raw
@@ -76,6 +77,24 @@ function Link-Exe {
     Invoke-Gcc -Arguments $a -What ([System.IO.Path]::GetFileName($Out))
 }
 
+function Build-Resource {
+    # 编译 resources\brand\dsc.rc（图标 + 内嵌位图）。源资源变了才重编。
+    $rc = Join-Path $Root 'resources\brand\dsc.rc'
+    $icon = Join-Path $Root 'resources\brand\dsc.ico'
+    $whale = Join-Path $Root 'resources\brand\whale.png'
+    $spout = Join-Path $Root 'resources\brand\whale-spout.png'
+    $obj = Join-Path $Obj 'brand_res.o'
+    $newest = (Get-Item $rc).LastWriteTime
+    foreach ($f in @($icon, $whale, $spout)) {
+        if ((Get-Item $f).LastWriteTime -gt $newest) { $newest = (Get-Item $f).LastWriteTime }
+    }
+    if ((Test-Path $obj) -and ((Get-Item $obj).LastWriteTime -ge $newest)) { return $obj }
+    $windres = Join-Path $Mingw 'windres.exe'
+    if (-not (Test-Path $windres)) { $windres = 'windres.exe' }
+    Invoke-Gcc -Arguments @('-i', $rc, '-o', $obj, '--input-format=rc', '--output-format=coff') -What 'brand_res' -Tool $windres
+    return $obj
+}
+
 switch ($Target) {
     'test' {
         $t = Build-Object -Source (Join-Path $Root 'tests\unit\test_core.c') -Extra @()
@@ -107,14 +126,16 @@ switch ($Target) {
     'gui' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\DSC.exe'
-        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
+        $res = Build-Resource
+        $a = @('-mwindows', '-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj, $res) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'DSC.exe'
         Write-Host 'built: build\DSC.exe'
     }
     'guidiag' {
         $g = Build-Object -Source (Join-Path $Root 'src\ui\win\dsc_app.c') -Extra @('-DUNICODE', '-D_UNICODE')
         $exe = Join-Path $Root 'build\DscDiag.exe'
-        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
+        $res = Build-Resource
+        $a = @('-o', $exe, $g) + $coreObjs + $winObjs + @($sqliteObj, $res) + @('-lws2_32', '-lbthprops', '-lbluetoothapis', '-ladvapi32', '-lwinhttp', '-lm', '-lpsapi', '-lgdi32', '-luser32', '-lshell32', '-lcomctl32', '-lcomdlg32', '-lgdiplus', '-lmsimg32', '-static-libgcc')
         Invoke-Gcc -Arguments $a -What 'DscDiag.exe'
         Write-Host 'built: build\DscDiag.exe'
     }

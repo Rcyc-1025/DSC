@@ -1,0 +1,4 @@
+/* dsc.rc —— 应用图标与内嵌位图资源（由 windres 编译成 .o 链进 exe） */
+1 ICON "dsc.ico"
+101 RCDATA "whale.png"
+102 RCDATA "whale-spout.png"

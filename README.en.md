@@ -1,5 +1,7 @@
 # DSC — a companion chat client in pure C
 
+<img src="docs/screenshots/brand-icon-512.png" width="112" alt="DSC icon: a blue-purple whale on a deep blue tile">
+
 **DSC stands for DeepSeek Chat.** A **pure C** local companion chat client for Windows desktop (Win32 + GDI) and Android. You bring your own DeepSeek API key; no third-party server sits in between.
 
 中文说明见 [README.md](README.md).
@@ -44,12 +46,12 @@ Each version ships the packages below (produced under `dist\` for a local build)
 
 | File | What it is |
 | --- | --- |
-| `DSC-0.1.5-win-x64-portable.zip` | Windows x64 portable build, unpack and run `DSC.exe` |
-| `DSC-0.1.5-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
-| `DSC-0.1.5-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
-| `DSC-0.1.5-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+; 16 KB page aligned) |
+| `DSC-0.1.6-win-x64-portable.zip` | Windows x64 portable build, unpack and run `DSC.exe` |
+| `DSC-0.1.6-win-x64-setup.exe` | Windows x64 installer (supports `/S` silent install) |
+| `DSC-0.1.6-win-arm64-portable.zip` | Windows ARM64 portable build (cross-compiled) |
+| `DSC-0.1.6-android-arm64.apk` | Android package (arm64-v8a, Android 7.0+; 16 KB page aligned) |
 
-Every package ships a matching `.sha256` file. On Android, every build from 0.1.2 on (including 0.1.5) shares the same signing certificate, so it **can be installed over the old build**; upgrading from 0.1.1 or earlier still **requires uninstalling the old build first** (different certificate).
+Every package ships a matching `.sha256` file. On Android, every build from 0.1.2 on (including 0.1.6) shares the same signing certificate, so it **can be installed over the old build**; upgrading from 0.1.1 or earlier still **requires uninstalling the old build first** (different certificate).
 
 ## Build
 
@@ -73,10 +75,10 @@ python tools\build_android.py     # build_android\DSC.apk (arm64-v8a, v2/v3 self
 ## Windows packages
 
 ~~~powershell
-python tools\package_win.py          # dist\DSC-0.1.5-win-x64-portable.zip (+ .sha256)
+python tools\package_win.py          # dist\DSC-0.1.6-win-x64-portable.zip (+ .sha256)
 python tools\build_arm64.py          # cross-compile Windows ARM64 artifacts into build\arm64\
-python tools\package_win.py --arm64  # dist\DSC-0.1.5-win-arm64-portable.zip
-python tools\make_installer.py       # dist\DSC-0.1.5-win-x64-setup.exe (+ .sha256)
+python tools\package_win.py --arm64  # dist\DSC-0.1.6-win-arm64-portable.zip
+python tools\make_installer.py       # dist\DSC-0.1.6-win-x64-setup.exe (+ .sha256)
 ~~~
 
 The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plugin, the docs and `install.ps1` (creates a Start-menu shortcut without admin rights). The installer is self-extracting, installs to `%LOCALAPPDATA%\Programs\DSC` by default, supports `/S` and `/D=<dir>`, and ships a matching silent uninstaller.
@@ -101,3 +103,5 @@ The portable zip unpacks and runs; it contains the GUI, the CLI, the sample plug
 ## License
 
 Apache License 2.0 (SPDX: `Apache-2.0`) — see [LICENSE](LICENSE). You may use, modify, relicense and redistribute the code, provided you keep the copyright and license notices, state your changes, and ship a copy of the license; an express patent grant is included. Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+App icon and illustrations come from [Microsoft Fluent Emoji](https://github.com/microsoft/fluentui-emoji) (MIT License, see [resources/brand/LICENSE-Fluent-Emoji.md](resources/brand/LICENSE-Fluent-Emoji.md)) and are composed into the icon set by `tools\gen_brand.py`; the artwork itself stays under its MIT terms.

@@ -25,6 +25,7 @@ SCENES = [
     ('04_qa_thread', ['--ready', '--demo', '--qa']),
     ('05_guide', ['--ready', '--demo', '--guide']),
     ('06_ai_info', ['--ready', '--demo', '--overlay', '1']),
+    ('07_about', ['--ready', '--demo', '--overlay', '7']),
     ('08_narrow', ['--ready', '--demo', '--size', '900x620']),
     ('09_advanced', ['--ready', '--demo', '--adv']),
     ('10_export', ['--ready', '--demo', '--overlay', '3']),

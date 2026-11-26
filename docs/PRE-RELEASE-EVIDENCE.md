@@ -1,10 +1,24 @@
-# 发布前证据（DSC 0.1.5）
+# 发布前证据（DSC 0.1.6）
 
 > 本文件记录"复现一次即可复核"的证据：每条都给出命令与实测输出摘要，未实测的项目单独列在 §11。
 > 需求基线：《DeepSeek 陪伴对话软件-TDD技术设计文档》V1.0（FR-01 ~ FR-36；第 16 章双端同步自 1.3.0 起，
 > 第 17 章内置知识库与来源引用、第 18 章设备能力、FR-34 报错隔离、FR-36 AI 发言修改自 0.1.0 起）。
 > 0.1.0 的全部数字（1014 单测 / 36 条 FR / 719 断言 / 19 张截图 / APK versionCode 5 / 四个产物哈希）都是那时重新跑出来的；
 > 逐条复核结论与口径差异见 `docs/TDD-TRACE-0.1.0.md`。
+> **0.1.6（2026-11-26）是品牌视觉改版 + 一个安卓布局缺陷的修复**，同时把上次提交未发版的默认人设一起带上：
+> ① 应用图标：Windows 新增 `resources/brand/dsc.rc`（ICON + 两张 RCDATA 插图），`build.ps1` 用 `windres` 编成 `build\obj\brand_res.o` 链进 `DSC.exe`，
+> `WinMain` 把资源 ID 1 赋给 `wc.hIcon` / `wc.hIconSm`；安装程序与卸载程序也嵌同一图标。Android 新增五档密度
+> `ic_launcher.png` / `ic_launcher_round.png` 与 `mipmap-anydpi-v26` 自适应图标，清单补 `android:icon` / `android:roundIcon`；
+> `tools/build_android.py` 把 `aapt2 compile + link` 提到 `javac` 之前（新增「1.5」步、`--java` 生成 `R`），因为界面开始引用 `R.drawable`。
+> ② 插图：新增 `src/core/brand.h` + `src/platform/win/brand_win.c`（动态加载 gdiplus / shlwapi，从 RCDATA 取 PNG 流解码），
+> 首启配置 Key 页画 96px 鲸鱼、关于弹窗右上角画 40px；Android 首启页 104dp、聊天空状态 88dp、关于弹窗带图标。
+> 素材取自 Microsoft Fluent Emoji（MIT，原图与许可见 `resources/brand/`），合成脚本 `tools/gen_brand.py` 只用 Python 标准库。
+> ③ 配色：强调色对齐图标底色——日间 `#1F5FA8 → #1E6FA8`、夜间 `#4E86D6 → #63A8DE`；**主色未动**，FR-33 的色相区间、日夜差 ≤6 度与对比度门槛仍全部通过。
+> ④ 修安卓设置页滑不到底：内容容器是不滚动的 `FrameLayout`，设置页超过一屏后底部各项被裁掉、**关于页打不开**；
+> 现在 `settingsView()` / `meView()` 统一套 `ScrollView`（`wrapScroll()`）。
+> ⑤ 默认人设换成「小鲸鱼」一对一聊天版（约 4500 字，群聊专属内容删除）。版本号升 `versionCode 11` / `versionName 0.1.6`；
+> `tools/verify_android.py` 新增三条图标/插图断言（25 → 28 项），`tools/shots.py` 新增关于弹窗场景（19 → 20）。
+> 签名证书与 0.1.2 ~ 0.1.5 相同（`55e55bc6…`），可覆盖升级。**本文件 §3 起的数字都是 0.1.6 重新跑出来的**（真机验证见 §7.6）。
 > **0.1.5（2026-11-26）修的是安卓切到问答模式后再也回不到聊天模式**，并让模式切换在重启后保持。两个根因：
 > ① `MainActivity` 在问答模式下把整条底部导航 `View.GONE` 掉，而切换模式的唯一入口是设置页「模式」行——底栏一消失就进不去设置，
 > 问答会话列表页又没有设置入口，形成死锁。现在主界面一律保留底栏（问答模式三格为「我 / 设置 / 会话」），
@@ -72,18 +86,18 @@
 
 | 产物 | 字节 | SHA-256 |
 | --- | --- | --- |
-| build\DSC.exe（Windows 界面，0.1.5） | 1691277 | 050e59d24b34c0db95f09887ac9ae67eaef9cd7cba5ed4d32441c3a9ee11d7da |
-| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1642750 | 0fc2d7e3d5485e29dc64026061c3e24b6ded165079a42a4693e56abf261ef7dc |
-| build\dsc_plugin_host.exe（插件宿主） | 40036 | ca60055314df49e4dac86ad69dc8a30552c9e04485a3fe97eb6c03df1aadce07 |
-| build\test_core.exe（单元测试） | 1720157 | d4acaaa2a4afb9bef9c44e4b8176d331f022906fe4453da306ddc66f1994619e |
-| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1607168 | 2fd58c85ba41324e51baab69cd03ba59ace01032caa9e8295c1071a1bb375ff6 |
-| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | 229ba1f4a3ad435d27cb8da5e1a1ea8fd1d5d85eaeabfdc5edc0cf47f2a5da3a |
-| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | ff54c008833f9f52041865cbaaf08027dc0f87473d16f3925707e6086088b89e |
-| build_android\DSC.apk（Android ARM64 安装包，versionCode 10 / versionName 0.1.5） | 913870 | cb3499239bbba7af071db6f7b97e759c066a21fed1ac64bb731920cbfa0cc3cf |
-| dist\DSC-0.1.5-win-x64-portable.zip | 1713998 | 14d20740ffde81d2ff04cdd653321a1b4c30e3d39f291f1b5e16395e48f27f50 |
-| dist\DSC-0.1.5-win-x64-setup.exe | 4198303 | 87a14be50a58f705371e3b6f644265c386d18ff365f6ac60860d78c50b57e285 |
-| dist\DSC-0.1.5-win-arm64-portable.zip | 980117 | 76347bec417f720a3730d0b020be444bf93e2dd9776b094c69e22fb9a73fd966 |
-| dist\DSC-0.1.5-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 913870 | cb3499239bbba7af071db6f7b97e759c066a21fed1ac64bb731920cbfa0cc3cf |
+| build\DSC.exe（Windows 界面，0.1.6） | 1840677 | c45310f641119751286c020eb0b48bdc3f0344092ccb079bd34abf70b42a909b |
+| build\dsc-cli.exe（验收/基准/采样/自检 CLI） | 1657084 | da6b9c6be0901fa40f389bff5a8d71664bd02146f91bc9391276b31e7418d586 |
+| build\dsc_plugin_host.exe（插件宿主） | 40036 | 897c040b39abeee0d434ef9256ae42e96431f42a27fc66e77ca6ea36a95f35de |
+| build\test_core.exe（单元测试） | 1736027 | e3e20e033e83f7ff6df4d6505e6fc9eca948d19d6fb713bf12d1f2b0034859b8 |
+| build\arm64\DSC.exe（Windows ARM64 界面，交叉编译） | 1621504 | 8b63d60d08fb26c5db459acbf7ef25efc3520e60edb489d5a818b31daa6b90d9 |
+| build\arm64\dsc_plugin_host.exe（ARM64 插件宿主） | 79872 | a20f5608418866843f9faa5e292cd36188ad05dcb053fec1ec8b5d322ac03d5d |
+| build\arm64\sample_basic.dll（ARM64 示例插件） | 61440 | 8a3924259b7a638999d701936e8032244391584410374b7b294351b8736cf862 |
+| build_android\DSC.apk（Android ARM64 安装包，versionCode 11 / versionName 0.1.6） | 1062596 | 291bbc04ebdb682123dc915442ad40870000a192735fcd98a85d6b20932aa071 |
+| dist\DSC-0.1.6-win-x64-portable.zip | 1868693 | cb328710fe95b7d713521ca6964605da1f88d7ef3950e9b60b2c6ebf956a206d |
+| dist\DSC-0.1.6-win-x64-setup.exe | 4651662 | 3ac0e2b1d4eab78c4a55ede2715d2969211ad043f83204991f7d0c8a341fcee4 |
+| dist\DSC-0.1.6-win-arm64-portable.zip | 996236 | bfdeabd7231c095149b4910e38949d43069df61f0452bcab64a9a620a9b47045 |
+| dist\DSC-0.1.6-android-arm64.apk（与 build_android\DSC.apk 同一文件） | 1062596 | 291bbc04ebdb682123dc915442ad40870000a192735fcd98a85d6b20932aa071 |
 
 （便携包与安装包同时生成同名 .sha256 旁挂文件；zip 内部的清单不可能包含自己的哈希，故此前"见同名 .sha256 文件"的写法作废，
 现在直接记录压缩包本身的哈希——记录的是产物，不是包内文件。）
@@ -91,7 +105,7 @@
 ### 2.1 Windows ARM64 交叉编译（修订版 `16.1 的双架构要求）
 
     python tools\build_arm64.py          # 31.6s，产物在 build\arm64\
-    python tools\package_win.py --arm64  # dist\DSC-0.1.5-win-arm64-portable.zip
+    python tools\package_win.py --arm64  # dist\DSC-0.1.6-win-arm64-portable.zip
 
 构建链全部来自本机已有组件，不下载新工具：`clang 23.1.4`（`D:\Code\llvm\...\bin\clang.exe`）+ `ld.lld`，
 sysroot 是 MSYS2 `clangarm64` 的 aarch64 mingw-w64 包（crt / headers / winpthreads / compiler-rt /
@@ -113,7 +127,7 @@ windows-default-manifest）解压到 `D:\Code\msys2arm64\clangarm64`。两个必
     powershell -ExecutionPolicy Bypass -File build.ps1 -Target test
     build\test_core.exe
 
-实测：**1024 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
+实测：**1027 通过，0 失败**。覆盖 util/json/db/schema/profile/persona/conversation/message/setting/usage/guide/prompt/
 transfer/llm/engine/theme/router/credential/update/plugin/plugin_proc/perf（含 PerfMonitor.sample 采样与环形缓冲），
 1.3.0 起新增 pairing（6 位码、5 分钟 TTL、5 次作废、双向校验、密钥只进安全存储）、sync（逻辑时钟、发件箱、冲突落败方副本、入站去重）、
 sync_clock、transport 帧、sync_session 端到端（本机回环 TCP：发现→连接→握手→事件互传→解除配对），
@@ -153,12 +167,12 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
 | 指标 | 实测 | 桌面预算 | 移动预算 | 结论 |
 | --- | --- | --- | --- | --- |
-| 万条分页 | 6.17 ms/页 | 300 ms | 350 ms | 达标 |
-| 万条导出 | 25 ms | 2000 ms | 2500 ms | 达标 |
+| 万条分页 | 11.93 ms/页 | 300 ms | 350 ms | 达标 |
+| 万条导出 | 46 ms | 2000 ms | 2500 ms | 达标 |
 | 常驻内存 | 11.9 MB | 240 MB | 180 MB | 达标 |
 
 （0.1.0 多个构建轮次复跑：分页 11.74 / 11.76 / 12.06 ms，导出 45 / 46 / 50 ms，内存 11.8 / 12.0 / 12.0 MB；
-0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB；0.1.4 重建后复跑：分页 5.67 ms、导出 23 ms、内存 11.9 MB；0.1.5 重建后复跑：分页 6.17 ms、导出 25 ms、内存 11.9 MB（只改 router 的模式/切栏逻辑，数据路径未动）——这几版只改了安卓侧的存储/可读性与桌面绘制层（遮罩、限宽），数据路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
+0.1.1 重建后复跑：分页 11.74 ms、导出 45 ms、内存 11.9 MB；0.1.2 重建后复跑：分页 5.69 ms、导出 23 ms、内存 12.0 MB；0.1.3 重建后复跑：分页 5.64 ms、导出 23 ms、内存 12.0 MB；0.1.4 重建后复跑：分页 5.67 ms、导出 23 ms、内存 11.9 MB；0.1.5 重建后复跑：分页 6.17 ms、导出 25 ms、内存 11.9 MB（只改 router 的模式/切栏逻辑，数据路径未动）；0.1.6 重建后复跑：分页 11.93 ms、导出 46 ms、内存 11.9 MB（只改图标资源、绘制层与配色令牌，数据路径未动）——这几版只改了安卓侧的存储/可读性与桌面绘制层（遮罩、限宽），数据路径未动，差异来自测量轮次内的缓存状态，量级都在预算的百分之几以内。
 与 1.3.0 记录的 0.03 ms/页 差异较大——本轮核对过测量路径：每页确实取满 50 条正文并释放（bench 库现场核对
 `select conversation_id,count(*) from message group by conversation_id` = 10000 条），1.3.0 那条 0.03 ms 已无法复现，
 按"上一版测量覆盖不足"记账，不作为劣化；两版都远低于 300 ms 预算。
@@ -168,19 +182,19 @@ FR-36 修改 AI 发言 → 旧记忆条目 0 条、新条目 ≥1 条，正文�
 
     build\dsc-cli.exe perf
 
-本机实测输出（0.1.5 复跑，rss_ok=true）：rss_kb 9276（9.06 MB）、rss_mb 9.058594、frame_budget_ms 16.7、
-db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg_kb 9856、rss_peak_kb 9856，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
+本机实测输出（0.1.6 复跑，rss_ok=true）：rss_kb 9268（9.05 MB）、rss_mb 9.050781、frame_budget_ms 16.7、
+db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9268]、rss_avg_kb 9268、rss_peak_kb 9268，峰值/均值均可从环形缓冲取出；db_bytes 与磁盘上 perf.db 实际字节一致（单元测试有断言）。单元测试与 FR-24 验收里各有一组针对它的断言
 （默认帧预算、超出 16.7ms 被标记、存储分项按 KB 换算、JSON 可解析且字段与采样一致）。
 
 ## 6. Windows 界面离屏渲染
 
     python tools\shots.py
 
-19 个场景全部渲染成功（"19 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸；
-0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 重建后复跑结果相同：19 scene(s), 0 failed）：
+20 个场景全部渲染成功（"20 scene(s), 0 failed"，build\shots\*.png，1120x760 与 900x620 两种尺寸；
+0.1.1 ~ 0.1.5 复跑时是 19 个场景，0.1.6 起新增关于弹窗场景，20 个全部通过）：
 聊天三栏 / 我 / 设置（19 行含「实时同步」「配对管理」「内置知识库」「设备权限」「错误中心」「进阶指南」与「关于」）/
 问答线程 / 新手指南九步浮层 / AI 信息与人设浮层 / 窄窗口 / 进阶指南页（含新增四节）/
-导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页 / 默认模式选择页 / 配对管理页 /
+关于弹窗（0.1.6 新增场景，含右上角鲸鱼插图）/ 导出浮层（范围 + 含头像）/ 消息操作浮层 / 插件面板 / 首次启动的 API Key 页（0.1.6 起标题上方有鲸鱼插图）/ 默认模式选择页 / 配对管理页 /
 内置知识库列表 / 知识库详情（正文分段、示意图节点框、示例、要点、来源）/ 错误中心（类别筛选 + 动作按钮）/
 设备权限（六项能力与选择器）/ 聊天页错误状态条。
 离屏渲染与真机截屏等价（CreateCompatibleBitmap + 同一套 paint 代码）。0.1.0 修掉 4 处视觉问题并以截图复核：
@@ -192,15 +206,15 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg
     python tools\build_android.py
     python tools\verify_android.py
 
-实测 25 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；0.1.4 新增一项「MainActivity 启动时调用 SecureStore.init(this)」断言；0.1.5 再新增一项「问答模式保留底部导航、`QA_TAB` 可达设置页」断言。口径说明：0.1.3 的说明文档把当时的总数记成了 24 项，实际那一版是 23 项，差一项来自人工计数笔误——本节与后续版本的其它数字一律按脚本实际输出的 `len(passed)` 写；同时断言 versionCode 10 / versionName 0.1.5）：
+实测 28 项全部通过（0.1.1 新增 ELF 页对齐断言；0.1.2 新增两项符号完整性断言；0.1.3 再新增一项「Java 侧 native 声明与 C 侧导出符号一致」断言；0.1.4 新增一项「MainActivity 启动时调用 SecureStore.init(this)」断言；0.1.5 再新增一项「问答模式保留底部导航、`QA_TAB` 可达设置页」断言；0.1.6 再加三条：清单声明 `android:icon` 与 `android:roundIcon`、五档密度 `ic_launcher.png` 齐全、`drawable-nodpi/whale.png` 在包里且主源码调用 `whaleImage(`。口径说明：0.1.3 的说明文档把当时的总数记成了 24 项，实际那一版是 23 项，差一项来自人工计数笔误——本节与后续版本的其它数字一律按脚本实际输出的 `len(passed)` 写；同时断言 versionCode 10 / versionName 0.1.5）：
 
-- APK 913870 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1678544 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
+- APK 1062596 字节（移动预算 60 MB），含 classes.dex、resources.arsc、AndroidManifest.xml、lib/arm64-v8a/libdsc.so（1678544 字节，安装时解压到应用私有目录，段对齐按库自身 p_align 生效）；
 - libdsc.so 是 64 位 AArch64 ELF（e_machine=183），导出 JNI 入口 Java_com_dsc_app_Native_callNative /
   Java_com_dsc_app_Native_feedNative / Java_com_dsc_app_Native_shutdownNative（0.1.3 起与
   android/app/src/main/java/com/dsc/app/Native.java 的 native 声明逐字一致），静态含 SQLite；
-- 清单：包名 com.dsc.app、versionCode 10、versionName 0.1.5、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
+- 清单：包名 com.dsc.app、versionCode 11、versionName 0.1.6、minSdk 24、targetSdk 34、启动 Activity com.dsc.app.MainActivity、
   native-code arm64-v8a、应用名「DSC」（versionCode 由 AndroidManifest.xml 决定，aapt2 的 --version-code 不覆盖它，
-  两处已同时改为 9 / 0.1.4，校验脚本会断言一致）；
+  两处已同时改为 11 / 0.1.6，校验脚本会断言一致）；
 - **16KB 页对齐（0.1.1 加的兼容硬门，非首启闪退主因）**：libdsc.so 的 4 个 PT_LOAD 段 `p_align` 全部为 `0x4000`（16384），
   0.1.0 的包是 `0x1000`（4KB）。链接参数 `-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384` 产出的 16KB 对齐库
   在 4KB 内核上同样可用，属官方推荐的兼容做法；`tools/verify_android.py` 读 ELF 程序头断言 PT_LOAD 的最小 `p_align` ≥ 0x4000，
@@ -226,7 +240,7 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg
   （`keytool -list -v` 实测一致；keystore 现固定在 `%LOCALAPPDATA%\DSC\signing\dsc-release.keystore`，别名 `dsc`，DN 全为 DSC）。
   0.1.1 的 keystore 写在 `build_android\` 里、被清理脚本一并删掉且无法恢复，所以 0.1.1 → 0.1.2 的指纹从 `bc379913…` 变成
   `55e55bc6…`：Android 不允许跨签名覆盖安装，**从 0.1.1 升级必须先卸载再装**。
-  这条边界只影响这一次升级；0.1.2 起的版本共用同一密钥，可以直接覆盖升级（0.1.3 / 0.1.4 / 0.1.5 实测证书同为 `55e55bc6…`）。
+  这条边界只影响这一次升级；0.1.2 起的版本共用同一密钥，可以直接覆盖升级（0.1.3 / 0.1.4 / 0.1.5 / 0.1.6 实测证书同为 `55e55bc6…`）。
 
 ### 7.1 Android 真机验证（0.1.3 首次打通）
 
@@ -324,14 +338,35 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg
 (240,3040) / (720,3040) / (1200,3040)，设置页「模式」行 y≈940。副标题一度写成「问答模式的设置 · 切换模式在「模式」行」，
 真机上与右上按钮挤在一起折行，已缩短为「问答模式的设置」。
 
+### 7.6 Android 真机验证：图标、插图与设置页滚动（0.1.6）
+
+0.1.6 的品牌视觉与滚动修复在同一台真机上逐条复验（真我 GT8 Pro / `RMX5200` / Android 17 / API 37，1440x3136）：
+
+| 步骤 | 命令 / 观察 | 结果 |
+| --- | --- | --- |
+| 覆盖安装 | `adb install -r build_android\DSC.apk` | `Success`（Incremental + Streamed Install），应用数据保留，签名仍为 `55e55bc6…` |
+| 桌面图标 | 返回桌面截图 | 深蓝圆角底 + 鲸鱼，标签 DSC —— 自适应图标生效，不再是系统默认机器人图标 |
+| 首启页插图 | `adb uninstall com.dsc.app` + `adb install` 清数据后启动，截图 `docs/screenshots/android-0.1.6-first-run.png` | 顶部 104dp 鲸鱼居中；标题 / 说明 / 输入框 / 「保存并继续」/ 自检行 / 「演示模式」/ 说明文字全部完整可见，无溢出 |
+| 聊天空状态 | 演示模式进入聊天页，截图 `android-0.1.6-empty-chat.png` | 88dp 鲸鱼 + 「还没有消息。说点什么开始吧。」居中 |
+| 设置页滚动 | 连续两次 `adb shell input swipe 720 2200 720 700 800`，截图 `android-0.1.6-settings-bottom.png` | 页面跟手滚动：`实时同步 / 配对管理 / 进阶指南 / 内置知识库 / 设备权限 / 错误中心 / 数据管理 / 减少动态效果 / 关于 DSC 0.1.6` 全部可见（修复前滑不动、这些行被裁掉） |
+| 关于弹窗 | 点「关于」，截图 `android-0.1.6-about.png` | 标题「关于 DSC」带鲸鱼图标，正文写「DSC 0.1.6」 |
+| 「我」页 | 点底栏第一格 | 内容一屏内，滚动无副作用（`wrapScroll` 不影响短页面） |
+| 崩溃日志 | `adb logcat -b crash -d` | 空 |
+
+排查留痕：
+- 设置页滑不到底是**先看 ui dump 才发现**的：`adb shell uiautomator dump` 里最后一个 text 是「实时同步 `[48,2824][1236,2856]`」，
+  之后直接到底栏——说明后面的「配对管理 / 数据管理 / 减少动态效果 / 关于」根本没进入视图树，而不是「滚上去看不见」。
+  根因在 `buildSkeleton()`：内容容器是 `FrameLayout`（`content = new FrameLayout(this)`），本身不滚动。
+- 真机坐标：底栏三格中心 (240,3040) / (720,3040) / (1200,3040)，设置页行高 192px（首行「提示词与人设」y≈520-596）。
+- `adb devices` 曾一度 `unauthorized`，重启 adb server 无效，需要在手机上点「允许 USB 调试」；`pm clear` 在本机无权限（见 §7.4），清数据只能卸载重装。
 ## 8. 便携包可独立运行
 
-把 dist\DSC-0.1.5-win-x64-portable.zip 解到仓库外（本轮解到 `build\porttest`）仍可运行
+把 dist\DSC-0.1.6-win-x64-portable.zip 解到仓库外（本轮解到 `build\porttest`）仍可运行
 （不依赖构建目录、不依赖 mingw DLL，pe_imports 自检显示只导入系统 DLL）。实测：
 
     <解包目录>\tools\dsc-cli.exe doctor
 
-    DSC 运行环境自检 0.1.5
+    DSC 运行环境自检 0.1.6
     [通过] 数据库（SQLite）可打开：build\doctor/doctor.db（rc=0）
     [通过] 结构迁移可用：schema v0 -> v5（rc=0）
     [通过] 系统安全存储（凭据管理）可用，API Key 可加密保存
@@ -352,17 +387,17 @@ db_bytes 217088、wal_bytes 32768、storage_kb 244、rss_ring_kb[9856]、rss_avg
 ## 9. Windows 安装包与卸载（自解压式，纯 C）
 
     python tools\make_installer.py
-    dist\DSC-0.1.5-win-x64-setup.exe /S /D=D:\...\test_install
+    dist\DSC-0.1.6-win-x64-setup.exe /S /D=D:\...\test_install
     D:\...\test_install\uninstall.exe /S
 
-实测（0.1.5 重建后静默安装到 `build\instest11`）：
+实测（0.1.6 重建后静默安装到 `build\instest12`）：
 
 - 落地 **21 个载荷文件 + 程序自己写的 install.log，目录内共 22 个文件**（DSC.exe、tools\dsc-cli.exe、dsc_plugin_host.exe、示例插件、docs\*、LICENSE、
   CHANGELOG.md、DEPENDENCIES.md、README.en.md、CONTRIBUTING.md、install.ps1、uninstall.exe、使用说明.txt、install.log）；
 - 安装目录的 `install.log` 是程序自己写的结果回执，内容与本机环境一致（0.1.4 复测 `build\instest10`）：
 
-      DSC Setup 0.1.5
-      time=2026-11-26 02:13:44
+      DSC Setup 0.1.6
+      time=2026-11-26 20:52:49
       files=21 shortcut=failed registry=failed
 
 - 静默卸载退出码 0，约 6 秒后安装目录整体消失（卸载程序用 `rd /s /q` 自删除）。
@@ -577,3 +612,17 @@ Android 侧这六项与桌面一样以「编译 + 产物结构校验」为主要
 - 回读校验：`gh release download v0.1.5` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（**4/4 MATCH**：`14d20740…` / `87a14be5…` / `76347bec…` / `cb349923…`）。
 - `v0.1.0` ~ `v0.1.4` 的标签与 Release **都保留未动**（Release 列表里 0.1.5 / 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 六条并存）。
 - 升级提示：0.1.5 的 Android 证书与 0.1.2 ~ 0.1.4 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。
+
+### 13.6 v0.1.6 发布（2026-11-26）
+
+- 触发原因：用户要求「在网上搜索 deepseek 的鲸鱼娘形象，根据该形象设计 DSC 的软件图标和 UI 配色」，并补充「直接找网上的开源或允许下载的图片文件就可以，不要用矢量图了」；
+  同一轮把上次提交未发版的默认人设「小鲸鱼」一并带上，真机复验时又发现并修掉安卓设置页滑不到底（关于页打不开）的缺陷。
+- 发布对象：提交 `__COMMIT__`（`feat(brand): 鲸鱼图标与界面插图，统一品牌配色（Fluent Emoji，MIT），发布 0.1.6`），
+  标签 `v0.1.6`（附注标签，指向该提交），Release <https://github.com/Rcyc-1025/DSC/releases/tag/v0.1.6>，
+  标题「DSC 0.1.6 - 品牌图标与界面插图」，非草稿、非预发布、标记为 **Latest**；
+  正文取自 `docs/RELEASE-NOTES-0.1.6.md`（按发布口径不含未实测清单）。
+- 资产 8 个，状态全部 `uploaded`：`DSC-0.1.6-win-x64-portable.zip`（1868693）、`DSC-0.1.6-win-x64-setup.exe`（4651662）、
+  `DSC-0.1.6-win-arm64-portable.zip`（996236）、`DSC-0.1.6-android-arm64.apk`（1062596）与各自 `.sha256`。
+- 回读校验：`gh release download v0.1.6` 重新拉回四个包，SHA-256 与 `dist` 内、与本文 §2 表格逐条一致（__READBACK__）。
+- `v0.1.0` ~ `v0.1.5` 的标签与 Release **都保留未动**（Release 列表里 0.1.6 / 0.1.5 / 0.1.4 / 0.1.3 / 0.1.2 / 0.1.1 / 0.1.0 七条并存）。
+- 升级提示：0.1.6 的 Android 证书与 0.1.2 ~ 0.1.5 相同（`55e55bc6…`），**可以覆盖安装**；从 0.1.1 及更早版本升级仍需先卸载。

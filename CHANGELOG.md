@@ -2,11 +2,43 @@
 
 本项目遵循语义化版本，格式参照 Keep a Changelog。每个版本段落与 git 标签一一对应，发布流程见 `docs/RELEASE.md`。
 
-> 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.5` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
+> 版本口径：本仓库只维护 **0.1.x** 一条版本线，`v0.1.0` ~ `v0.1.6` 的 Release 全部保留（`v1.0.0` ~ `v1.3.0` 的标签已按要求删除，历史提交保留）。
 
-## [未发布]
+## [0.1.6] - 2026-11-26（品牌图标与界面插图 + 配色微调 + 内置人设换成「小鲸鱼」）
 
-> 本节尚未发版：版本号仍是 0.1.5，没有新标签、没有新 Release、`dist/` 不重新打包。
+> 本节同时是 GitHub Release `v0.1.6` 的发布说明。
+> 可复现证据见 `docs/PRE-RELEASE-EVIDENCE.md`（第 2 节产物哈希、第 6 节离屏截图、第 7 节 Android 校验、第 7.6 节真机验证、第 9 节安装回执、第 13.6 节发布结果）。
+
+### 新增（应用图标与品牌视觉）
+
+- **Windows**：新增 `resources/brand/dsc.rc`（图标 + 两张 RCDATA 插图），`build.ps1` 用 `windres` 编成
+  `build\obj\brand_res.o` 后链进 `DSC.exe`；`WinMain` 把资源 ID 1 设为窗口类图标（`wc.hIcon` / `wc.hIconSm`），
+  任务栏、Alt+Tab 与资源管理器里的 exe 图标都是鲸鱼。安装程序与卸载程序也嵌入同一图标。
+- **Android**：新增 `mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` 与 `ic_launcher_round.png`（48/72/96/144/192），
+  `mipmap-anydpi-v26/ic_launcher.xml` 走自适应图标（`drawable/ic_launcher_background.xml` 深蓝线性渐变 +
+  `drawable-nodpi/ic_launcher_foreground.png` 鲸鱼前景）；`AndroidManifest.xml` 补 `android:icon` 与 `android:roundIcon`。
+  `tools/build_android.py` 把 `aapt2 compile + link` 提到 `javac` 之前（新增「1.5」步，`--java` 生成 `R`），
+  因为界面代码开始引用 `R.drawable`，先编 Java 会报「找不到符号 R」。
+- **插图**：新增 `src/core/brand.h` + `src/platform/win/brand_win.c`（动态加载 gdiplus / shlwapi，从 RCDATA 取 PNG 流解码绘制），
+  首次配置 Key 页顶部居中画 96px 鲸鱼、关于弹窗右上角画 40px 鲸鱼；Android 首启页画 104dp 鲸鱼、
+  聊天空状态画 88dp 鲸鱼、「关于 DSC」弹窗标题带图标。
+- **素材与许可**：图标与插图取自 [Microsoft Fluent Emoji](https://github.com/microsoft/fluentui-emoji)（MIT，
+  Copyright (c) Microsoft Corporation），原图与许可全文在 `resources/brand/src/` 与 `resources/brand/LICENSE-Fluent-Emoji.md`；
+  `tools/gen_brand.py`（纯标准库，零第三方依赖）负责合成圆角底图标、多尺寸 PNG、ICO 与 Android mipmap，
+  复现命令 `python tools\gen_brand.py`（`--check` 只比对不写）。仓库源码仍为 Apache-2.0。
+
+### 变更（配色微调）
+
+- 强调色对齐图标底色那一档蓝：日间 `ACCENT` `#1F5FA8 → #1E6FA8`（色相 ≈204），夜间 `#4E86D6 → #63A8DE`（提亮到鲸鱼浅蓝）。
+  **主色 `PRIMARY` 未动**（日间 `#103F7A` / 夜间 `#6194C9`），FR-33 的色相区间、日夜色相差 ≤6 度与对比度门槛全部仍通过。
+- `MainActivity` 的 `cAccent` 默认值同步为 `0xFF1E6FA8`，避免核心层取色失败时两端不一致。
+
+### 修复（安卓设置页与「我」页超出屏幕后被裁掉）
+
+- `buildSkeleton()` 的内容容器是 `FrameLayout`（不滚动），而 `settingsView()` / `meView()` 返回的是普通
+  `LinearLayout`——行数超过一屏时底部「配对管理 / 数据管理 / 减少动态效果 / 关于」被裁掉，手指滑动无效、
+  **关于页根本打不开**（0.1.5 及更早）。现在两页统一套一层 `ScrollView`（`wrapScroll()`），
+  设置页可滚到底部点开「关于 DSC」。
 
 ### 变更（内置默认人设换成「小鲸鱼」一对一聊天版）
 
@@ -22,14 +54,62 @@
 - 界面上的回退名统一成「小鲸鱼」：Windows 设置页人设副标题、演示回复预览、Android 人设名。
 - **老用户不受影响**：`dsc_persona_ensure_default()` 只在 persona 表为空时写入种子人设，
   已有库里改过或没改过的人设都保持原样，不做迁移、不覆盖。
-- 生成脚本的校验：txt 必须存在、UTF-8 合法、不出现 CR、去掉空白后不少于 800 字、五个占位齐全，否则生成失败。
 
-### 校验
+### 变更（版本与校验）
 
-- `build\test_core.exe`：**1027 通过 0 失败**（新增 3 条：种子人设名为「小鲸鱼」、正文长度大于 3000、五个占位齐全）。
-- `build\dsc-cli.exe verify . build\verify`：FR-01 ~ FR-36 全 PASS，断言合计 **724 项 0 失败**。
-- `python tools\shots.py`：19 场景 0 失败。
-- `python tools\precommit_scan.py`：0 问题。
+- 版本号：`versionCode 10 → 11`、`versionName 0.1.5 → 0.1.6`（`AndroidManifest.xml` 与 `aapt2 link` 两处同改）；
+  Windows 侧 `DSC.exe`、`dsc-cli.exe`、安装程序与打包脚本的版本串同步为 0.1.6。
+- `tools/verify_android.py` 新增三条断言：清单声明 `android:icon` 与 `android:roundIcon`、五档密度 `ic_launcher.png` 齐全、
+  `drawable-nodpi/whale.png` 在包里且主源码调用 `whaleImage(`（25 → 28 项）。
+- `tools/shots.py` 新增 `07_about` 场景（关于弹窗，用于核对插画与排版），场景数 19 → 20。
+- 签名证书与 0.1.2 ~ 0.1.5 相同（`55e55bc6…`），**从 0.1.5 可以直接覆盖升级**。
+- 许可证、功能面、数据模型、schema（v5）均无变化，0.1.5 的用户数据可直接沿用。
+
+### 真机验证（0.1.6，真我 GT8 Pro / RMX5200 / Android 17 / API 37）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 覆盖安装 0.1.6（adb install -r） | 成功，应用数据保留 |
+| 桌面图标 | 深蓝圆角底 + 鲸鱼，标签 DSC（自适应图标生效，不再是默认安卓机器人） |
+| 首启页（卸载重装清数据后） | 顶部 104dp 鲸鱼居中，标题/说明/输入框/两个按钮/自检行完整可见，无溢出 |
+| 聊天页空状态 | 88dp 鲸鱼 + 「还没有消息。说点什么开始吧。」居中显示 |
+| 设置页滑动到底部 | 可滚动，「配对管理 / 进阶指南 / 内置知识库 / 设备权限 / 错误中心 / 数据管理 / 减少动态效果 / 关于」全部可见可点 |
+| 设置 → 关于 | 弹窗标题「关于 DSC」带鲸鱼图标，正文写「DSC 0.1.6」 |
+| 「我」页 | 内容一屏内，滚动无副作用 |
+
+截图归档在 `docs/screenshots/`（`android-0.1.6-first-run.png`、`android-0.1.6-empty-chat.png`、
+`android-0.1.6-settings-bottom.png`、`android-0.1.6-about.png`、`desktop-0.1.6-first-run.png`、
+`desktop-0.1.6-about.png`、`brand-icon-512.png`、`brand-whale.png`）。
+
+### 复测（0.1.6 重建后全跑一遍）
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\test_core.exe` | 1027 通过 0 失败 |
+| `dsc-cli.exe verify . build\verify` | FR-01 ~ FR-36 全 PASS，724 断言 0 失败 |
+| `tools\shots.py` | 20 scene(s), 0 failed（新增关于弹窗场景） |
+| `tools\verify_android.py` | 28 项全部通过（新增三条图标/插图断言） |
+| `dsc-cli.exe bench` | 万条分页 11.93 ms/页（预算 300）、万条导出 46 ms（预算 2000）、常驻 11.9 MB（预算 240） |
+| `dsc-cli.exe perf JSON` | rss 9.05 MB、db 217088 B、wal 32768 B、storage 244 KB |
+| 安装包静默安装 | 落地 21 文件 + `install.log`（内容 `DSC Setup 0.1.6 / files=21`）；静默卸载后目录整体消失 |
+| 便携包 doctor | 五项通过，常驻内存 10.2 MB |
+| `tools\precommit_scan.py` | 0 问题 |
+
+### 产物（0.1.6）
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `DSC-0.1.6-win-x64-portable.zip` | 1868693 | `cb328710fe95b7d713521ca6964605da1f88d7ef3950e9b60b2c6ebf956a206d` |
+| `DSC-0.1.6-win-x64-setup.exe` | 4651662 | `3ac0e2b1d4eab78c4a55ede2715d2969211ad043f83204991f7d0c8a341fcee4` |
+| `DSC-0.1.6-win-arm64-portable.zip` | 996236 | `bfdeabd7231c095149b4910e38949d43069df61f0452bcab64a9a620a9b47045` |
+| `DSC-0.1.6-android-arm64.apk` | 1062596 | `291bbc04ebdb682123dc915442ad40870000a192735fcd98a85d6b20932aa071` |
+
+每个包都附同名 `.sha256`。
+
+### 升级
+
+- Windows：解压便携包或覆盖安装 setup，用户数据（`%LOCALAPPDATA%\DSC`）不受影响。
+- Android：直接安装 0.1.6，覆盖 0.1.5 即可（签名未变）；从 0.1.1 及更早升级仍需先卸载。
 
 ## [0.1.5] - 2026-11-26（安卓问答模式切不回聊天修复 + 模式切换持久化）
 

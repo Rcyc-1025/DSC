@@ -20,6 +20,7 @@
 
 #include "dsc_types.h"
 #include "avatar.h"
+#include "brand.h"
 #include "backup.h"
 #include "capability.h"
 #include "diaglog.h"
@@ -1264,7 +1265,7 @@ static void app_setup_engine(App *a)
 #define FORM_VERSIONS  12
 #define FORM_PLUGIN_IMPORT 13
 #define FORM_DISCARD   14
-#define APP_VERSION    "0.1.5"
+#define APP_VERSION    "0.1.6"
 #define MSG_CAP        512
 #define ROW_H          52
 
@@ -2288,6 +2289,10 @@ static void paint_overlay(App *a, HDC dc, RECT client)
     draw_text(dc, a->font_title, a->overlay_title,
               (RECT){panel.left + 20, panel.top + 12, panel.right - 20, panel.top + 46},
               tok(a, DSC_TOK_TEXT), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* 0.1.6：关于页标题右侧画品牌鲸鱼（其它确认框不画）。 */
+    if (!strcmp(a->overlay_title, "关于 DSC"))
+        dsc_brand_draw_rc(dc, 101, panel.right - 76, panel.top + 12, 40, 40);
 
     tr.left = panel.left + 20;
     tr.right = panel.right - 20;
@@ -5489,13 +5494,15 @@ static void paint_credential(App *a, HDC dc, RECT client)
         x0 = (int)client.left + (cw - w) / 2;
         x1 = x0 + w;
     }
-    RECT t = {x0, client.top + 66, x1, client.top + 112};
-    RECT d = {x0, client.top + 116, x1, client.top + 216};
-    RECT lbl = {x0, client.top + 232, x1, client.top + 256};
-    RECT box = {x0, client.top + 258, x1, client.top + 298};
-    RECT b1 = {x0, client.top + 316, x0 + 150, client.top + 356};
-    RECT b2 = {x0 + 166, client.top + 316, x0 + 306, client.top + 356};
+    /* 0.1.6：顶部放品牌插图（resources/brand/dsc.rc 的 RCDATA 101，Fluent Emoji 鲸鱼，MIT）。 */
+    RECT t = {x0, client.top + 166, x1, client.top + 212};
+    RECT d = {x0, client.top + 216, x1, client.top + 316};
+    RECT lbl = {x0, client.top + 332, x1, client.top + 356};
+    RECT box = {x0, client.top + 358, x1, client.top + 398};
+    RECT b1 = {x0, client.top + 416, x0 + 150, client.top + 456};
+    RECT b2 = {x0 + 166, client.top + 416, x0 + 306, client.top + 456};
 
+    dsc_brand_draw_rc(dc, 101, x0 + (x1 - x0 - 96) / 2, client.top + 52, 96, 96);
     draw_text(dc, a->font_title, "配置 DeepSeek API Key", t, tok(a, DSC_TOK_TEXT),
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(dc, a->font_ui,
@@ -6323,6 +6330,15 @@ static void shot_prepare(App *a)
         else if (g_shot_overlay == 4) app_msg_open(a, 0);
         else if (g_shot_overlay == 5) app_data(a);
         else if (g_shot_overlay == 6) app_plugin_panel(a);
+        else if (g_shot_overlay == 7) {
+            /* 0.1.6：关于弹窗右上角会画 RCDATA 101（鲸鱼），截图场景用来验证插图与图标。 */
+            app_set_overlay(a, DSC_OV_CONFIRM, "关于 DSC");
+            snprintf(a->overlay_text, sizeof(a->overlay_text),
+                     "DSC %s\n核心逻辑用 C 实现（C11），界面层调用平台原生能力；"
+                     "会话数据格式 Windows 与 Android 完全一致。\n\n"
+                     "图标与界面插图取自 Microsoft Fluent Emoji（MIT），"
+                     "UI 配色沿用深蓝主色调，强调色对齐图标底色。", APP_VERSION);
+        }
         else app_guide(a);
     }
 }
@@ -6516,6 +6532,10 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
     wc.hInstance = hinst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = NULL;
+    /* 0.1.6：窗口与任务栏图标来自 resources/brand/dsc.rc 的 ICON 资源（ID 1）。 */
+    wc.hIcon = (HICON)LoadImageW(hinst, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    wc.hIconSm = (HICON)LoadImageW(hinst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     wc.lpszClassName = APP_CLASS;
     if (!RegisterClassExW(&wc)) { DLOG("[diag] RegisterClass failed err=%lu", GetLastError()); return 1; }
 

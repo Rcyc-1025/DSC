@@ -130,14 +130,34 @@ def main():
             check('QA_TAB' in main_src and
                   'nav.setVisibility(qaMode() ? View.GONE : View.VISIBLE)' not in main_src,
                   '问答模式保留底部导航，设置页可达（可切回聊天模式）')
+            # 0.1.6 起的硬门：品牌图标必须真的挂在清单上，且各密度图标与 UI 插图都在包里。
+            # 图标没有 android:icon，系统会用默认小人头；drawable-nodpi/whale.png 缺了，
+            # 首启页与空状态的 ImageView 会直接崩在 inflate 阶段。
+            manifest = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml')
+            manifest_src = ''
+            if os.path.isfile(manifest):
+                with open(manifest, 'r', encoding='utf-8', errors='replace') as fh:
+                    manifest_src = fh.read()
+            res_dir = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'res')
+            mipmaps = [d for d in ('mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi')
+                       if os.path.isfile(os.path.join(res_dir, 'mipmap-' + d, 'ic_launcher.png'))]
+            check('android:icon="@mipmap/ic_launcher"' in manifest_src and
+                  'android:roundIcon="@mipmap/ic_launcher_round"' in manifest_src,
+                  '清单声明了应用图标与圆形图标')
+            check(len(mipmaps) == 5,
+                  '五档密度启动图标齐全（缺：%s）'
+                  % (', '.join(set(('mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi')) - set(mipmaps)) or '无'))
+            check(os.path.isfile(os.path.join(res_dir, 'drawable-nodpi', 'whale.png')) and
+                  'whaleImage(' in main_src,
+                  '品牌鲸鱼插图在包里且首启页/空状态用到')
             os.remove(so_tmp)
 
     p = subprocess.run([os.path.join(BT, 'aapt2.exe'), 'dump', 'badging', APK],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
     badging = p.stdout or ''
     check("package: name='com.dsc.app'" in badging, '包名 com.dsc.app')
-    check("versionName='0.1.5'" in badging, '版本名 0.1.5')
-    check("versionCode='10'" in badging, 'versionCode 10')
+    check("versionName='0.1.6'" in badging, '版本名 0.1.6')
+    check("versionCode='11'" in badging, 'versionCode 11')
     check("minSdkVersion:'24'" in badging, 'minSdkVersion 24（Android 7.0 起）')
     check("targetSdkVersion:'34'" in badging, 'targetSdkVersion 34')
     check("launchable-activity: name='com.dsc.app.MainActivity'" in badging, '启动 Activity 为 MainActivity')
